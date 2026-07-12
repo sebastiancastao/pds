@@ -50,6 +50,19 @@ type TimesheetSpan = {
   thirdMealEndDisplay: string;
 };
 
+type TimesheetDayRow = {
+  date: string;
+  clockIn: string;
+  meal1Start: string;
+  meal1End: string;
+  meal2Start: string;
+  meal2End: string;
+  meal3Start: string;
+  meal3End: string;
+  clockOut: string;
+  hours: string;
+};
+
 type TimesheetRow = {
   name: string;
   attestationStatus: string;
@@ -63,6 +76,8 @@ type TimesheetRow = {
   meal3End: string;
   clockOut: string;
   hours: string;
+  // Multi-day non-events render one read-only sub-row per local day.
+  dayRows?: TimesheetDayRow[];
 };
 
 async function getAuthedUser(req: NextRequest) {
@@ -104,6 +119,15 @@ function subtractMinutesFromHHMM(hhmm: string, minutes: number): string {
   const outHh = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
   const outMm = String(totalMinutes % 60).padStart(2, "0");
   return `${outHh}:${outMm}`;
+}
+
+// Format a YYYY-MM-DD day key (from the multi-day breakdown) as e.g. "Sat, Jun 28".
+function formatDayLabel(dateStr: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((dateStr || "").slice(0, 10));
+  if (!m) return dateStr || "";
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(d.getTime())) return dateStr || "";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
 function formatHoursFromMs(ms: number): string {
@@ -365,6 +389,35 @@ async function buildTimesheetPdf(
       cells.push({ text: row.hours, width: scaledCols[idx + 1].width, align: "right" });
 
       drawRow(cells, { size: 8 });
+
+      // Multi-day breakdown: one indented sub-row per local day
+      for (const day of row.dayRows || []) {
+        const dayCells: Array<{ text: string; width: number; align?: "left" | "right" }> = [
+          { text: `   ${formatDayLabel(day.date)}`, width: scaledCols[0].width },
+          { text: "", width: scaledCols[1].width },
+        ];
+        let dayIdx = 2;
+        if (applyGateOffset) {
+          dayCells.push({ text: "", width: scaledCols[dayIdx].width });
+          dayIdx += 1;
+        }
+        dayCells.push({ text: day.clockIn, width: scaledCols[dayIdx].width });
+        dayCells.push({ text: day.meal1Start, width: scaledCols[dayIdx + 1].width });
+        dayCells.push({ text: day.meal1End, width: scaledCols[dayIdx + 2].width });
+        dayCells.push({ text: day.meal2Start, width: scaledCols[dayIdx + 3].width });
+        dayCells.push({ text: day.meal2End, width: scaledCols[dayIdx + 4].width });
+        dayIdx += 5;
+        if (showThirdMeal) {
+          dayCells.push({ text: day.meal3Start, width: scaledCols[dayIdx].width });
+          dayCells.push({ text: day.meal3End, width: scaledCols[dayIdx + 1].width });
+          dayIdx += 2;
+        }
+        dayCells.push({ text: day.clockOut, width: scaledCols[dayIdx].width });
+        dayCells.push({ text: day.hours, width: scaledCols[dayIdx + 1].width, align: "right" });
+
+        drawRow(dayCells, { size: 8 });
+      }
+
       drawDivider();
     }
 
@@ -430,7 +483,7 @@ export async function GET(
     const [eventResult, teamResult] = await Promise.all([
       supabaseAdmin
         .from("events")
-        .select("id, event_name, event_date, state, start_time, end_time, ends_next_day")
+        .select("id, event_name, event_date, end_date, state, start_time, end_time, ends_next_day")
         .eq("id", eventId)
         .maybeSingle(),
       supabaseAdmin
@@ -452,6 +505,15 @@ export async function GET(
     }
 
     const date = String(event.event_date || "").split("T")[0];
+    // Multi-day non-events (end_date after event_date) record one isolated
+    // timesheet per local day; the PDF must scan the full range and break the
+    // rows down by day instead of collapsing them into a single span.
+    const endDate = String((event as any).end_date || "").split("T")[0] || null;
+    const isMultiDay = Boolean(endDate && date && endDate > date);
+    const multiDayCount = isMultiDay
+      ? Math.round((Date.parse(endDate!) - Date.parse(date)) / 86400000) + 1
+      : 0;
+    const displayDate = isMultiDay ? `${date} - ${endDate}` : date;
     const applyGateOffset = true;
     const eventState = String(event.state || "CA").toUpperCase();
     const tz = getTimezoneForState(eventState) || "America/Los_Angeles";
@@ -463,7 +525,7 @@ export async function GET(
     if (allUserIds.length === 0) {
       const pdfBytes = await buildTimesheetPdf(
         event.event_name || "Event",
-        date,
+        displayDate,
         eventState,
         event.start_time ? String(event.start_time).slice(0, 5) : null,
         event.end_time ? String(event.end_time).slice(0, 5) : null,
@@ -598,7 +660,7 @@ export async function GET(
       Boolean(event.ends_next_day) ||
       (startSec !== null && endSec !== null && endSec <= startSec);
 
-    const queryRange = getLocalDateRange(date, tz, 2);
+    const queryRange = getLocalDateRange(date, tz, isMultiDay ? multiDayCount : 2);
     if (!queryRange) {
       return NextResponse.json({ error: "Invalid event date/timezone" }, { status: 400 });
     }
@@ -707,6 +769,17 @@ export async function GET(
     const totals: Record<string, number> = {};
     const spans: Record<string, TimesheetSpan> = {};
 
+    // Per-day breakdown for multi-day events (one isolated timesheet per local day)
+    const daysByUser: Record<string, TimesheetDayRow[]> = {};
+    const dayKeyFormatter = isMultiDay
+      ? new Intl.DateTimeFormat("en-CA", {
+          timeZone: tz,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        })
+      : null;
+
     for (const uid of allUserIds) {
       const userEntries = entriesByUser[uid] || [];
       const clockIns = userEntries.filter((entry) => entry.action === "clock_in");
@@ -792,8 +865,88 @@ export async function GET(
         }
       }
 
+      // Multi-day totals are returned net of meals: the span-based math cannot
+      // derive them because first-in/last-out crosses overnight gaps.
+      if (isMultiDay) {
+        let mealMsTotal = 0;
+        let currentMealStart: string | null = null;
+        for (const entry of userEntries) {
+          if (entry.action === "meal_start") {
+            if (!currentMealStart) currentMealStart = entry.timestamp;
+          } else if (entry.action === "meal_end" && currentMealStart) {
+            const duration = new Date(entry.timestamp).getTime() - new Date(currentMealStart).getTime();
+            if (duration > 0) mealMsTotal += duration;
+            currentMealStart = null;
+          }
+        }
+        totals[uid] = Math.max(totals[uid] - mealMsTotal, 0);
+      }
+
+      if (isMultiDay && dayKeyFormatter) {
+        const entriesByDay: Record<string, TimesheetEntry[]> = {};
+        for (const entry of userEntries) {
+          const entryMs = new Date(entry.timestamp).getTime();
+          if (!Number.isFinite(entryMs)) continue;
+          const dayKey = dayKeyFormatter.format(new Date(entryMs));
+          if (!entriesByDay[dayKey]) entriesByDay[dayKey] = [];
+          entriesByDay[dayKey].push(entry);
+        }
+
+        daysByUser[uid] = Object.keys(entriesByDay)
+          .sort()
+          .map((dayKey) => {
+            const dayEntries = entriesByDay[dayKey];
+            const dayClockIns = dayEntries.filter((e) => e.action === "clock_in");
+            const dayClockOuts = dayEntries.filter((e) => e.action === "clock_out");
+            const dayMealStarts = dayEntries.filter((e) => e.action === "meal_start");
+            const dayMealEnds = dayEntries.filter((e) => e.action === "meal_end");
+
+            let dayGrossMs = 0;
+            let openClockIn: number | null = null;
+            for (const entry of dayEntries) {
+              const entryMs = new Date(entry.timestamp).getTime();
+              if (!Number.isFinite(entryMs)) continue;
+              if (entry.action === "clock_in") {
+                if (openClockIn === null) openClockIn = entryMs;
+              } else if (entry.action === "clock_out" && openClockIn !== null) {
+                dayGrossMs += Math.max(entryMs - openClockIn, 0);
+                openClockIn = null;
+              }
+            }
+
+            let dayMealMs = 0;
+            let openMeal: number | null = null;
+            for (const entry of dayEntries) {
+              const entryMs = new Date(entry.timestamp).getTime();
+              if (!Number.isFinite(entryMs)) continue;
+              if (entry.action === "meal_start") {
+                if (openMeal === null) openMeal = entryMs;
+              } else if (entry.action === "meal_end" && openMeal !== null) {
+                dayMealMs += Math.max(entryMs - openMeal, 0);
+                openMeal = null;
+              }
+            }
+
+            return {
+              date: dayKey,
+              clockIn: dayClockIns[0] ? formatIsoToHHMM(dayClockIns[0].timestamp, tz) : "",
+              meal1Start: dayMealStarts[0] ? formatIsoToHHMM(dayMealStarts[0].timestamp, tz) : "",
+              meal1End: dayMealEnds[0] ? formatIsoToHHMM(dayMealEnds[0].timestamp, tz) : "",
+              meal2Start: dayMealStarts[1] ? formatIsoToHHMM(dayMealStarts[1].timestamp, tz) : "",
+              meal2End: dayMealEnds[1] ? formatIsoToHHMM(dayMealEnds[1].timestamp, tz) : "",
+              meal3Start: dayMealStarts[2] ? formatIsoToHHMM(dayMealStarts[2].timestamp, tz) : "",
+              meal3End: dayMealEnds[2] ? formatIsoToHHMM(dayMealEnds[2].timestamp, tz) : "",
+              clockOut: dayClockOuts.length
+                ? formatIsoToHHMM(dayClockOuts[dayClockOuts.length - 1].timestamp, tz)
+                : "",
+              hours: formatHoursFromMs(Math.max(dayGrossMs - dayMealMs, 0)),
+            };
+          });
+      }
+
+      // (skipped for multi-day events, where gaps between days are overnight, not meals)
       const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
-      if (!hasExplicitMeals && workIntervals.length >= 2) {
+      if (!hasExplicitMeals && !isMultiDay && workIntervals.length >= 2) {
         workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
         const gaps: Array<{ start: Date; end: Date }> = [];
 
@@ -877,6 +1030,27 @@ export async function GET(
         const isRejected = attestationStatusRaw === "rejected";
         const attestationStatus = hasAttestation ? "Submitted" : isRejected ? "Rejected" : "Not submitted";
 
+        // Multi-day non-events: the collapsed first-in/last-out span would hide
+        // the individual days, so emit a summary row plus one sub-row per day.
+        const dayRows = daysByUser[uid];
+        if (isMultiDay && dayRows && dayRows.length > 0) {
+          return {
+            name,
+            attestationStatus,
+            gate: "",
+            clockIn: `${dayRows.length} day${dayRows.length === 1 ? "" : "s"}`,
+            meal1Start: "",
+            meal1End: "",
+            meal2Start: "",
+            meal2End: "",
+            meal3Start: "",
+            meal3End: "",
+            clockOut: "",
+            hours: formatHoursFromMs(displayedWorkedMs),
+            dayRows,
+          };
+        }
+
         return {
           name,
           attestationStatus,
@@ -893,9 +1067,9 @@ export async function GET(
         };
       });
 
-    const showThirdMeal = Object.values(spans).some(
-      (span) => span.thirdMealStart || span.thirdMealEnd
-    );
+    const showThirdMeal =
+      Object.values(spans).some((span) => span.thirdMealStart || span.thirdMealEnd) ||
+      Object.values(daysByUser).some((days) => days.some((day) => day.meal3Start || day.meal3End));
     const totalMs = allUserIds.reduce(
       (sum, uid) => sum + getDisplayedWorkedMs(totals[uid], spans[uid], applyGateOffset),
       0
@@ -904,7 +1078,7 @@ export async function GET(
 
     const pdfBytes = await buildTimesheetPdf(
       event.event_name || "Event",
-      date,
+      displayDate,
       eventState,
       event.start_time ? String(event.start_time).slice(0, 5) : null,
       event.end_time ? String(event.end_time).slice(0, 5) : null,
@@ -915,7 +1089,7 @@ export async function GET(
     );
 
     const safeName = (event.event_name || "timesheet").replace(/[^a-z0-9]/gi, "-").toLowerCase();
-    const dateStr = date || "event-date";
+    const dateStr = (isMultiDay ? `${date}-to-${endDate}` : date) || "event-date";
 
     return new NextResponse(Buffer.from(pdfBytes), {
       headers: {

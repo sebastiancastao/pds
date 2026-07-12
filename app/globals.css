@@ -20,9 +20,34 @@
   --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+html {
+  min-width: 0;
+  -webkit-text-size-adjust: 100%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 * {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+input,
+select,
+textarea,
+button {
+  max-width: 100%;
 }
 
 body {
@@ -33,6 +58,38 @@ body {
   min-height: 100vh;
   overflow-x: hidden;
   color: #111827;
+}
+
+@media (max-width: 768px) {
+  .liquid-modal-overlay {
+    align-items: flex-end;
+    padding: 0.75rem;
+  }
+
+  .liquid-modal {
+    max-height: calc(100dvh - 1.5rem);
+    border-radius: 1rem;
+  }
+
+  .liquid-modal-header,
+  .liquid-modal-body,
+  .liquid-modal-footer {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .liquid-card-default,
+  .liquid-card-spacious {
+    padding: 1rem;
+  }
+
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* Animated Mesh Background */
@@ -527,4 +584,3 @@ body::before {
     @apply liquid-card-default;
   }
 }
-

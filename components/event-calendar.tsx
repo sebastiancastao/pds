@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 
@@ -29,12 +30,62 @@ const formatDateKey = (date: Date) => {
 };
 
 export function EventCalendar({ events, onEventClick, onVisibleRangeChange }: EventCalendarProps) {
+  const calendarRef = useRef<FullCalendar | null>(null);
+  const [isCompact, setIsCompact] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 640px)");
+    const syncView = () => {
+      const compact = mediaQuery.matches;
+      setIsCompact(compact);
+
+      const calendarApi = calendarRef.current?.getApi();
+      const nextView = compact ? "dayGridWeek" : "dayGridMonth";
+      if (calendarApi && calendarApi.view.type !== nextView) {
+        calendarApi.changeView(nextView);
+      }
+    };
+
+    syncView();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncView);
+      return () => mediaQuery.removeEventListener("change", syncView);
+    }
+
+    mediaQuery.addListener(syncView);
+    return () => mediaQuery.removeListener(syncView);
+  }, []);
+
   return (
     <FullCalendar
+      ref={calendarRef}
       plugins={[dayGridPlugin]}
-      initialView="dayGridMonth"
+      initialView={isCompact ? "dayGridWeek" : "dayGridMonth"}
       height="auto"
+      contentHeight="auto"
+      expandRows={!isCompact}
+      fixedWeekCount={!isCompact}
+      showNonCurrentDates={!isCompact}
+      dayMaxEvents={isCompact ? 2 : 4}
+      moreLinkClick="popover"
       eventDisplay="block"
+      headerToolbar={{
+        left: "prev,next today",
+        center: "title",
+        right: "dayGridMonth,dayGridWeek,dayGridDay",
+      }}
+      buttonText={{
+        today: "Today",
+        month: "Month",
+        week: "Week",
+        day: "Day",
+      }}
+      dayHeaderFormat={isCompact ? { weekday: "short", day: "numeric" } : { weekday: "short" }}
+      eventTimeFormat={{
+        hour: "numeric",
+        minute: "2-digit",
+        meridiem: "short",
+      }}
       events={events}
       datesSet={(info) => {
         onVisibleRangeChange?.({

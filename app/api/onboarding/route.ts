@@ -235,8 +235,16 @@ export async function GET(req: NextRequest) {
       console.error('Error fetching form progress data:', formProgressError);
     }
 
-    // Onboarding stage markers to exclude (these are not actual forms)
-    const STAGE_MARKERS = ['onboarding-mfa-setup', 'onboarding-register'];
+    // Onboarding stage markers to exclude (these are not actual forms).
+    // Background-check forms belong to the background phase (tracked in its own
+    // column), so they must not count as Phase 2 onboarding form progress.
+    const STAGE_MARKERS = [
+      'onboarding-mfa-setup',
+      'onboarding-register',
+      'background-waiver',
+      'background-disclosure',
+      'background-addon',
+    ];
 
     // State-specific form configurations
     const STATE_FORMS: Record<string, { id: string; display: string }[]> = {
@@ -564,14 +572,22 @@ export async function GET(req: NextRequest) {
       const stateFormList = getStateFormList(detectedState);
       const totalFormsForUser = stateFormList.length;
 
-      // Some legacy submissions may not have per-form progress rows. If the user has a
-      // vendor_onboarding_status record, treat progress as fully submitted so the UI
-      // doesn't show "Not started" for already-submitted onboarding.
+      // Some legacy submissions may not have per-form progress rows. If the user's
+      // status record shows real submission evidence, treat progress as fully
+      // submitted so the UI doesn't show "Not started" for already-submitted
+      // onboarding. A vendor_onboarding_status row can also exist with
+      // onboarding_completed=false and no completed_date (e.g. By Pass toggled on
+      // and back off) — mere existence of the row must not mark every form as done.
+      const onboardingStatusShowsSubmission =
+        !!onboardingStatus &&
+        (onboardingStatus.onboarding_completed === true ||
+          !!onboardingStatus.completed_date ||
+          hasSubmittedPdf);
       let effectiveLatestFormProgress = latestFormProgress;
       let effectiveFormsCompleted = formsCompleted;
       let effectiveCompletedForms = completedForms;
       let effectiveCompletedFormIds = new Set<string>(completedFormIdsSet);
-      if (onboardingStatus) {
+      if (onboardingStatusShowsSubmission) {
         const lastForm = stateFormList[stateFormList.length - 1];
         const updatedAt =
           onboardingStatus?.updated_at ||

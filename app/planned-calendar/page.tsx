@@ -302,8 +302,8 @@ export default function PlannedCalendarPage() {
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <div className="bg-white border-b border-gray-100 sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="max-w-6xl mx-auto px-4 py-4 sm:px-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
             {userRole !== "supervisor4" && (
               <Link href="/dashboard" className="apple-button apple-button-secondary flex items-center gap-2 text-sm py-2 px-4">
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -312,12 +312,12 @@ export default function PlannedCalendarPage() {
                 Dashboard
               </Link>
             )}
-            <div>
+            <div className="min-w-0">
               <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">Planning Calendar</h1>
               <p className="text-sm text-gray-500 mt-0.5">Manage and plan upcoming events</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
             {userRole === "supervisor4" && (
               <button
                 onClick={async () => { await supabase.auth.signOut(); router.replace("/login"); }}
@@ -342,7 +342,7 @@ export default function PlannedCalendarPage() {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-8">
+      <div className="max-w-6xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
         {/* Error */}
         {!loading && error && (
           <div className="apple-alert apple-alert-error mb-6">{error}</div>
@@ -393,7 +393,7 @@ export default function PlannedCalendarPage() {
                 <option key={v.id} value={v.id}>{v.venue_name}</option>
               ))}
             </select>
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 sm:flex sm:items-center">
               <input
                 type="date"
                 value={periodStart}
@@ -424,7 +424,7 @@ export default function PlannedCalendarPage() {
 
         {/* Event count + active calendar selection */}
         {!loading && !error && (
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col gap-2 mb-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-gray-500">
               {listEvents.length} {listEvents.length === 1 ? "event" : "events"}
               {(selectedCalendarEventId || filterVenue !== "all" || searchQuery || periodStart || periodEnd) ? " (filtered)" : ""}
@@ -591,7 +591,7 @@ export default function PlannedCalendarPage() {
                 </select>
               </div>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col gap-3 pt-2 sm:flex-row">
                 <button
                   onClick={() => setShowCreateModal(false)}
                   className="apple-button apple-button-secondary flex-1"
@@ -684,7 +684,7 @@ export default function PlannedCalendarPage() {
                 </select>
               </div>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col gap-3 pt-2 sm:flex-row">
                 <button
                   onClick={() => setEditEvent(null)}
                   className="apple-button apple-button-secondary flex-1"

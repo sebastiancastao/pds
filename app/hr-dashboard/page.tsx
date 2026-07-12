@@ -3702,23 +3702,25 @@ function HRDashboardContent() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="container mx-auto max-w-6xl py-12 px-6">
-        <div className="mb-12">
-          <div className="flex items-start justify-between">
-            <div className="flex-1">
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">HR Dashboard</h1>
+      <div className="container mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8 lg:py-12">
+        <div className="mb-8 lg:mb-12">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+            <div className="w-full min-w-0 lg:flex-1">
+              <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">HR Dashboard</h1>
               <p className="text-lg text-gray-600 font-normal">Manage employees, leave requests, and workforce analytics.</p>
             </div>
-            <button onClick={handleLogout} className="apple-button apple-button-secondary">
-              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4a2 2 0 012 2v1" />
-              </svg>
-              Logout
-            </button>
+            <div className="apple-header-actions flex w-full flex-wrap items-center gap-2 sm:gap-3 lg:w-auto lg:justify-end">
+              <button onClick={handleLogout} className="apple-button apple-button-secondary">
+                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4a2 2 0 012 2v1" />
+                </svg>
+                Logout
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-3 mb-10 items-center">
+        <div className="apple-page-actions grid grid-cols-1 gap-3 mb-8 sm:flex sm:flex-wrap sm:items-center sm:mb-10">
           <Link href="/signup">
             <button className="apple-button apple-button-primary">
               <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">

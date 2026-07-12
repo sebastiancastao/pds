@@ -203,7 +203,7 @@ export default function Home() {
 
   // Authenticated home page
   return (
-    <main className="min-h-screen flex items-center justify-center px-4 py-12">
+    <main className="min-h-screen flex items-center justify-center px-4 py-8 sm:py-12">
       <div className="max-w-5xl mx-auto w-full">
         {/* Welcome Header */}
         <div className="text-center mb-12 animate-fade-in">
@@ -213,7 +213,7 @@ export default function Home() {
             </svg>
             Authenticated Session
           </div>
-          <h1 className="text-5xl md:text-6xl font-bold text-gray-900 mb-4 keeping-apple-tight">
+          <h1 className="text-4xl font-bold text-gray-900 mb-4 keeping-apple-tight sm:text-5xl md:text-6xl">
             Welcome Back
           </h1>
           <p className="text-lg text-gray-600 mb-6 keeping-apple">
@@ -231,7 +231,7 @@ export default function Home() {
         </div>
 
         {/* Quick Actions Grid */}
-        <div className="grid md:grid-cols-2 gap-6 animate-slide-up">
+        <div className="grid gap-4 animate-slide-up sm:grid-cols-2 sm:gap-6">
           {/* Events Dashboard */}
           <Link href="/dashboard" className="liquid-card-blue p-6 group cursor-pointer">
             <div className="flex items-start gap-4">
