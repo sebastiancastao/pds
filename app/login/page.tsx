@@ -11,6 +11,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
+  const [isCWUser, setIsCWUser] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -35,6 +36,13 @@ export default function LoginPage() {
     sessionStorage.removeItem('pending_onboarding_redirect');
     sessionStorage.removeItem('background_check_required');
     sessionStorage.removeItem('requires_password_change');
+
+    // CW (CWT Trailers) users are routed to the trailers portal after MFA
+    if (isCWUser) {
+      sessionStorage.setItem('cw_user', 'true');
+    } else {
+      sessionStorage.removeItem('cw_user');
+    }
 
     try {
       // Step 1: Pre-login check
@@ -614,6 +622,29 @@ export default function LoginPage() {
                   className="absolute right-3 top-1/2 -translate-y-1/2"
                 >
                   {showPassword ? 'Hide' : 'Show'}
+                </button>
+              </div>
+
+              <div className={`flex items-center justify-between rounded-lg border-2 px-4 py-3 transition-colors ${isCWUser ? 'border-blue-600 bg-blue-50' : 'border-gray-300 bg-white'}`}>
+                <div>
+                  <p className={`text-sm font-semibold ${isCWUser ? 'text-blue-800' : 'text-gray-900'}`}>CW user</p>
+                  <p className={`text-xs ${isCWUser ? 'text-blue-700' : 'text-gray-600'}`}>CWT Trailers division login</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isCWUser}
+                  aria-label="CW user"
+                  onClick={() => setIsCWUser(!isCWUser)}
+                  className={`relative inline-flex h-7 flex-shrink-0 items-center rounded-full border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${isCWUser ? 'border-blue-700' : 'border-gray-500 bg-gray-400'}`}
+                  style={{
+                    width: '3.25rem',
+                    ...(isCWUser
+                      ? { background: 'linear-gradient(135deg, #007AFF 0%, #0051D5 100%)', boxShadow: '0 2px 8px rgba(0, 122, 255, 0.4)' }
+                      : {}),
+                  }}
+                >
+                  <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${isCWUser ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
               </div>
 

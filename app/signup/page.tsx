@@ -71,6 +71,10 @@ export default function SignupPage() {
     setUsers([...users, emptyUser()]);
   };
 
+  const addCWUser = () => {
+    setUsers([...users, { ...emptyUser(), division: 'trailers' }]);
+  };
+
   const removeUser = (id: string) => {
     if (users.length > 1) {
       setUsers(users.filter((u) => u.id !== id));
@@ -1343,6 +1347,30 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                     User {index + 1}
                   </h3>
 
+                  {/* CW User Toggle — sets division to CWT Trailers */}
+                  <div className={`mb-4 flex items-center justify-between rounded-lg border-2 px-4 py-3 transition-colors ${user.division === 'trailers' ? 'border-blue-600 bg-blue-50' : 'border-gray-300 bg-white'}`}>
+                    <div>
+                      <p className={`text-sm font-semibold ${user.division === 'trailers' ? 'text-blue-800' : 'text-gray-900'}`}>CW user</p>
+                      <p className={`text-xs ${user.division === 'trailers' ? 'text-blue-700' : 'text-gray-600'}`}>CWT Trailers division</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={user.division === 'trailers'}
+                      aria-label="CW user"
+                      onClick={() => updateUser(user.id, 'division', user.division === 'trailers' ? 'vendor' : 'trailers')}
+                      className={`relative inline-flex h-7 flex-shrink-0 items-center rounded-full border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${user.division === 'trailers' ? 'border-blue-700' : 'border-gray-500 bg-gray-400'}`}
+                      style={{
+                        width: '3.25rem',
+                        ...(user.division === 'trailers'
+                          ? { background: 'linear-gradient(135deg, #007AFF 0%, #0051D5 100%)', boxShadow: '0 2px 8px rgba(0, 122, 255, 0.4)' }
+                          : {}),
+                      }}
+                    >
+                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${user.division === 'trailers' ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* First Name */}
                   <div>
@@ -1484,17 +1512,29 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
             ))
             )}
 
-            {/* Add User Button */}
-            <button
-              type="button"
-              onClick={addUser}
-              className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-lg text-gray-600 hover:border-primary-500 hover:text-primary-600 transition-colors flex items-center justify-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              Add Another User
-            </button>
+            {/* Add User Buttons */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={addUser}
+                className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-lg text-gray-600 hover:border-gray-500 hover:text-gray-900 transition-colors flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Add Another User
+              </button>
+              <button
+                type="button"
+                onClick={addCWUser}
+                className="w-full py-3 px-4 border-2 border-dashed border-blue-400 rounded-lg text-blue-700 hover:border-blue-600 hover:bg-blue-50 transition-colors flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Add CW User (CWT Trailers)
+              </button>
+            </div>
 
             {/* Security Notice */}
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">

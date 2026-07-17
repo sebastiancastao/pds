@@ -410,6 +410,14 @@ function VerifyMFAContent() {
 
         console.log('[VERIFY-MFA DEBUG] No onboarding redirect needed - proceeding to role-based routing');
 
+        // CW (CWT Trailers) users selected the toggle at login → trailers portal
+        if (sessionStorage.getItem('cw_user') === 'true') {
+          sessionStorage.removeItem('cw_user');
+          console.log('[VERIFY-MFA DEBUG] CW user toggle set - Redirecting to /trailers');
+          router.push('/trailers');
+          return;
+        }
+
         // Role-based routing
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);
 
