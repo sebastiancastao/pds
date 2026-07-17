@@ -178,6 +178,7 @@ export default function DashboardPage() {
   const [loadingPastEvents, setLoadingPastEvents] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
   const [deleteConfirmEvent, setDeleteConfirmEvent] = useState<EventItem | null>(null);
+  const [deleteReason, setDeleteReason] = useState("");
   const [alertModal, setAlertModal] = useState<{
     title: string;
     message: string;
@@ -997,6 +998,10 @@ export default function DashboardPage() {
       return true;
     });
   }, [events, selectedVenue, selectedEventType, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate, selectedCalendarEventId]);
+  const selectedCalendarEvent = useMemo(
+    () => (selectedCalendarEventId ? events.find((event) => event.id === selectedCalendarEventId) || null : null),
+    [events, selectedCalendarEventId]
+  );
   const calendarEvents = useMemo(
     () =>
       filteredEvents.map((ev) => {
@@ -1229,11 +1234,15 @@ export default function DashboardPage() {
 
   const openDeleteConfirmModal = (event: EventItem) => {
     if (userRole !== "exec" || deletingEventId) return;
+    setDeleteReason("");
     setDeleteConfirmEvent(event);
   };
 
   const handleDeleteEvent = async () => {
     if (!deleteConfirmEvent || userRole !== "exec" || deletingEventId) return;
+
+    const reason = deleteReason.trim();
+    if (!reason) return;
 
     const event = deleteConfirmEvent;
     setDeletingEventId(event.id);
@@ -1244,8 +1253,10 @@ export default function DashboardPage() {
       const res = await fetch(`/api/events/${event.id}`, {
         method: "DELETE",
         headers: {
+          "Content-Type": "application/json",
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
+        body: JSON.stringify({ reason }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -1658,12 +1669,12 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="container mx-auto max-w-7xl py-12 px-6">
+      <div className="container mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:py-12">
         {/* Header */}
         <div className="mb-6">
-          <div className={`flex ${userRole === "exec" || userRole === "hr" ? "flex-col gap-6" : "items-start justify-between"}`}>
-            <div className={`${userRole === "exec" || userRole === "hr" ? "order-2 w-full max-w-none mt-6" : "flex-1"}`}>
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Actual Global Calendar</h1>
+          <div className={`flex flex-col gap-6 ${userRole === "exec" || userRole === "hr" ? "" : "lg:flex-row lg:items-start lg:justify-between"}`}>
+            <div className={`${userRole === "exec" || userRole === "hr" ? "order-2 w-full max-w-none lg:mt-6" : "w-full min-w-0 lg:flex-1"}`}>
+              <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">Actual Global Calendar</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage all events and vendors across the organization."
@@ -1678,7 +1689,7 @@ export default function DashboardPage() {
                 </span>
               </div>
             </div>
-            <div className={`flex items-center gap-3 ${userRole === "exec" || userRole === "hr" ? "order-1 self-end" : ""}`}>
+            <div className={`apple-header-actions flex w-full flex-wrap items-center gap-2 sm:gap-3 ${userRole === "exec" || userRole === "hr" ? "order-1 justify-start sm:justify-end" : "lg:w-auto lg:justify-end"}`}>
               {userRole === 'exec' && (
                 <>
                   <Link
@@ -1765,7 +1776,7 @@ export default function DashboardPage() {
 
         {/* Main Tabs */}
         <div className="mb-8 border-b border-gray-200">
-          <div className="flex gap-6">
+          <div className="flex gap-6 overflow-x-auto">
             <button
               onClick={() => setActiveTab("events")}
               className={`pb-4 px-2 font-semibold text-lg transition-colors relative ${
@@ -1783,7 +1794,7 @@ export default function DashboardPage() {
           <>
             {/* Actions */}
             {userRole !== "manager" && userRole !== "supervisor3" && (
-              <div className="flex flex-wrap gap-3 mb-10">
+              <div className="apple-page-actions grid grid-cols-1 gap-3 mb-8 sm:flex sm:flex-wrap sm:mb-10">
                 <Link href="/create-event?returnTo=global-calendar">
                   <button className="apple-button apple-button-primary">
                     <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1810,7 +1821,7 @@ export default function DashboardPage() {
             {/* Overview */}
             {!loading && !error && events.length > 0 && (
               <section className="mb-10">
-                <div className="flex items-center justify-between mb-6">
+                <div className="flex flex-col gap-2 mb-6 sm:flex-row sm:items-center sm:justify-between">
                   <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Overview</h2>
                   <span className="text-sm text-gray-500 font-medium">Last updated: {new Date().toLocaleDateString()}</span>
                 </div>
@@ -1891,7 +1902,7 @@ export default function DashboardPage() {
             )}
 
             {/* Calendar */}
-            <section className="mb-10">
+            <section id="global-calendar-calendar" className="mb-10">
               <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Calendar</h2>
               {loading && (
                 <div className="apple-card">
@@ -1915,6 +1926,38 @@ export default function DashboardPage() {
                       setEventEndDate("");
                     }}
                   />
+                </div>
+              )}
+              {selectedCalendarEvent && (
+                <div className="mt-3 rounded-2xl border border-blue-100 bg-blue-50/80 p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">Selected Event</div>
+                      <h3 className="mt-1 text-lg font-semibold text-gray-900 break-words">{selectedCalendarEvent.event_name}</h3>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
+                        <span>{selectedCalendarEvent.event_date}</span>
+                        <span>{selectedCalendarEvent.start_time?.slice(0, 5)} - {selectedCalendarEvent.end_time?.slice(0, 5)}</span>
+                        <span>{selectedCalendarEvent.venue}</span>
+                        {selectedCalendarEvent.city && selectedCalendarEvent.state && (
+                          <span>{selectedCalendarEvent.city}, {selectedCalendarEvent.state}</span>
+                        )}
+                        {selectedCalendarEvent.artist && <span>{selectedCalendarEvent.artist}</span>}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      {userRole === "exec" && (
+                        <Link href={`/event-dashboard/${selectedCalendarEvent.id}`} className="apple-button apple-button-secondary text-sm py-2 px-4">
+                          Open Event
+                        </Link>
+                      )}
+                      <button
+                        onClick={() => setSelectedCalendarEventId(null)}
+                        className="apple-button apple-button-secondary text-sm py-2 px-4"
+                      >
+                        Clear Selection
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </section>
@@ -1972,7 +2015,7 @@ export default function DashboardPage() {
                         <option value="special">Special</option>
                       </select>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <div>
                         <label htmlFor="event-start-date" className="block text-sm font-semibold text-gray-700 mb-2">Start</label>
                         <input
@@ -1995,7 +2038,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between mt-1.5 gap-3">
+                  <div className="flex flex-col items-start gap-2 mt-2 sm:mt-1.5 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-xs text-gray-500">
                       Showing {filteredEvents.length} of {events.length} event{events.length === 1 ? "" : "s"}.
                       {" "}
@@ -2003,7 +2046,7 @@ export default function DashboardPage() {
                         ? "Time period filter is active."
                         : `Loading ${currentMonthStart} onward first; older months load when needed.`}
                     </p>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                       {!hasLoadedPastEvents && (
                         <button
                           onClick={() => void loadPastEvents()}
@@ -2068,9 +2111,9 @@ export default function DashboardPage() {
                 <div className="space-y-4">
                   {filteredEvents.map((ev) => (
                     <div key={ev.id} className="apple-event-card group">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-3 mb-2">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
                             <h3 className="text-xl font-semibold text-gray-900">{ev.event_name}</h3>
                             <span className={`apple-badge ${ev.is_active ? "apple-badge-success" : "apple-badge-neutral"}`}>
                               {ev.is_active ? "Active" : "Inactive"}
@@ -2081,7 +2124,7 @@ export default function DashboardPage() {
                               </span>
                             )}
                           </div>
-                          <div className="flex items-center text-gray-600 mb-2">
+                          <div className="flex flex-wrap items-center text-gray-600 mb-2">
                             <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -2097,7 +2140,7 @@ export default function DashboardPage() {
                               <span>{ev.artist}</span>
                             </div>
                           )}
-                          <div className="flex items-center text-gray-500 text-sm">
+                          <div className="flex flex-wrap items-center text-gray-500 text-sm">
                             <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                             </svg>
@@ -2112,7 +2155,7 @@ export default function DashboardPage() {
                           </div>
                         </div>
                         {userRole === "exec" && (
-                          <div className="flex items-center gap-2">
+                          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto lg:justify-end">
                             {ev.event_type === "special" ? (
                               <Link href={`/time-sheets/${ev.id}`}>
                                 <button className="apple-button apple-button-secondary text-sm py-2 px-4">
@@ -2648,7 +2691,7 @@ export default function DashboardPage() {
                   </div>
 
                   {(availableVendorStates.length > 0 || availableVendorCities.length > 0) && (
-                    <div className="mb-6 grid grid-cols-2 gap-3">
+                    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Filter by State</label>
                         <select
@@ -2702,7 +2745,7 @@ export default function DashboardPage() {
                     </label>
                   </div>
 
-                  <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
+                  <div className="mb-6 flex flex-col items-stretch gap-3 border-b border-gray-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
@@ -2759,12 +2802,12 @@ export default function DashboardPage() {
                           {v.profiles.first_name?.charAt(0)}
                           {v.profiles.last_name?.charAt(0)}
                         </div>
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-col gap-2 mb-2 sm:flex-row sm:items-center sm:justify-between">
                             <div className="font-semibold text-gray-900">
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                               {v.recently_responded && (
                                 <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
                               )}
@@ -2795,7 +2838,7 @@ export default function DashboardPage() {
                             </div>
                           )}
                           </div>
-                          <div className="flex items-center gap-3 text-xs text-gray-500">
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
                               <>
                                 <span className="flex items-center">
@@ -2848,7 +2891,7 @@ export default function DashboardPage() {
                 />
               </div>
             </div>
-            <div className="mt-4 flex gap-3">
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               <button
                 onClick={() => loadPaymentsData(paymentsStartDate, paymentsEndDate)}
                 className="apple-button apple-button-primary"
@@ -2963,10 +3006,10 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
-                  <div className="p-6">
+                  <div className="p-4 sm:p-6">
                     {venueData.events.map((eventData: any, eventIndex: number) => (
                       <div key={eventIndex} className="mb-8 last:mb-0">
-                        <div className="flex items-center justify-between mb-4 pb-3 border-b">
+                        <div className="flex flex-col gap-2 mb-4 pb-3 border-b sm:flex-row sm:items-center sm:justify-between">
                           <div>
                             <h3 className="text-lg font-semibold text-gray-900">{eventData.eventName}</h3>
                             <p className="text-sm text-gray-600">{eventData.eventDate} . Base Rate: ${eventData.baseRate}/hr</p>
@@ -2977,7 +3020,7 @@ export default function DashboardPage() {
                           <p className="text-gray-500 text-center py-4">No staff scheduled for this event</p>
                         ) : (
                           <div className="overflow-x-auto">
-                            <table className="w-full">
+                            <table className="min-w-[900px] w-full">
                               <thead className="bg-gray-50 border-b">
                                 <tr>
                                   <th className="text-left p-3 font-semibold text-gray-700 text-sm">Employee</th>
@@ -3153,7 +3196,7 @@ export default function DashboardPage() {
                   </div>
 
                   {(availableTeamStates.length > 0 || availableTeamCities.length > 0) && (
-                    <div className="mb-4 grid grid-cols-2 gap-3">
+                    <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Filter by State</label>
                         <select
@@ -3193,7 +3236,7 @@ export default function DashboardPage() {
                     />
                   </div>
 
-                  <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
+                  <div className="mb-6 flex flex-col items-stretch gap-3 border-b border-gray-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
@@ -3208,7 +3251,7 @@ export default function DashboardPage() {
                         Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere).length} new)
                       </span>
                     </label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <button
                         onClick={handleResendTeamConfirmations}
                         disabled={pendingTeamInvitesCount === 0 || resendingTeamConfirmations || savingTeam}
@@ -3263,8 +3306,8 @@ export default function DashboardPage() {
                           {v.profiles.first_name?.charAt(0)}
                           {v.profiles.last_name?.charAt(0)}
                         </div>
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-col gap-2 mb-2 sm:flex-row sm:items-center sm:justify-between">
                             <div className="font-semibold text-gray-900">
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
@@ -3318,7 +3361,7 @@ export default function DashboardPage() {
                             </div>
                           )}
                           </div>
-                          <div className="flex items-center gap-3 text-xs text-gray-500">
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
                               <>
                                 <span className="flex items-center">
@@ -3379,6 +3422,17 @@ export default function DashboardPage() {
                   ? "This action cannot be undone."
                   : "This will also permanently delete associated team, time, location, invitation, and payment data. This action cannot be undone."}
               </p>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                Why are you deleting this event? <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                rows={3}
+                placeholder="Enter the reason for deleting this event…"
+                className="mb-4 w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 resize-none"
+                disabled={!!deletingEventId}
+              />
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   className="apple-button apple-button-secondary"
@@ -3389,10 +3443,10 @@ export default function DashboardPage() {
                   Cancel
                 </button>
                 <button
-                  className={`apple-button ${deletingEventId ? "apple-button-disabled" : "apple-button-primary"}`}
-                  style={{ flex: 1, background: deletingEventId ? undefined : "#DC2626" }}
+                  className={`apple-button ${deletingEventId || !deleteReason.trim() ? "apple-button-disabled" : "apple-button-primary"}`}
+                  style={{ flex: 1, background: deletingEventId || !deleteReason.trim() ? undefined : "#DC2626" }}
                   onClick={handleDeleteEvent}
-                  disabled={!!deletingEventId}
+                  disabled={!!deletingEventId || !deleteReason.trim()}
                 >
                   {deletingEventId ? "Deleting..." : "Delete Event"}
                 </button>

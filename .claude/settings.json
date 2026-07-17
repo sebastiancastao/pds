@@ -16,7 +16,14 @@
       "mcp__claude_ai_Supabase__list_edge_functions",
       "mcp__claude_ai_Supabase__list_extensions",
       "mcp__claude_ai_Supabase__get_project_url",
-      "mcp__claude_ai_Supabase__get_publishable_keys"
+      "mcp__claude_ai_Supabase__get_publishable_keys",
+      "Read(//c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia/**)",
+      "Bash(npx next *)",
+      "Bash(curl -s -o multiday.pdf -w \"%{http_code} %{content_type}\\\\n\" -H \"Authorization: Bearer $\\(cat token.txt\\)\" \"http://localhost:3457/api/events/2bdaeccc-98fb-4e61-a91a-bcb92453522e/timesheet-pdf\")",
+      "PowerShell(npx tsc --noEmit)",
+      "PowerShell(git fetch origin)",
+      "PowerShell($c = git show 'HEAD:app/event-dashboard/[id]/page.tsx'; \\($c | Select-String 'locationAssignableMemberById'\\).Count; \\($c | Select-String 'formatCallTimeLabel'\\).Count; Select-String -Path package.json -Pattern '\"xlsx\"')",
+      "PowerShell(npx tsc --noEmit 2>$null)"
     ]
   }
 }

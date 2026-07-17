@@ -202,29 +202,33 @@ export async function GET(req: NextRequest) {
     // Collect all user IDs whose events this user can see
     const creatorIds: string[] = [user.id];
 
-    // For managers: also include all events at their assigned venues
+    // Include all events at venues this user is assigned to in venue management.
+    // venue_managers can hold managers, supervisors, and execs, so don't gate on role.
     let assignedVenueNames: string[] = [];
 
-    if (userRole === 'manager') {
-      // Look up which venues this manager is assigned to
-      const { data: venueLinks } = await supabaseAdmin
-        .from('venue_managers')
-        .select('venue_id')
-        .eq('manager_id', user.id)
-        .eq('is_active', true);
+    const { data: venueLinks } = await supabaseAdmin
+      .from('venue_managers')
+      .select('venue_id')
+      .eq('manager_id', user.id)
+      .eq('is_active', true);
 
-      if (venueLinks && venueLinks.length > 0) {
-        const venueIds = venueLinks.map((v: any) => v.venue_id);
-        const { data: venueRefs } = await supabaseAdmin
-          .from('venue_reference')
-          .select('venue_name')
-          .in('id', venueIds);
+    if (venueLinks && venueLinks.length > 0) {
+      const venueIds = venueLinks.map((v: any) => v.venue_id);
+      const { data: venueRefs } = await supabaseAdmin
+        .from('venue_reference')
+        .select('venue_name')
+        .in('id', venueIds);
 
-        if (venueRefs) {
-          assignedVenueNames = venueRefs
-            .map((v: any) => v.venue_name)
-            .filter(Boolean);
+      if (venueRefs) {
+        // Match both the stored and trimmed names: events.venue is trimmed at
+        // creation, but venue_reference names have historically had stray spaces.
+        const names = new Set<string>();
+        for (const v of venueRefs) {
+          const raw = typeof v.venue_name === 'string' ? v.venue_name : '';
+          if (raw) names.add(raw);
+          if (raw.trim()) names.add(raw.trim());
         }
+        assignedVenueNames = Array.from(names);
       }
     }
 
@@ -269,7 +273,7 @@ export async function GET(req: NextRequest) {
     let error: any = null;
 
     if (assignedVenueNames.length > 0) {
-      // Manager sees events they created OR events at their assigned venues
+      // User sees events they created OR events at their assigned venues
       // Use two queries and merge to avoid PostgREST string escaping issues with venue names
       const [byCreator, byVenue] = await Promise.all([
         (() => {

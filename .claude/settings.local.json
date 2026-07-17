@@ -67,7 +67,22 @@
       "Bash(Select-Object -ExpandProperty FullName)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\sebas\\\\OneDrive\\\\Escritorio\\\\PDS - copia - copia\" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 30 | ForEach-Object { $_.FullName })",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sebas\\\\OneDrive\\\\Escritorio\\\\PDS - copia - copia\" -Force)",
-      "Bash(Select-Object Name, PSIsContainer)"
+      "Bash(Select-Object Name, PSIsContainer)",
+      "PowerShell(git fetch origin)",
+      "PowerShell(git rev-list --left-right --count main...origin/testing)",
+      "PowerShell(git rev-list --left-right --count main...testing)",
+      "PowerShell(git push origin main:testing)",
+      "PowerShell(git fetch . main:testing)",
+      "Bash(cd \"/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia\" && grep -rc 'flex items-start justify-between' app --include=\"*.tsx\" | grep -v \":0\" | head -30; echo \"---\"; grep -rhoE 'className=\"flex items-center gap-3\"' app --include=\"*.tsx\" | wc -l)",
+      "Read(//c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia/**)",
+      "Bash(cd \"/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia\" && grep -rhoE 'text-4xl[^\"]*' app --include=\"*.tsx\" | sort | uniq -c | sort -rn | head -10; echo \"---files:\"; grep -rlE '\"[^\"]*text-4xl' app --include=\"*.tsx\" | grep -v responsive | wc -l)",
+      "Bash(cd \"/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia\" && grep -rl \"dashboard-styles\" app --include=\"*.tsx\" | head -30)",
+      "Bash(xargs md5sum)",
+      "Bash(cd \"/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia\" && diff app/dashboard/dashboard-styles.css app/global-calendar/dashboard-styles.css | head -60; echo \"===\"; wc -l app/dashboard/dashboard-styles.css)",
+      "PowerShell(npx tsc --noEmit 2>$null)",
+      "Bash(cd \"/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia\" && npx tsc --noEmit 2>&1 | head -30)",
+      "Bash(curl -s 'https://bwvnvzlmqqcdemkpecjw.supabase.co/rest/v1/users?email=eq.sebastiancastao379@gmail.com&select=id,email,role,is_active' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3dm52emxtcXFjZGVta3BlY2p3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTI2ODI2MCwiZXhwIjoyMDc0ODQ0MjYwfQ.acBOpif0MypfkFyg2jWe-_xwzkfKEQXd_NmaOImD12E' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3dm52emxtcXFjZGVta3BlY2p3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTI2ODI2MCwiZXhwIjoyMDc0ODQ0MjYwfQ.acBOpif0MypfkFyg2jWe-_xwzkfKEQXd_NmaOImD12E')",
+      "Bash(curl -s 'https://bwvnvzlmqqcdemkpecjw.supabase.co/rest/v1/vendor_invitations?vendor_id=eq.c2b77e6d-6bc4-4b74-a88c-647a2b66448f&select=id,status,availability,responded_at,expires_at,created_at&order=created_at.desc' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3dm52emxtcXFjZGVta3BlY2p3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTI2ODI2MCwiZXhwIjoyMDc0ODQ0MjYwfQ.acBOpif0MypfkFyg2jWe-_xwzkfKEQXd_NmaOImD12E' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3dm52emxtcXFjZGVta3BlY2p3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTI2ODI2MCwiZXhwIjoyMDc0ODQ0MjYwfQ.acBOpif0MypfkFyg2jWe-_xwzkfKEQXd_NmaOImD12E')"
     ],
     "deny": [],
     "ask": []

@@ -142,7 +142,6 @@ export default function HREmployeesPage() {
   const [resettingDownloads, setResettingDownloads] = useState<string | null>(null);
   const [resettingOnboarding, setResettingOnboarding] = useState<string | null>(null);
   const [latestFormEditsByUser, setLatestFormEditsByUser] = useState<Record<string, LatestFormEdit>>({});
-  const [recentFormEdits, setRecentFormEdits] = useState<LatestFormEdit[]>([]);
   const [helpdeskTickets, setHelpdeskTickets] = useState<HelpdeskTicket[]>([]);
   const [ticketsError, setTicketsError] = useState("");
   useEffect(() => {
@@ -241,10 +240,8 @@ export default function HREmployeesPage() {
 
       if (editsResponse.ok) {
         setLatestFormEditsByUser(editsData?.latestByUser || {});
-        setRecentFormEdits(editsData?.recentEdits || []);
       } else {
         setLatestFormEditsByUser({});
-        setRecentFormEdits([]);
         setAuditError(editsData?.error || 'Failed to load HR form edit history');
       }
 
@@ -257,7 +254,6 @@ export default function HREmployeesPage() {
     } catch (err: any) {
       console.error('[HR-EMPLOYEES] Error loading users:', err);
       setLatestFormEditsByUser({});
-      setRecentFormEdits([]);
       setHelpdeskTickets([]);
       setError(err.message || 'Failed to load users');
     } finally {
@@ -474,13 +470,6 @@ export default function HREmployeesPage() {
     return null;
   }
 
-  const userDisplayNameById = new Map(
-    users.map((user) => [
-      user.id,
-      `${user.first_name} ${user.last_name}`.trim() || user.email || user.id,
-    ])
-  );
-
   return (
     <div style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
       {/* Header */}
@@ -499,6 +488,19 @@ export default function HREmployeesPage() {
             }}
           >
             Helpdesk
+          </Link>
+          <Link
+            href="/insights"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#0d9488',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Insights
           </Link>
           <button
             onClick={exportToExcel}
@@ -714,85 +716,6 @@ export default function HREmployeesPage() {
       {loading && (
         <div style={{ textAlign: 'center', padding: '2rem' }}>
           <p>Loading employees...</p>
-        </div>
-      )}
-
-      {!loading && (
-        <div style={{
-          marginBottom: '1.5rem',
-          border: '1px solid #e5e7eb',
-          borderRadius: '0.5rem',
-          padding: '1rem',
-          backgroundColor: 'white'
-        }}>
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '1rem',
-            marginBottom: '1rem'
-          }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: '600', color: '#111827' }}>
-                Recent HR Form Edits
-              </h2>
-              <p style={{ margin: '0.25rem 0 0', color: '#6b7280', fontSize: '0.875rem' }}>
-                Latest form edits saved from the HR employee pages.
-              </p>
-            </div>
-            <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>
-              {recentFormEdits.length} recent record{recentFormEdits.length === 1 ? '' : 's'}
-            </span>
-          </div>
-
-          {recentFormEdits.length === 0 ? (
-            <p style={{ margin: 0, color: '#6b7280' }}>No HR form edits recorded yet.</p>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ backgroundColor: '#f9fafb' }}>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                      Employee
-                    </th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                      Form
-                    </th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                      Edited By
-                    </th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                      When
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentFormEdits.map((edit, index) => (
-                    <tr key={`${edit.userId}-${edit.formId}-${edit.editedAt}-${index}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                      <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
-                        {userDisplayNameById.get(edit.userId) || edit.userId}
-                      </td>
-                      <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
-                        <div style={{ fontWeight: '600', color: '#111827' }}>{edit.formDisplayName}</div>
-                        <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>{formatActionLabel(edit.action)}</div>
-                      </td>
-                      <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
-                        <div style={{ fontWeight: '500', color: '#111827' }}>
-                          {edit.editorName || edit.editorEmail || 'Unknown'}
-                        </div>
-                        <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>
-                          {edit.editorRole || edit.editorEmail || edit.editorUserId || '-'}
-                        </div>
-                      </td>
-                      <td style={{ padding: '0.75rem', verticalAlign: 'top', color: '#374151' }}>
-                        {formatDateTime(edit.editedAt)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       )}
 

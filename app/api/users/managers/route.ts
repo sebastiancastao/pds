@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const MANAGER_ROLES = ['manager', 'supervisor3'];
+const MANAGER_ROLES = ['manager', 'exec', 'supervisor3'];
 const PAGE_SIZE = 1000;
 
 // GET: Retrieve all manager users

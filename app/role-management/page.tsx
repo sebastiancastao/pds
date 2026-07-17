@@ -652,6 +652,10 @@ export default function RoleManagementPage() {
     return ROLE_COLORS[role] || { bg: "#f3f4f6", text: "#374151" };
   };
 
+  // Users without a profile row have no name yet — fall back to their email
+  const displayName = (u: Pick<User, "first_name" | "last_name" | "email">) =>
+    `${u.first_name} ${u.last_name}`.trim() || u.email;
+
   const uniqueRoles = Array.from(new Set(users.map(u => u.role))).sort();
 
   // Users available to add (not already on the selected manager's team, and not the manager themselves)
@@ -838,7 +842,7 @@ export default function RoleManagementPage() {
                       return (
                         <tr key={user.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
                           <td style={{ padding: '0.75rem' }}>
-                            {user.first_name} {user.last_name}
+                            {displayName(user)}
                             {isSelf && <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#6b7280', fontStyle: 'italic' }}>(You)</span>}
                           </td>
                           <td style={{ padding: '0.75rem', color: '#4b5563' }}>{user.email}</td>
@@ -851,7 +855,7 @@ export default function RoleManagementPage() {
                           <td style={{ padding: '0.75rem' }}>
                             <select
                               value={user.role}
-                              onChange={(e) => handleRoleChange(user.id, e.target.value, `${user.first_name} ${user.last_name}`, user.role)}
+                              onChange={(e) => handleRoleChange(user.id, e.target.value, displayName(user), user.role)}
                               onWheel={(e) => e.currentTarget.blur()}
                               disabled={isDisabled}
                               style={{
@@ -924,7 +928,7 @@ export default function RoleManagementPage() {
                     <option value="">-- Select a user to add --</option>
                     {availableMembers.map(u => (
                       <option key={u.id} value={u.id}>
-                        {u.first_name} {u.last_name} — {u.role}
+                        {displayName(u)} — {u.role}
                       </option>
                     ))}
                   </select>
@@ -1055,7 +1059,7 @@ export default function RoleManagementPage() {
               <option value="">-- Select a Supervisor 3 --</option>
               {supervisor3Users.map(u => (
                 <option key={u.id} value={u.id}>
-                  {u.first_name} {u.last_name}
+                  {displayName(u)}
                 </option>
               ))}
             </select>
@@ -1201,7 +1205,7 @@ export default function RoleManagementPage() {
                       <option value="">-- Select a supervisor --</option>
                       {availableSupervisorsForSup3.map(u => (
                         <option key={u.id} value={u.id}>
-                          {u.first_name} {u.last_name} — {u.email}
+                          {displayName(u)} — {u.email}
                         </option>
                       ))}
                     </select>

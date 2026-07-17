@@ -764,6 +764,15 @@ export async function DELETE(
       return NextResponse.json({ error: "Event ID is required" }, { status: 400 });
     }
 
+    const body = await req.json().catch(() => ({}));
+    const deletionReason = typeof body?.reason === "string" ? body.reason.trim() : "";
+    if (!deletionReason) {
+      return NextResponse.json(
+        { error: "A reason for deleting this event is required." },
+        { status: 400 }
+      );
+    }
+
     const { data: userData, error: userError } = await supabaseAdmin
       .from("users")
       .select("role")
@@ -785,7 +794,7 @@ export async function DELETE(
 
     const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
-      .select("id")
+      .select("id, event_name, event_date, venue")
       .eq("id", eventId)
       .maybeSingle();
 
@@ -826,6 +835,25 @@ export async function DELETE(
 
     if (!deletedRows || deletedRows.length === 0) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 });
+    }
+
+    // Record the deletion reason in the audit trail (non-fatal if it fails)
+    const { error: auditError } = await supabaseAdmin.from("audit_logs").insert({
+      user_id: user.id,
+      action: "event_deleted",
+      resource_type: "event",
+      resource_id: eventId,
+      success: true,
+      metadata: {
+        reason: deletionReason,
+        event_name: event.event_name || null,
+        event_date: event.event_date || null,
+        venue: event.venue || null,
+        deleted_by_role: userRole,
+      },
+    });
+    if (auditError) {
+      console.error("Failed to log event deletion reason:", auditError);
     }
 
     return NextResponse.json({ success: true }, { status: 200 });

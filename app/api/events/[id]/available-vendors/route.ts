@@ -182,7 +182,7 @@ export async function GET(
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('event_date, start_time, end_time, venue, city, state, created_by')
+      .select('event_date, start_time, end_time, venue, city, state, created_by, event_type')
       .eq('id', eventId)
       .single();
 
@@ -328,24 +328,32 @@ export async function GET(
       return NextResponse.json({ vendors: [] }, { status: 200 });
     }
 
+    // Non Event Time Sheets (event_type === 'special') don't go through the
+    // invitation/availability flow — and are often dated in the past — so the
+    // availability-on-date gate below would hide most users. For them, every
+    // active user is eligible.
+    const isNonEventTimesheet = String((event as any).event_type || '').toLowerCase() === 'special';
+
     // Step 2 — fetch invitations for these vendors in batches of 200 to stay well
     // under Supabase's default row cap. Matches availability-by-region's approach.
     const BATCH_SIZE = 200;
     const allInvitations: Array<{ vendor_id: string; availability: unknown }> = [];
 
-    for (let i = 0; i < vendorIds.length; i += BATCH_SIZE) {
-      const batch = vendorIds.slice(i, i + BATCH_SIZE);
-      const { data: invBatch, error: invBatchError } = await supabaseAdmin
-        .from('vendor_invitations')
-        .select('vendor_id, availability')
-        .in('vendor_id', batch)
-        .not('availability', 'is', null);
+    if (!isNonEventTimesheet) {
+      for (let i = 0; i < vendorIds.length; i += BATCH_SIZE) {
+        const batch = vendorIds.slice(i, i + BATCH_SIZE);
+        const { data: invBatch, error: invBatchError } = await supabaseAdmin
+          .from('vendor_invitations')
+          .select('vendor_id, availability')
+          .in('vendor_id', batch)
+          .not('availability', 'is', null);
 
-      if (invBatchError) {
-        console.error('❌ Error fetching invitation batch:', invBatchError);
-        continue;
+        if (invBatchError) {
+          console.error('❌ Error fetching invitation batch:', invBatchError);
+          continue;
+        }
+        if (invBatch) allInvitations.push(...invBatch);
       }
-      if (invBatch) allInvitations.push(...invBatch);
     }
 
     console.log('🔍 DEBUG - Invitations fetched:', allInvitations.length);
@@ -396,7 +404,9 @@ export async function GET(
 
     console.log('🔍 DEBUG - Vendors available on date:', vendorMetaMap.size);
 
-    const uniqueAvailableVendorIds = Array.from(vendorMetaMap.keys());
+    const uniqueAvailableVendorIds = isNonEventTimesheet
+      ? vendorIds
+      : Array.from(vendorMetaMap.keys());
 
     // Step 4 — find vendors already confirmed in other events on the same date
     const confirmedElsewhereIds = new Set<string>();
@@ -497,9 +507,11 @@ export async function GET(
     });
 
     // Determine which vendors are NOT assigned to this event's venue
-    // Uses vendor_venue_assignments + venue_reference to check by venue name
+    // Uses vendor_venue_assignments + venue_reference to check by venue name.
+    // Skipped for Non Event Time Sheets: their "venue" is a home base (e.g.
+    // Home-Los Angeles) with no vendor assignments, so everyone would be flagged.
     const outOfVenueIds = new Set<string>();
-    if (event.venue && vendorsWithDistance.length > 0) {
+    if (event.venue && !isNonEventTimesheet && vendorsWithDistance.length > 0) {
       try {
         const { data: venueMatches, error: venueError } = await supabaseAdmin
           .from('venue_reference')

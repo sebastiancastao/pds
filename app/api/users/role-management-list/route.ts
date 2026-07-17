@@ -45,36 +45,61 @@ export async function GET(request: NextRequest) {
       auth: { persistSession: false }
     });
 
-    const { data: users, error: usersError } = await supabaseAdmin
-      .from('users')
-      .select(`
-        id,
-        email,
-        role,
-        division,
-        is_active,
-        profiles!inner(
-          first_name,
-          last_name
-        )
-      `)
-      .order('email')
-      .limit(10000);
+    // Fetch in pages of 1000 so the PostgREST max-rows cap can't truncate results
+    const fetchAll = async (buildQuery: (from: number, to: number) => any) => {
+      const rows: any[] = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await buildQuery(from, from + pageSize - 1);
+        if (error) throw error;
+        rows.push(...(data || []));
+        if ((data || []).length < pageSize) break;
+      }
+      return rows;
+    };
 
-    if (usersError) {
-      console.error('[ROLE-MGMT-LIST] Error fetching users:', usersError);
+    let users: any[];
+    let profiles: any[];
+    try {
+      // Users and profiles are fetched separately (left-join semantics) so users
+      // without a profile row still appear in the list
+      users = await fetchAll((from, to) =>
+        supabaseAdmin
+          .from('users')
+          .select('id, email, role, division, is_active')
+          .order('id')
+          .range(from, to)
+      );
+      profiles = await fetchAll((from, to) =>
+        supabaseAdmin
+          .from('profiles')
+          .select('user_id, first_name, last_name')
+          .order('user_id')
+          .range(from, to)
+      );
+    } catch (fetchError) {
+      console.error('[ROLE-MGMT-LIST] Error fetching users:', fetchError);
       return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500, headers: NO_STORE_HEADERS });
     }
 
-    const transformedUsers = (users || []).map((u: any) => ({
-      id: u.id,
-      email: u.email,
-      role: u.role,
-      division: u.division,
-      is_active: u.is_active,
-      first_name: safeDecrypt(u.profiles.first_name),
-      last_name: safeDecrypt(u.profiles.last_name),
-    })).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
+    const profileByUserId = new Map(profiles.map((p: any) => [p.user_id, p]));
+
+    const transformedUsers = users.map((u: any) => {
+      const profile = profileByUserId.get(u.id);
+      return {
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        division: u.division,
+        is_active: u.is_active,
+        first_name: profile ? (safeDecrypt(profile.first_name) || '') : '',
+        last_name: profile ? (safeDecrypt(profile.last_name) || '') : '',
+      };
+    }).sort((a: any, b: any) => {
+      const nameA = `${a.first_name} ${a.last_name}`.trim() || a.email;
+      const nameB = `${b.first_name} ${b.last_name}`.trim() || b.email;
+      return nameA.localeCompare(nameB);
+    });
 
     return NextResponse.json({ users: transformedUsers }, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err: any) {

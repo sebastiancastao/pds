@@ -256,10 +256,10 @@ export default function InvitationPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="container mx-auto max-w-5xl py-12 px-6">
+      <div className="container mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8 lg:py-12">
         {/* Header */}
-        <div className="mb-10">
-          <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Your Availability</h1>
+        <div className="mb-8 lg:mb-10">
+          <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">Your Availability</h1>
           <p className="text-lg text-gray-600 font-normal">
             Check a day if you're available. Each date shows the events scheduled in your region during this invitation window.
           </p>

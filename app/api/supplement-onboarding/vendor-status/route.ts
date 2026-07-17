@@ -206,7 +206,7 @@ export async function POST(req: NextRequest) {
   </body>
 </html>`.trim();
 
-    const result = await sendEmail({ to: email, subject, html });
+    const result = await sendEmail({ to: email, cc: 'payroll@1pds.net', subject, html });
     if (!result.success) {
       return NextResponse.json({ error: result.error || 'Email sending failed' }, { status: 500 });
     }
