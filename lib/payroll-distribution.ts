@@ -3,9 +3,18 @@ export type AllShortShiftMode = "equal" | "hours";
 
 export const ALL_SHORT_SHIFT_EQUAL_DATE = "2025-05-11";
 
+// Events on/after this date split tips evenly among eligible staff, with no
+// sub-8h short-shift proration. Earlier events keep the legacy tips rule.
+export const TIPS_EVEN_SPLIT_START_DATE = "2026-07-06";
+
 export function shortShiftModeForDate(eventDate?: string | null): AllShortShiftMode {
   if (!eventDate) return "hours";
   return eventDate.toString().split("T")[0] >= ALL_SHORT_SHIFT_EQUAL_DATE ? "equal" : "hours";
+}
+
+export function tipsEvenSplitForDate(eventDate?: string | null): boolean {
+  if (!eventDate) return false;
+  return eventDate.toString().split("T")[0] >= TIPS_EVEN_SPLIT_START_DATE;
 }
 
 export type PoolDistributionMember = {
@@ -27,6 +36,28 @@ type DistributePoolArgs = {
   shortShiftThresholdHours?: number;
   allShortShiftMode?: AllShortShiftMode;
 };
+
+type DistributeTipsArgs = {
+  totalAmount: number;
+  members: PoolDistributionMember[];
+  eventDate?: string | null;
+};
+
+// Single entry point for tips distribution. Date-gated per client request:
+// events on/after TIPS_EVEN_SPLIT_START_DATE get a plain even split among
+// eligible members; earlier events keep the legacy equal-with-short-shift rule.
+export function distributeTipsPool({ totalAmount, members, eventDate }: DistributeTipsArgs): PoolDistributionResult {
+  if (tipsEvenSplitForDate(eventDate)) {
+    // A threshold of 0 means no member counts as short-shift, so the "equal"
+    // mode reduces to an even split of the pool.
+    return distributePoolByHoursRule({ totalAmount, members, shortShiftThresholdHours: 0 });
+  }
+  return distributePoolByHoursRule({
+    totalAmount,
+    members,
+    allShortShiftMode: shortShiftModeForDate(eventDate),
+  });
+}
 
 const toPositiveNumber = (value: number): number => {
   const numericValue = Number(value);

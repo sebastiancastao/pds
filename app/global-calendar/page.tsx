@@ -7,7 +7,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
-import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { getVenueAbbreviation } from "@/lib/utils";
@@ -573,7 +573,7 @@ export default function DashboardPage() {
           }),
           allShortShiftMode: shortShiftModeForDate(event.event_date),
         }).amountsById;
-        const tipsSharesByUser = distributePoolByHoursRule({
+        const tipsSharesByUser = distributeTipsPool({
           totalAmount: totalTips,
           members: vendorPayments.flatMap((payment: any) => {
             const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || "").toString();
@@ -581,7 +581,7 @@ export default function DashboardPage() {
             if (!paymentUserId || isTrailersDivision(payment?.users?.division) || payment?.tips_deleted === true || actualHours <= 0) return [];
             return [{ id: paymentUserId, hours: actualHours }];
           }),
-          allShortShiftMode: shortShiftModeForDate(event.event_date),
+          eventDate: event.event_date,
         }).amountsById;
 
         // Initialize venue if not exists
