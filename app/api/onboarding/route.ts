@@ -92,7 +92,7 @@ async function sendOnboardingApprovalEmail(
   </body>
 </html>`.trim();
 
-  return sendEmail({ to: userEmail, subject, html });
+  return sendEmail({ to: userEmail, cc: 'payroll@1pds.net', subject, html });
 }
 
 /**
