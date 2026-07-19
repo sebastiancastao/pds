@@ -37,6 +37,7 @@ const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
 const KIOSK_EVENT_REFRESH_MS = 10_000;
 const KIOSK_SHIFT_SUMMARY_REFRESH_MS = 10_000;
 const BACKGROUND_REQUEST_TIMEOUT_MS = 8_000;
+const SLOW_CONNECTION_THRESHOLD_MS = 4_000;
 const VALIDATION_REQUEST_TIMEOUT_MS = 10_000;
 const ACTION_REQUEST_TIMEOUT_MS = 12_000;
 const SYNC_REQUEST_TIMEOUT_MS = 15_000;
@@ -204,6 +205,7 @@ export default function CheckInKioskPage() {
 
   // Online / offline
   const [isOnline, setIsOnline] = useState(true);
+  const [isSlowConnection, setIsSlowConnection] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   const isSyncingRef = useRef(false);
@@ -442,6 +444,7 @@ export default function CheckInKioskPage() {
         params.set("eventId", eventIdFromUrl);
       }
 
+      const startedAt = Date.now();
       const res = await fetchWithTimeout(`/api/check-in/recent?${params.toString()}`, {
         method: "GET",
         cache: "no-store",
@@ -449,6 +452,7 @@ export default function CheckInKioskPage() {
           Authorization: `Bearer ${token}`,
         },
       }, BACKGROUND_REQUEST_TIMEOUT_MS);
+      setIsSlowConnection(Date.now() - startedAt > SLOW_CONNECTION_THRESHOLD_MS);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
 
@@ -467,7 +471,10 @@ export default function CheckInKioskPage() {
       }
 
     } catch (err) {
-      if (!isAbortError(err)) {
+      if (isAbortError(err)) {
+        // The request timed out even though the browser reports being online.
+        if (navigator.onLine) setIsSlowConnection(true);
+      } else {
         console.error("Failed to fetch kiosk event status:", err);
       }
     }
@@ -477,9 +484,11 @@ export default function CheckInKioskPage() {
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
+      setIsSlowConnection(false);
     };
     const handleOffline = () => {
       setIsOnline(false);
+      setIsSlowConnection(false);
     };
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
@@ -516,7 +525,9 @@ export default function CheckInKioskPage() {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ eventId: eventIdFromUrl || activeEvent?.id || null }),
         }, HEARTBEAT_REQUEST_TIMEOUT_MS);
-      } catch {}
+      } catch (err) {
+        if (isAbortError(err) && navigator.onLine) setIsSlowConnection(true);
+      }
     };
     sendHeartbeat();
     const interval = setInterval(sendHeartbeat, 20_000);
@@ -925,6 +936,7 @@ export default function CheckInKioskPage() {
       });
     } catch (err) {
       if (isAbortError(err)) {
+        if (navigator.onLine) setIsSlowConnection(true);
         setError(
           "Connection is slow or unavailable. Code validation needs internet. If a worker is already verified on screen, actions can still be saved locally."
         );
@@ -1026,6 +1038,7 @@ export default function CheckInKioskPage() {
     } catch (err) {
       // Slow or failed network requests fall back to the local queue.
       if (isAbortError(err) || !navigator.onLine || err instanceof TypeError) {
+        if (isAbortError(err) && navigator.onLine) setIsSlowConnection(true);
         try {
           await queueActionLocally(
             queuedItem,
@@ -1376,13 +1389,23 @@ export default function CheckInKioskPage() {
       <div className="flex items-center justify-between px-4 py-3">
         <div
           className={`inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-medium ${
-            isOnline
-              ? "bg-green-100 text-green-800 border border-green-300"
-              : "bg-red-100 text-red-800 border border-red-300"
+            !isOnline
+              ? "bg-red-100 text-red-800 border border-red-300"
+              : isSlowConnection
+                ? "bg-amber-100 text-amber-800 border border-amber-300"
+                : "bg-green-100 text-green-800 border border-green-300"
           }`}
         >
-          <div className={`w-2.5 h-2.5 rounded-full ${isOnline ? "bg-green-500" : "bg-red-500 animate-pulse"}`} />
-          {isOnline ? "Online" : "Offline"}
+          <div
+            className={`w-3 h-3 rounded-full ${
+              !isOnline
+                ? "bg-red-500 animate-pulse"
+                : isSlowConnection
+                  ? "bg-amber-500 animate-pulse"
+                  : "bg-green-500"
+            }`}
+          />
+          {!isOnline ? "Offline" : isSlowConnection ? "Slow Connection" : "Online"}
         </div>
         <div className="flex items-center gap-3">
           {queueCount > 0 && (
@@ -1427,6 +1450,9 @@ export default function CheckInKioskPage() {
                 {/* Greeting */}
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 mb-6">
                   <p className="text-2xl font-bold text-blue-700">Hello, {worker.name}</p>
+                  {activeEvent?.name && (
+                    <p className="text-blue-600 text-sm font-semibold mt-1">{activeEvent.name}</p>
+                  )}
                   <p className="text-blue-600 text-sm mt-2">
                     {worker.status === "not_clocked_in" && "You are not clocked in"}
                     {worker.status === "clocked_in" && "You are currently clocked in"}
@@ -1565,6 +1591,9 @@ export default function CheckInKioskPage() {
                     </svg>
                   </div>
                   <h2 className="text-2xl font-bold text-gray-900">Kiosk Check-In</h2>
+                  {activeEvent?.name && (
+                    <p className="text-blue-600 font-semibold mt-1">{activeEvent.name}</p>
+                  )}
                   <p className="text-gray-600 mt-2">Enter your code (2 initials + 4 digits)</p>
                 </div>
 
@@ -1649,6 +1678,15 @@ export default function CheckInKioskPage() {
                   </div>
                   <span className="text-gray-400 text-xs">{eventCheckInFlash.time}</span>
                 </div>
+              </div>
+            )}
+
+            {/* Slow connection indicator at the bottom */}
+            {isOnline && isSlowConnection && (
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                <p className="text-sm text-amber-800 font-medium">
+                  Internet connection is slow. Actions may be saved locally and synced automatically.
+                </p>
               </div>
             )}
 

@@ -224,6 +224,7 @@ export async function GET(
         id,
         email,
         role,
+        division,
         is_active,
         created_at,
         profiles!inner (
@@ -305,6 +306,7 @@ export async function GET(
       salary: null,
       region_id: profile.region_id || null,
       region_name: region?.name || null,
+      division: (user as any)?.division ?? null,
     };
 
     // ---- Pull time_entries with action and timestamp columns

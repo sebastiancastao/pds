@@ -1149,8 +1149,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Division</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Salary ($)</th>
                         <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase w-16"></th>
                       </tr>
                     </thead>
@@ -1213,28 +1211,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                               <option value="trailers">Trailers</option>
                               <option value="both">Both</option>
                             </select>
-                          </td>
-                          <td className="px-3 py-2">
-                            <select
-                              value={user.employmentType}
-                              onChange={(e) => updateUser(user.id, 'employmentType', e.target.value)}
-                              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-transparent"
-                            >
-                              <option value="hourly">Hourly</option>
-                              <option value="salaried">Salaried</option>
-                            </select>
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              min="0"
-                              step="1000"
-                              value={user.annualSalary}
-                              onChange={(e) => updateUser(user.id, 'annualSalary', e.target.value)}
-                              disabled={user.employmentType !== 'salaried'}
-                              className="w-24 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"
-                              placeholder="0"
-                            />
                           </td>
                           <td className="px-3 py-2 text-center">
                             {users.length > 1 && (
@@ -1347,30 +1323,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                     User {index + 1}
                   </h3>
 
-                  {/* CW User Toggle — sets division to CWT Trailers */}
-                  <div className={`mb-4 flex items-center justify-between rounded-lg border-2 px-4 py-3 transition-colors ${user.division === 'trailers' ? 'border-blue-600 bg-blue-50' : 'border-gray-300 bg-white'}`}>
-                    <div>
-                      <p className={`text-sm font-semibold ${user.division === 'trailers' ? 'text-blue-800' : 'text-gray-900'}`}>CW user</p>
-                      <p className={`text-xs ${user.division === 'trailers' ? 'text-blue-700' : 'text-gray-600'}`}>CWT Trailers division</p>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={user.division === 'trailers'}
-                      aria-label="CW user"
-                      onClick={() => updateUser(user.id, 'division', user.division === 'trailers' ? 'vendor' : 'trailers')}
-                      className={`relative inline-flex h-7 flex-shrink-0 items-center rounded-full border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${user.division === 'trailers' ? 'border-blue-700' : 'border-gray-500 bg-gray-400'}`}
-                      style={{
-                        width: '3.25rem',
-                        ...(user.division === 'trailers'
-                          ? { background: 'linear-gradient(135deg, #007AFF 0%, #0051D5 100%)', boxShadow: '0 2px 8px rgba(0, 122, 255, 0.4)' }
-                          : {}),
-                      }}
-                    >
-                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${user.division === 'trailers' ? 'translate-x-6' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* First Name */}
                   <div>
@@ -1454,58 +1406,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                     </select>
                   </div>
 
-                  {/* Employment Type */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Employment Type</label>
-                    <select
-                      value={user.employmentType}
-                      onChange={(e) => updateUser(user.id, 'employmentType', e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    >
-                      <option value="hourly">Hourly</option>
-                      <option value="salaried">Salaried</option>
-                    </select>
-                  </div>
-
-                  {/* Annual Salary — only when salaried */}
-                  {user.employmentType === 'salaried' && (
-                    <>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Annual Salary ($) <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="1000"
-                          value={user.annualSalary}
-                          onChange={(e) => updateUser(user.id, 'annualSalary', e.target.value)}
-                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          placeholder="e.g. 55000"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Department</label>
-                        <input
-                          type="text"
-                          value={user.department}
-                          onChange={(e) => updateUser(user.id, 'department', e.target.value)}
-                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          placeholder="e.g. Operations"
-                        />
-                      </div>
-                      <div className="md:col-span-2">
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Position / Title</label>
-                        <input
-                          type="text"
-                          value={user.position}
-                          onChange={(e) => updateUser(user.id, 'position', e.target.value)}
-                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          placeholder="e.g. Coordinator"
-                        />
-                      </div>
-                    </>
-                  )}
 
                 </div>
               </div>

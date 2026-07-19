@@ -4,7 +4,7 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from "@/lib/payroll-distribution";
@@ -43,6 +43,7 @@ type EventItem = {
   other_income?: number | null;
   is_empty?: boolean;
   event_type?: "normal" | "special";
+  division?: string | null;
 };
 
 type Vendor = {
@@ -160,6 +161,18 @@ const mergeEventsById = (existing: EventItem[], incoming: EventItem[]) => {
 
 export default function DashboardPage() {
   const router = useRouter();
+  // This component backs both /global-calendar (vendor/PDS events) and /cw-calendar
+  // (CWT Trailers events). CW mode only shows division==='trailers' events; normal
+  // mode hides them.
+  const pathname = usePathname();
+  const isCWCalendar = (pathname || "").startsWith("/cw-calendar");
+  const matchesCalendarDivision = useCallback(
+    (event: { division?: string | null }) => {
+      const division = String(event?.division || "vendor").toLowerCase().trim();
+      return isCWCalendar ? division === "trailers" : division !== "trailers";
+    },
+    [isCWCalendar]
+  );
   const currentMonthStart = useMemo(() => getCurrentMonthStart(), []);
   const [activeTab, setActiveTab] = useState<"events" | "payments">("events");
   const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
@@ -493,7 +506,7 @@ export default function DashboardPage() {
       }
 
       const eventsJson = await eventsRes.json();
-      const allEvents = eventsJson.events || [];
+      const allEvents = (eventsJson.events || []).filter(matchesCalendarDivision);
 
       console.log('[PAYMENTS] ð All events loaded:', {
         count: allEvents.length,
@@ -705,7 +718,7 @@ export default function DashboardPage() {
     } finally {
       setLoadingPayments(false);
     }
-  }, []);
+  }, [matchesCalendarDivision]);
 
   // Handle adjustment change
   const handleAdjustmentChange = (eventId: string, userId: string, value: number) => {
@@ -902,7 +915,7 @@ export default function DashboardPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to load events");
-        setEvents(Array.isArray(data.events) ? data.events : []);
+        setEvents((Array.isArray(data.events) ? data.events : []).filter(matchesCalendarDivision));
         setHasLoadedPastEvents(false);
       } catch (e: any) {
         setError(e.message || "Failed to load events");
@@ -911,7 +924,7 @@ export default function DashboardPage() {
     };
 
     loadEvents();
-  }, [currentMonthStart, isAuthorized]);
+  }, [currentMonthStart, isAuthorized, matchesCalendarDivision]);
 
   const loadPastEvents = useCallback(async () => {
     if (!isAuthorized || hasLoadedPastEvents || loadingPastEvents) return;
@@ -932,7 +945,7 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load past events");
-      const olderEvents = Array.isArray(data.events) ? data.events : [];
+      const olderEvents = (Array.isArray(data.events) ? data.events : []).filter(matchesCalendarDivision);
       setEvents((prev) => mergeEventsById(prev, olderEvents));
       setHasLoadedPastEvents(true);
     } catch (e: any) {
@@ -940,7 +953,7 @@ export default function DashboardPage() {
     } finally {
       setLoadingPastEvents(false);
     }
-  }, [currentMonthStart, hasLoadedPastEvents, isAuthorized, loadingPastEvents]);
+  }, [currentMonthStart, hasLoadedPastEvents, isAuthorized, loadingPastEvents, matchesCalendarDivision]);
 
   const handleCalendarRangeChange = useCallback((range: { start: string; end: string }) => {
     if (range.start < currentMonthStart) {
@@ -1674,7 +1687,7 @@ export default function DashboardPage() {
         <div className="mb-6">
           <div className={`flex flex-col gap-6 ${userRole === "exec" || userRole === "hr" ? "" : "lg:flex-row lg:items-start lg:justify-between"}`}>
             <div className={`${userRole === "exec" || userRole === "hr" ? "order-2 w-full max-w-none lg:mt-6" : "w-full min-w-0 lg:flex-1"}`}>
-              <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">Actual Global Calendar</h1>
+              <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">{isCWCalendar ? "CW Calendar" : "Actual Global Calendar"}</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage all events and vendors across the organization."
@@ -1744,6 +1757,24 @@ export default function DashboardPage() {
                 </Link>
               )}
               <Link
+                href={isCWCalendar ? "/global-calendar" : "/cw-calendar"}
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                {isCWCalendar ? "Actual Calendar" : "CW Calendar"}
+              </Link>
+              <Link
+                href="/cw-dashboard"
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                CW Dashboard
+              </Link>
+              <Link
                 href="/planned-calendar"
                 className="apple-button apple-button-secondary flex items-center gap-2"
               >
@@ -1795,7 +1826,7 @@ export default function DashboardPage() {
             {/* Actions */}
             {userRole !== "manager" && userRole !== "supervisor3" && (
               <div className="apple-page-actions grid grid-cols-1 gap-3 mb-8 sm:flex sm:flex-wrap sm:mb-10">
-                <Link href="/create-event?returnTo=global-calendar">
+                <Link href={isCWCalendar ? "/create-event?returnTo=cw-calendar&division=trailers" : "/create-event?returnTo=global-calendar"}>
                   <button className="apple-button apple-button-primary">
                     <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />

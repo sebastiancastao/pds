@@ -35,6 +35,7 @@ type Employee = {
   city: string | null;
   region_id?: string | null;
   region_name?: string | null;
+  division?: string | null;
   performance_score?: number | null;
   projects_completed?: number | null;
   attendance_rate?: number | null;
@@ -1052,6 +1053,9 @@ export default function WorkerProfilePage() {
       setSavingRegion(false);
     }
   };
+
+  // CW (CWT Trailers division) workers get a distinct badge and CW-only event data
+  const isCWEmployee = (employee?.division || "").toLowerCase().trim() === "trailers";
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -2269,15 +2273,24 @@ export default function WorkerProfilePage() {
           <div>
             <h1 className="text-4xl font-semibold text-gray-900 keeping-tight">
               {employee ? (
-                <>
-                  {employee.first_name} {employee.last_name}
-                </>
+                <span className="inline-flex flex-wrap items-center gap-3">
+                  <span>
+                    {employee.first_name} {employee.last_name}
+                  </span>
+                  {isCWEmployee && (
+                    <span className="inline-flex items-center rounded-full border-2 border-blue-600 bg-blue-50 px-3 py-1 text-sm font-bold text-blue-800">
+                      CW user
+                    </span>
+                  )}
+                </span>
               ) : (
                 "Worker Profile"
               )}
             </h1>
             <p className="text-gray-600 mt-1">
-              Cumulative hours, shifts, and event history
+              {isCWEmployee
+                ? "CWT Trailers division — cumulative hours, shifts, and CW event history"
+                : "Cumulative hours, shifts, and event history"}
             </p>
           </div>
           <button
@@ -2336,6 +2349,12 @@ export default function WorkerProfilePage() {
                   <h2 className="text-2xl font-bold text-gray-900 mb-1">
                     {employee.first_name} {employee.last_name}
                   </h2>
+
+                  {isCWEmployee && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-blue-600 bg-blue-50 px-3 py-1 text-xs font-bold text-blue-800 mb-2">
+                      CW user · CWT Trailers division
+                    </span>
+                  )}
 
                   <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 rounded-lg mb-4">
                     <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor">

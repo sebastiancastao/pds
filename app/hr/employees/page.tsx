@@ -760,6 +760,24 @@ export default function HREmployeesPage() {
                   <tr key={user.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
                     <td style={{ padding: '0.75rem' }}>
                       {user.first_name} {user.last_name}
+                      {(user.division || '').toLowerCase() === 'trailers' && (
+                        <span
+                          title="CW user · CWT Trailers division"
+                          style={{
+                            marginLeft: '0.5rem',
+                            padding: '0.125rem 0.5rem',
+                            backgroundColor: '#eff6ff',
+                            color: '#1e40af',
+                            border: '1px solid #2563eb',
+                            borderRadius: '9999px',
+                            fontSize: '0.75rem',
+                            fontWeight: '700',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          CW
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '0.75rem' }}>
                       {user.email}
@@ -767,13 +785,13 @@ export default function HREmployeesPage() {
                     <td style={{ padding: '0.75rem' }}>
                       <span style={{
                         padding: '0.25rem 0.5rem',
-                        backgroundColor: '#e0e7ff',
-                        color: '#3730a3',
+                        backgroundColor: (user.division || '').toLowerCase() === 'trailers' ? '#dbeafe' : '#e0e7ff',
+                        color: (user.division || '').toLowerCase() === 'trailers' ? '#1e40af' : '#3730a3',
                         borderRadius: '0.25rem',
                         fontSize: '0.875rem',
                         fontWeight: '500'
                       }}>
-                        {user.role}
+                        {(user.division || '').toLowerCase() === 'trailers' ? `cw-${user.role}` : user.role}
                       </span>
                     </td>
                     <td style={{ padding: '0.75rem' }}>

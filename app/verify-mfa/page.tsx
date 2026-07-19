@@ -288,7 +288,7 @@ function VerifyMFAContent() {
 
       const { data: userData, error: userError } = await (supabase
         .from('users')
-        .select('background_check_completed, role')
+        .select('background_check_completed, role, division')
         .eq('id', session.user.id)
         .single() as any);
 
@@ -410,7 +410,19 @@ function VerifyMFAContent() {
 
         console.log('[VERIFY-MFA DEBUG] No onboarding redirect needed - proceeding to role-based routing');
 
-        // CW (CWT Trailers) users selected the toggle at login → trailers portal
+        // CW (CWT Trailers division) users: manager-level roles get the parallel
+        // CW dashboard (their mirror role, e.g. cw-manager); other CW roles keep
+        // the trailers portal when the login toggle is set.
+        const isCWUser = String(userData?.division || '').toLowerCase().trim() === 'trailers';
+        const isCWManagerLevelRole =
+          userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' ||
+          userRole === 'supervisor3' || userRole === 'exec';
+        if (isCWUser && isCWManagerLevelRole) {
+          sessionStorage.removeItem('cw_user');
+          console.log('[VERIFY-MFA DEBUG] CW manager-level user - Redirecting to /cw-dashboard');
+          router.push('/cw-dashboard');
+          return;
+        }
         if (sessionStorage.getItem('cw_user') === 'true') {
           sessionStorage.removeItem('cw_user');
           console.log('[VERIFY-MFA DEBUG] CW user toggle set - Redirecting to /trailers');

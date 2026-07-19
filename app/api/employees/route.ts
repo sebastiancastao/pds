@@ -33,6 +33,7 @@ type Employee = {
   hire_date: string;
   status: "active" | "on_leave" | "inactive";
   salary: number;
+  division: string;
   profile_photo_url: string | null;
   state: string;
   city: string | null;
@@ -354,6 +355,7 @@ export async function GET(req: NextRequest) {
         status: user.is_active === false ? "inactive" : "active",
         salary: salaryRecord ? Number(salaryRecord.annual_salary) : 0,
         employment_type: salaryRecord?.employment_type || 'hourly',
+        division: user.division || 'vendor',
         profile_photo_url: null,
         state,
         city,

@@ -50,6 +50,8 @@ export async function POST(req: NextRequest) {
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
     const event_type = body.event_type === "special" ? "special" : "normal";
+    // CW events (created from /cw-calendar) belong to the trailers division; everything else is vendor
+    const division = body.division === "trailers" ? "trailers" : "vendor";
     // end_date only applies to multi-day Non Event Time Sheets; ignore it for normal events
     const end_date = event_type === "special" && body.end_date ? body.end_date : null;
     const artist_share_percent = body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
@@ -119,7 +121,8 @@ export async function POST(req: NextRequest) {
       pds_share_percent,
       commission_pool,
       is_active,
-      event_type
+      event_type,
+      division
     };
     const { data, error } = await supabaseAdmin.from("events").insert([event]).select();
     // Debug output for DB response/error

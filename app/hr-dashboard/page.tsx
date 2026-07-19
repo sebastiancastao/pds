@@ -36,6 +36,7 @@ type Employee = {
 };
 
 type EmployeeStatusFilter = "active" | "inactive" | "all";
+type PayrollLoadMode = "all" | "nonEvent" | "cw";
 
 type BackgroundCheck = {
   id: string;
@@ -159,7 +160,8 @@ function HRDashboardContent() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
-  const [payrollGroupBy, setPayrollGroupBy] = useState<'venue' | 'vendor'>('vendor');
+  const [payrollGroupBy, setPayrollGroupBy] = useState<'venue' | 'vendor' | 'venueSummary'>('vendor');
+  const [payrollLoadMode, setPayrollLoadMode] = useState<PayrollLoadMode>("all");
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalFile, setApprovalFile] = useState<File | null>(null);
   const [sendingApproval, setSendingApproval] = useState(false);
@@ -785,8 +787,13 @@ function HRDashboardContent() {
   }, [isAuthorized, loadEmployees, loadBackgroundChecks, loadRegions]);
 
   // Payments loader (aligned with Global Calendar payments tab)
-  const loadPaymentsData = useCallback(async (options?: { nonEventOnly?: boolean }) => {
-    const nonEventOnly = options?.nonEventOnly === true;
+  const loadPaymentsData = useCallback(async (options?: { mode?: PayrollLoadMode; nonEventOnly?: boolean; cwOnly?: boolean }) => {
+    const requestedMode: PayrollLoadMode =
+      options?.mode ??
+      (options?.cwOnly === true ? "cw" : options?.nonEventOnly === true ? "nonEvent" : payrollLoadMode);
+    const nonEventOnly = requestedMode === "nonEvent" || requestedMode === "cw";
+    const cwOnly = requestedMode === "cw";
+    setPayrollLoadMode(requestedMode);
     setLoadingPayments(true);
     setPaymentsError("");
     setPaymentsByVenue([]);
@@ -824,6 +831,7 @@ function HRDashboardContent() {
         // Strict period filter (no permissive "undated" pass-through) so it shows only the period selected.
         filtered = filtered.filter((e: any) => {
           if (!isNonEventPayrollEvent(e)) return false;
+          if (cwOnly && !isTrailersDivision(e.division)) return false;
           const spanStart = e.event_date;
           if (!spanStart) return false; // exclude undated non-event records
           const spanEnd = e.end_date && e.end_date >= spanStart ? e.end_date : spanStart;
@@ -835,7 +843,7 @@ function HRDashboardContent() {
         if (paymentsStartDate) filtered = filtered.filter(e => !e.event_date || e.event_date >= paymentsStartDate);
         if (paymentsEndDate) filtered = filtered.filter(e => !e.event_date || e.event_date <= paymentsEndDate);
       }
-      console.log('[HR PAYMENTS] filtered events', { count: filtered.length, start: paymentsStartDate, end: paymentsEndDate });
+      console.log('[HR PAYMENTS] filtered events', { count: filtered.length, start: paymentsStartDate, end: paymentsEndDate, mode: requestedMode });
       const filteredEventIds = filtered.map((e: any) => e.id).filter(Boolean);
       const eventIds = filteredEventIds.join(',');
       if (!eventIds) {
@@ -1072,6 +1080,7 @@ function HRDashboardContent() {
                   id: eventId,
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
+                  division: eventInfo.division,
                   event_type: eventInfo.event_type || 'normal',
                   isSanDiegoHourly: isEventSD,
                   isNonEventHourly: isNonEventPayroll,
@@ -1101,6 +1110,7 @@ function HRDashboardContent() {
             id: eventId,
             name: eventInfo.event_name,
             date: eventInfo.event_date,
+            division: eventInfo.division,
             event_type: eventInfo.event_type || 'normal',
             isSanDiegoHourly: isEventSD,
             isNonEventHourly: isNonEventPayroll,
@@ -1383,6 +1393,7 @@ function HRDashboardContent() {
           id: eventId,
           name: eventInfo.event_name,
           date: eventInfo.event_date,
+          division: eventInfo.division,
           event_type: eventInfo.event_type || 'normal',
           isSanDiegoHourly: isEventSD,
           isNonEventHourly: isNonEventPayroll,
@@ -1497,7 +1508,7 @@ function HRDashboardContent() {
     } finally {
       setLoadingPayments(false);
     }
-  }, [paymentsStartDate, paymentsEndDate]);
+  }, [paymentsStartDate, paymentsEndDate, payrollLoadMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1668,6 +1679,36 @@ function HRDashboardContent() {
       if (aLast !== bLast) return aLast.localeCompare(bLast);
       return (a.firstName || '').toLowerCase().localeCompare((b.firstName || '').toLowerCase());
     });
+  }, [paymentsByVenue]);
+
+  const venueSummaries = useMemo(() => {
+    return paymentsByVenue
+      .map(v => {
+        const byEmployee: Record<string, {
+          userId: string; firstName: string; lastName: string; email: string;
+          events: Array<{ event: any; venue: string; city: string | null; state: string | null; payment: any }>;
+        }> = {};
+        (v.events || []).forEach((ev: any) => {
+          (ev.payments || []).forEach((p: any) => {
+            const key = p.userId || p.email || `${p.firstName}_${p.lastName}`;
+            if (!byEmployee[key]) {
+              byEmployee[key] = {
+                userId: p.userId, firstName: p.firstName || '', lastName: p.lastName || '', email: p.email || '',
+                events: [],
+              };
+            }
+            byEmployee[key].events.push({ event: ev, venue: v.venue, city: v.city ?? null, state: v.state ?? null, payment: p });
+          });
+        });
+        const employees = Object.values(byEmployee).sort((a, b) => {
+          const aLast = (a.lastName || '').toLowerCase();
+          const bLast = (b.lastName || '').toLowerCase();
+          if (aLast !== bLast) return aLast.localeCompare(bLast);
+          return (a.firstName || '').toLowerCase().localeCompare((b.firstName || '').toLowerCase());
+        });
+        return { venue: v.venue, city: v.city ?? null, state: v.state ?? null, eventCount: (v.events || []).length, employees };
+      })
+      .sort((a, b) => (a.venue || '').toLowerCase().localeCompare((b.venue || '').toLowerCase()));
   }, [paymentsByVenue]);
 
   const getDisplayedPaymentBreakdown = useCallback((event: any, payment: any) => {
@@ -2496,13 +2537,166 @@ function HRDashboardContent() {
     XLSX.writeFile(workbook, filename);
   }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getDisplayedVendorTotals, adjustmentTypes]);
 
+  // Exports the venue view as a "Show Pay Summary" journal sheet. Each show gets
+  // a row totaling commission (or hourly wages) + rest break + reimbursement +
+  // bonus/other + tips; each day with variable incentive gets one
+  // "Overhead/Variable Incentive" row after its shows — mileage, travel and sick
+  // pay are not part of this journal.
+  // Non-event payroll is collapsed into a single "All" row, and a closing row
+  // carries the grand total in the Credit column.
+  const exportVenueViewToExcel = useCallback(() => {
+    if (paymentsByVenue.length === 0) {
+      alert('No payment data to export. Please load payments first.');
+      return;
+    }
+
+    const JOURNAL_NUMBER = 4;
+    const today = new Date();
+    // Journal Date column = period end date (like the reference file, where the
+    // journal is dated at the pay-period close); falls back to the export date.
+    const periodEndMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(paymentsEndDate || '');
+    const journalDateUtc = periodEndMatch
+      ? Date.UTC(Number(periodEndMatch[1]), Number(periodEndMatch[2]) - 1, Number(periodEndMatch[3]))
+      : Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+    const excelDateSerial = Math.floor((journalDateUtc - Date.UTC(1899, 11, 30)) / 86400000);
+    // Payroll date = 7 days after the payroll period ends.
+    const payrollDateSerial = excelDateSerial + 7;
+
+    const formatShowDate = (dateStr: string | null | undefined): string => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr || ''));
+      if (!m) return dateStr ? String(dateStr) : '';
+      return `${m[2]}/${m[3]}/${m[1].slice(2)}`;
+    };
+    const money3 = (amount: number) => Number((Number.isFinite(amount) ? amount : 0).toFixed(3));
+    const payrollPeriodLabel = [formatShowDate(paymentsStartDate), formatShowDate(paymentsEndDate)]
+      .filter(Boolean)
+      .join(' - ');
+
+    const showRows: Array<{ name: string; date: string; total: number; variableIncentive: number }> = [];
+    let nonEventTotal = 0;
+    let hasNonEvent = false;
+    paymentsByVenue.forEach(v => {
+      (v.events || []).forEach((ev: any) => {
+        const totals = getDisplayedEventTotals(ev);
+        // totalCommissionPaid holds commission + variable incentive (or plain
+        // hourly wages), so subtracting the incentive leaves the commission
+        // amount for both commission and hourly shows.
+        const rowTotal =
+          (totals.totalCommissionPaid - totals.totalVariableIncentive) +
+          totals.totalRestBreak +
+          totals.totalReimbursement +
+          totals.totalOther +
+          totals.totalTips;
+        if (isNonEventPayrollEvent(ev)) {
+          hasNonEvent = true;
+          nonEventTotal += rowTotal;
+          return;
+        }
+        showRows.push({
+          name: ev.name || '',
+          date: ev.date || '',
+          total: rowTotal,
+          variableIncentive: totals.totalVariableIncentive,
+        });
+      });
+    });
+    showRows.sort((a, b) => {
+      if (a.date !== b.date) return (a.date || '').localeCompare(b.date || '');
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
+
+    const rows: any[] = [];
+    if (hasNonEvent) {
+      rows.push({
+        'Journal': JOURNAL_NUMBER,
+        'Date': excelDateSerial,
+        'Payroll Period': payrollPeriodLabel,
+        'Payroll Date': payrollDateSerial,
+        'Artist / Show': 'All',
+        'Total ': money3(nonEventTotal),
+      });
+    }
+    // showRows are sorted by date, so one overhead row can be flushed per day,
+    // after that day's show rows, totaling the day's variable incentive.
+    let currentDay = '';
+    let dayVariableIncentive = 0;
+    const flushOverheadRow = () => {
+      if (dayVariableIncentive > 0) {
+        rows.push({
+          'Journal': JOURNAL_NUMBER,
+          'Date': excelDateSerial,
+          'Payroll Period': payrollPeriodLabel,
+          'Payroll Date': payrollDateSerial,
+          'Artist / Show': 'Overhead/Variable Incentive',
+          'Show Date': formatShowDate(currentDay),
+          'Total ': money3(dayVariableIncentive),
+        });
+      }
+      dayVariableIncentive = 0;
+    };
+    showRows.forEach(r => {
+      if (r.date !== currentDay) {
+        flushOverheadRow();
+        currentDay = r.date;
+      }
+      rows.push({
+        'Journal': JOURNAL_NUMBER,
+        'Date': excelDateSerial,
+        'Payroll Period': payrollPeriodLabel,
+        'Payroll Date': payrollDateSerial,
+        'Artist / Show': r.name,
+        'Show Date': formatShowDate(r.date),
+        'Total ': money3(r.total),
+      });
+      dayVariableIncentive += r.variableIncentive;
+    });
+    flushOverheadRow();
+    const grandTotal = rows.reduce((s, r) => s + (typeof r['Total '] === 'number' ? r['Total '] : 0), 0);
+    rows.push({
+      'Journal': JOURNAL_NUMBER,
+      'Date': excelDateSerial,
+      'Payroll Period': payrollPeriodLabel,
+      'Payroll Date': payrollDateSerial,
+      'Artist / Show': 'Total ',
+      'Credit': Number(grandTotal.toFixed(2)),
+    });
+
+    const header = ['Journal', 'Date', 'Payroll Period', 'Payroll Date', 'Artist / Show', 'Show Date', 'Total ', 'Credit'];
+    const worksheet = XLSX.utils.json_to_sheet(rows, { header });
+    worksheet['!cols'] = [
+      { wch: 8 }, { wch: 10 }, { wch: 20 }, { wch: 12 }, { wch: 26 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const dateCell = worksheet[XLSX.utils.encode_cell({ r: i + 1, c: 1 })];
+      if (dateCell) dateCell.z = 'mm/dd/yy';
+      const payrollDateCell = worksheet[XLSX.utils.encode_cell({ r: i + 1, c: 3 })];
+      if (payrollDateCell) payrollDateCell.z = 'mm/dd/yy';
+    }
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Show Pay Summary');
+
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const yy = String(today.getFullYear()).slice(2);
+    XLSX.writeFile(workbook, `show_pay_summary_${mm}${dd}${yy}.xlsx`);
+  }, [paymentsByVenue, getDisplayedEventTotals, paymentsStartDate, paymentsEndDate]);
+
   const exportNonEventPayroll = useCallback(() => {
+    const cwExportMode = payrollLoadMode === "cw";
     const nonEventVenues = paymentsByVenue
-      .map(v => ({ ...v, events: v.events.filter((e: any) => e.event_type === 'special') }))
+      .map(v => ({
+        ...v,
+        events: v.events.filter((e: any) =>
+          isNonEventPayrollEvent(e) && (!cwExportMode || isTrailersDivision(e.division))
+        ),
+      }))
       .filter(v => v.events.length > 0);
 
     if (nonEventVenues.length === 0) {
-      alert('No Non Event time sheet data found. Load a date range that includes Non Event time sheets.');
+      alert(cwExportMode
+        ? 'No CW time sheet data found. Load a date range that includes CW events.'
+        : 'No Non Event time sheet data found. Load a date range that includes Non Event time sheets.'
+      );
       return;
     }
 
@@ -2571,7 +2765,7 @@ function HRDashboardContent() {
     });
 
     if (rows.length === 0) {
-      alert('No Non Event employee payment records found.');
+      alert(cwExportMode ? 'No CW employee payment records found.' : 'No Non Event employee payment records found.');
       return;
     }
 
@@ -2604,11 +2798,12 @@ function HRDashboardContent() {
       { wch: 12 }, { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 15 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Non Event Payroll');
+    XLSX.utils.book_append_sheet(wb, ws, cwExportMode ? 'CW Payroll' : 'Non Event Payroll');
     const startStr = paymentsStartDate || 'start';
     const endStr = paymentsEndDate || 'end';
-    XLSX.writeFile(wb, `non_event_payroll_${startStr}_to_${endStr}.xlsx`);
-  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getMileageApproval, adjustmentTypes]);
+    const filePrefix = cwExportMode ? 'cw_payroll' : 'non_event_payroll';
+    XLSX.writeFile(wb, `${filePrefix}_${startStr}_to_${endStr}.xlsx`);
+  }, [paymentsByVenue, payrollLoadMode, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getMileageApproval, adjustmentTypes]);
 
   const exportSalariedPayroll = useCallback(async () => {
     try {
@@ -3918,7 +4113,26 @@ function HRDashboardContent() {
         {hrView === "payments" && (
           <>
             <div className="apple-card mb-6">
-              <h2 className="text-xl font-semibold mb-4">Filter by Date Range</h2>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-xl font-semibold">Filter by Date Range</h2>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={payrollLoadMode === "cw"}
+                  onClick={() => void loadPaymentsData({ mode: payrollLoadMode === "cw" ? "all" : "cw" })}
+                  className={`inline-flex h-10 items-center gap-2 rounded-full border px-3 text-sm font-semibold transition ${
+                    payrollLoadMode === "cw"
+                      ? "border-blue-500 bg-blue-50 text-blue-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                  } ${loadingPayments ? "cursor-not-allowed opacity-50" : ""}`}
+                  disabled={loadingPayments}
+                >
+                  <span className={`relative inline-flex h-5 w-9 rounded-full transition ${payrollLoadMode === "cw" ? "bg-blue-500" : "bg-gray-300"}`}>
+                    <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition ${payrollLoadMode === "cw" ? "left-4" : "left-0.5"}`} />
+                  </span>
+                  <span>CW only</span>
+                </button>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="apple-label" htmlFor="pay-start">Start Date</label>
@@ -3929,63 +4143,97 @@ function HRDashboardContent() {
                   <input id="pay-end" type="date" value={paymentsEndDate} onChange={(e) => setPaymentsEndDate(e.target.value)} className="apple-select" />
                 </div>
               </div>
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button onClick={() => void loadPaymentsData()} className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`} disabled={loadingPayments}>
-                  {loadingPayments ? 'Loading…' : 'Load Payments'}
-                </button>
-                <button onClick={saveAllAdjustments} className={`apple-button ${savingAdjustment ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={savingAdjustment}>
-                  {savingAdjustment ? 'Saving…' : 'Save All Adjustments'}
-                </button>
-                <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
-                  Export to Excel
-                </button>
-                <button
-                  onClick={() => void loadPaymentsData({ nonEventOnly: true })}
-                  className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`}
-                  disabled={loadingPayments}
-                >
-                  {loadingPayments ? 'Loading…' : 'Retrieve Non-Event Payroll'}
-                </button>
-                <button onClick={exportNonEventPayroll} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
-                  Export Non-Event Hourly
-                </button>
-                <button onClick={() => void exportSalariedPayroll()} className="apple-button apple-button-secondary">
-                  Salaried Export
-                </button>
-                <Link href="/salaried-paysheet">
-                  <button className="apple-button apple-button-secondary">Salaried Paysheet</button>
-                </Link>
-                <button
-                  onClick={() => setPayrollGroupBy('venue')}
-                  className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venue' ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                  disabled={paymentsByVenue.length === 0}
-                >
-                  View by Event
-                </button>
-                <button
-                  onClick={() => setPayrollGroupBy('vendor')}
-                  className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'vendor' ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                  disabled={paymentsByVenue.length === 0}
-                >
-                  View by Vendor
-                </button>
-                <button onClick={() => { setApprovalError(''); setShowApprovalModal(true); }} className="apple-button apple-button-primary">
-                  Send to Approval
-                </button>
-                <Link href="/payroll-approvals">
-                  <button className="apple-button apple-button-secondary">View Approvals</button>
-                </Link>
-                <button
-                  onClick={() => setShowSickLeavePanels((prev) => !prev)}
-                  className={`apple-button ${showSickLeavePanels ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                  aria-expanded={showSickLeavePanels}
-                >
-                  {showSickLeavePanels ? 'Hide Sick Leave' : 'Sick Leave'}
-                </button>
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => void loadPaymentsData({ mode: payrollLoadMode === "cw" ? "cw" : "all" })}
+                    className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                    disabled={loadingPayments}
+                  >
+                    {loadingPayments ? 'Loading…' : 'Load Payments'}
+                  </button>
+
+                  {payrollLoadMode === "cw" ? (
+                    <button onClick={exportNonEventPayroll} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                      Export CW Payroll
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void loadPaymentsData({ mode: "nonEvent" })}
+                      className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                      disabled={loadingPayments}
+                    >
+                      {loadingPayments ? 'Loading…' : 'Retrieve Non-Event Payroll'}
+                    </button>
+                  )}
+                </div>
+
+                {payrollLoadMode !== "cw" && (
+                  <>
+                    <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
+                      <span className="w-full text-xs font-semibold uppercase tracking-wide text-gray-400 sm:w-auto sm:min-w-20">Exports</span>
+                      <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                        Export to Excel
+                      </button>
+                      <button onClick={exportVenueViewToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                        Export by Venue
+                      </button>
+                      <button onClick={() => void exportSalariedPayroll()} className="apple-button apple-button-secondary">
+                        Salaried Export
+                      </button>
+                      <Link href="/salaried-paysheet">
+                        <button className="apple-button apple-button-secondary">Salaried Paysheet</button>
+                      </Link>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
+                      <span className="w-full text-xs font-semibold uppercase tracking-wide text-gray-400 sm:w-auto sm:min-w-20">Views</span>
+                      <button
+                        onClick={() => setPayrollGroupBy('venue')}
+                        className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venue' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={paymentsByVenue.length === 0}
+                      >
+                        View by Event
+                      </button>
+                      <button
+                        onClick={() => setPayrollGroupBy('vendor')}
+                        className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'vendor' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={paymentsByVenue.length === 0}
+                      >
+                        View by Vendor
+                      </button>
+                      <button
+                        onClick={() => setPayrollGroupBy('venueSummary')}
+                        className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venueSummary' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={paymentsByVenue.length === 0}
+                      >
+                        View by Venue
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
+                      <span className="w-full text-xs font-semibold uppercase tracking-wide text-gray-400 sm:w-auto sm:min-w-20">Workflow</span>
+                      <button onClick={saveAllAdjustments} className={`apple-button ${savingAdjustment ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={savingAdjustment}>
+                        {savingAdjustment ? 'Saving…' : 'Save All Adjustments'}
+                      </button>
+                      <button onClick={() => { setApprovalError(''); setShowApprovalModal(true); }} className="apple-button apple-button-primary">
+                        Send to Approval
+                      </button>
+                      <Link href="/payroll-approvals">
+                        <button className="apple-button apple-button-secondary">View Approvals</button>
+                      </Link>
+                      <button
+                        onClick={() => setShowSickLeavePanels((prev) => !prev)}
+                        className={`apple-button ${showSickLeavePanels ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        aria-expanded={showSickLeavePanels}
+                      >
+                        {showSickLeavePanels ? 'Hide Sick Leave' : 'Sick Leave'}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
-            {showSickLeavePanels && (
+            {payrollLoadMode !== "cw" && showSickLeavePanels && (
             <>
             {/* Payment Cycles */}
             <div className="apple-card mb-6">
@@ -4812,6 +5060,90 @@ function HRDashboardContent() {
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorDisplayedTotal)}</td>
                             </tr>
                           </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : payrollGroupBy === 'venueSummary' ? (
+                venueSummaries.map(vs => {
+                  const employeeRows = vs.employees.map(emp => ({ emp, totals: getDisplayedVendorTotals({ events: emp.events }) }));
+                  const venueGross = employeeRows.reduce((s, { totals }) => s + totals.totalGross, 0);
+                  const venueWorkedHours = employeeRows.reduce((s, { totals }) => s + totals.totalHours, 0);
+                  const venueSickHours = employeeRows.reduce((s, { totals }) => s + totals.totalSickHours, 0);
+                  const sumBy = (pick: (totals: ReturnType<typeof getDisplayedVendorTotals>) => number) =>
+                    employeeRows.reduce((s, { totals }) => s + pick(totals), 0);
+
+                  return (
+                    <div key={vs.venue} className="apple-card">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-900">{vs.venue}</h3>
+                          <p className="text-sm text-gray-500">
+                            {vs.city || '—'}{vs.state ? `, ${vs.state}` : ''}
+                            <span className="text-gray-400"> · {vs.eventCount} {vs.eventCount === 1 ? 'event' : 'events'} · {vs.employees.length} {vs.employees.length === 1 ? 'employee' : 'employees'}</span>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(venueGross)}</div>
+                          <div className="text-sm text-gray-500">{formatHoursDecimal(venueWorkedHours + venueSickHours)} hrs</div>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Events</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Hours</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Wages / Commission</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Tips</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Sick Leave</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {employeeRows.map(({ emp, totals }) => (
+                              <tr key={emp.userId || emp.email} className="hover:bg-gray-50">
+                                <td className="px-4 py-2 text-sm">
+                                  <div className="font-medium text-gray-900">{emp.firstName} {emp.lastName}</div>
+                                  <div className="text-xs text-gray-500">{emp.email}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-right text-gray-700">{emp.events.length}</td>
+                                <td className="px-4 py-2 text-sm text-right">{renderCombinedHours(totals.totalHours, totals.totalSickHours, "right")}</td>
+                                <td className="px-4 py-2 text-sm text-right text-gray-900">${formatExactMoney(totals.totalCommissionPaid)}</td>
+                                <td className="px-4 py-2 text-sm text-right text-orange-600">${formatExactMoney(totals.totalTips)}</td>
+                                <td className="px-4 py-2 text-sm text-right text-green-600">${formatExactMoney(totals.totalRestBreak)}</td>
+                                <td className="px-4 py-2 text-sm text-right text-blue-600">${formatExactMoney(totals.totalMileagePay)}</td>
+                                <td className="px-4 py-2 text-sm text-right text-indigo-600">${formatExactMoney(totals.totalTravelPay)}</td>
+                                <td className="px-4 py-2 text-sm text-right">${formatExactMoney(totals.totalReimbursement)}</td>
+                                <td className="px-4 py-2 text-sm text-right">${formatExactMoney(totals.totalOther)}</td>
+                                <td className="px-4 py-2 text-sm text-right text-teal-600">${formatExactMoney(totals.totalSickPay)}</td>
+                                <td className="px-4 py-2 text-sm text-right font-medium text-gray-900">${formatExactMoney(totals.totalGross)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr className="bg-gray-50 font-semibold text-sm">
+                              <td className="px-4 py-2 text-gray-900">Venue Total</td>
+                              <td className="px-4 py-2 text-right text-gray-700">{vs.eventCount}</td>
+                              <td className="px-4 py-2 text-right">{renderCombinedHours(venueWorkedHours, venueSickHours, "right")}</td>
+                              <td className="px-4 py-2 text-right text-gray-900">${formatExactMoney(sumBy(t => t.totalCommissionPaid))}</td>
+                              <td className="px-4 py-2 text-right text-orange-600">${formatExactMoney(sumBy(t => t.totalTips))}</td>
+                              <td className="px-4 py-2 text-right text-green-600">${formatExactMoney(sumBy(t => t.totalRestBreak))}</td>
+                              <td className="px-4 py-2 text-right text-blue-600">${formatExactMoney(sumBy(t => t.totalMileagePay))}</td>
+                              <td className="px-4 py-2 text-right text-indigo-600">${formatExactMoney(sumBy(t => t.totalTravelPay))}</td>
+                              <td className="px-4 py-2 text-right">${formatExactMoney(sumBy(t => t.totalReimbursement))}</td>
+                              <td className="px-4 py-2 text-right">${formatExactMoney(sumBy(t => t.totalOther))}</td>
+                              <td className="px-4 py-2 text-right text-teal-600">${formatExactMoney(sumBy(t => t.totalSickPay))}</td>
+                              <td className="px-4 py-2 text-right text-gray-900">${formatExactMoney(venueGross)}</td>
+                            </tr>
+                          </tfoot>
                         </table>
                       </div>
                     </div>

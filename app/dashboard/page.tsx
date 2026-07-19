@@ -4,7 +4,7 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
 import { safeDecrypt } from "@/lib/encryption";
@@ -37,6 +37,7 @@ type EventItem = {
   tips_total?: number | null;
   is_empty?: boolean;
   event_type?: "normal" | "special";
+  division?: string | null;
 };
 
 type Vendor = {
@@ -121,6 +122,18 @@ const isScopedManagerRole = (role?: string | null) =>
 
 export default function DashboardPage() {
   const router = useRouter();
+  // This component backs both /dashboard (vendor/PDS events) and /cw-dashboard
+  // (CWT Trailers events). CW mode only shows division==='trailers' events;
+  // normal mode hides them.
+  const pathname = usePathname();
+  const isCWDashboard = (pathname || "").startsWith("/cw-dashboard");
+  const matchesDashboardDivision = useCallback(
+    (event: { division?: string | null }) => {
+      const division = String(event?.division || "vendor").toLowerCase().trim();
+      return isCWDashboard ? division === "trailers" : division !== "trailers";
+    },
+    [isCWDashboard]
+  );
   const [activeTab, setActiveTab] = useState<"events">("events");
   const [showHelpDeskModal, setShowHelpDeskModal] = useState(false);
 
@@ -740,7 +753,7 @@ export default function DashboardPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to load events");
-        setEvents(data.events || []);
+        setEvents((data.events || []).filter(matchesDashboardDivision));
       } catch (e: any) {
         setError(e.message || "Failed to load events");
       }
@@ -750,7 +763,7 @@ export default function DashboardPage() {
     console.log('[DASHBOARD] ð Initial load with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name, userRegionId });
 
     loadEvents();
-  }, [isAuthorized]);
+  }, [isAuthorized, matchesDashboardDivision]);
 
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
   const hasEventSearch = eventSearchQuery.trim().length > 0;
@@ -1474,10 +1487,12 @@ export default function DashboardPage() {
         <div className="mb-8 lg:mb-12">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="w-full min-w-0 lg:flex-1">
-              <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">Dashboard</h1>
+              <h1 className="text-3xl font-semibold text-gray-900 mb-3 keeping-tight sm:text-4xl lg:text-5xl">{isCWDashboard ? "CW Dashboard" : "Dashboard"}</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
-                  ? "Manage your events and invite vendors seamlessly."
+                  ? isCWDashboard
+                    ? "Manage CWT Trailers division events and staff."
+                    : "Manage your events and invite vendors seamlessly."
                   : "Manage employees, leave requests, and workforce analytics."}
               </p>
               <div className="mt-2">
@@ -1552,7 +1567,7 @@ export default function DashboardPage() {
           <>
             {/* Actions */}
             <div className="apple-page-actions grid grid-cols-1 gap-3 mb-8 sm:flex sm:flex-wrap sm:mb-10">
-              <Link href="/create-event?returnTo=dashboard">
+              <Link href={isCWDashboard ? "/create-event?returnTo=cw-dashboard&division=trailers" : "/create-event?returnTo=dashboard"}>
                 <button className="apple-button apple-button-primary">
                   <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />

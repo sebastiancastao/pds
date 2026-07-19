@@ -18,7 +18,11 @@ function CreateEventPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnTo = searchParams?.get("returnTo") || "dashboard";
+  // Opened from /cw-dashboard: the created event is locked to the CWT Trailers division
+  const isCWLocked = searchParams?.get("division") === "trailers";
+  // CW events are always Non Event Time Sheets
   const initialEventType =
+    isCWLocked ||
     searchParams?.get("eventType") === "special" ||
     searchParams?.get("type") === "non-event"
       ? "special"
@@ -43,6 +47,12 @@ function CreateEventPageInner() {
     event_type: initialEventType
   });
   const [venues, setVenues] = useState<Venue[]>([]);
+  // Non Event Time Sheets created outside /cw-dashboard (e.g. from the normal dashboard)
+  // can be marked as CW events with this checkbox
+  const [cwChecked, setCwChecked] = useState(false);
+  const division =
+    isCWLocked || (form.event_type === "special" && cwChecked) ? "trailers" : "vendor";
+  const isCWEvent = division === "trailers";
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
@@ -142,6 +152,7 @@ function CreateEventPageInner() {
       // Convert percentage values (50) to decimals (0.5) for backend
       const payload = {
         ...form,
+        division,
         // end_date only applies to multi-day Non Event Time Sheets
         end_date: isSpecial && form.end_date ? form.end_date : null,
         artist_share_percent: form.artist_share_percent !== "" ? Number(form.artist_share_percent) / 100 : undefined,
@@ -179,8 +190,9 @@ function CreateEventPageInner() {
           pds_share_percent: "",
           commission_pool: "",
           is_active: true,
-          event_type: "normal"
+          event_type: initialEventType
         });
+        setCwChecked(false);
         setTimeout(() => {
           router.replace(`/${returnTo}`);
         }, 200);
@@ -208,7 +220,7 @@ function CreateEventPageInner() {
           <Link href={`/${returnTo}`}>
             <button className="group flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-5 rounded-xl shadow-sm hover:shadow-md transition-all duration-200 border border-slate-200">
               <span className="text-lg group-hover:-translate-x-1 transition-transform duration-200">&larr;</span>
-              <span>Back to {returnTo === "global-calendar" ? "Global Calendar" : "Dashboard"}</span>
+              <span>Back to {returnTo === "global-calendar" ? "Global Calendar" : returnTo === "cw-calendar" ? "CW Calendar" : returnTo === "cw-dashboard" ? "CW Dashboard" : "Dashboard"}</span>
             </button>
           </Link>
         </div>
@@ -234,8 +246,8 @@ function CreateEventPageInner() {
 
         <div className="bg-white/80 backdrop-blur-sm shadow-xl rounded-2xl border border-slate-200/50 overflow-hidden">
           <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-8 py-6">
-            <h2 className="text-3xl font-bold text-white">Create New Event</h2>
-            <p className="text-blue-100 mt-1">Fill in the details to schedule a new event</p>
+            <h2 className="text-3xl font-bold text-white">{isCWEvent ? "Create New CW Event" : "Create New Event"}</h2>
+            <p className="text-blue-100 mt-1">{isCWEvent ? "This event belongs to the CWT Trailers division" : "Fill in the details to schedule a new event"}</p>
           </div>
 
           <form onSubmit={handleSubmit} className="p-8 space-y-6">
@@ -271,11 +283,29 @@ function CreateEventPageInner() {
                   value={form.event_type}
                   onChange={handleSelectChange}
                   required
-                  className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white"
+                  disabled={isCWEvent}
+                  className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
                 >
-                  <option value="normal">Event Time Keeping</option>
+                  {!isCWEvent && <option value="normal">Event Time Keeping</option>}
                   <option value="special">Non Event Time Sheet</option>
                 </select>
+                {isCWEvent && (
+                  <p className="text-xs text-slate-500 mt-1">CW events are always Non Event Time Sheets.</p>
+                )}
+                {!isCWLocked && form.event_type === "special" && (
+                  <div className="mt-4 flex items-center gap-3 bg-blue-50 p-4 rounded-xl border border-blue-100">
+                    <input
+                      id="cw_event"
+                      type="checkbox"
+                      checked={cwChecked}
+                      onChange={(e) => setCwChecked(e.target.checked)}
+                      className="h-5 w-5 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 border-slate-300 rounded transition-all cursor-pointer"
+                    />
+                    <label htmlFor="cw_event" className="text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                      CW event (CWT Trailers division)
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
 

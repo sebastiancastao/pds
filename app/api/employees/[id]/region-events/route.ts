@@ -55,6 +55,7 @@ export async function GET(
     const [
       { data: profile, error: profileError },
       { data: venuesRaw, error: venuesError },
+      { data: userRow },
     ] = await Promise.all([
       supabaseAdmin
         .from("profiles")
@@ -64,6 +65,11 @@ export async function GET(
       supabaseAdmin
         .from("venue_reference")
         .select("venue_name, city, state, region_id"),
+      supabaseAdmin
+        .from("users")
+        .select("division")
+        .eq("id", userId)
+        .maybeSingle(),
     ]);
 
     if (profileError) {
@@ -101,13 +107,24 @@ export async function GET(
       });
     }
 
-    const { data: events, error: eventsError } = await supabaseAdmin
+    // CW (trailers division) employees only see CW events; everyone else only sees
+    // non-CW events, so trailers events never leak into normal profiles.
+    const isTrailersUser =
+      String(userRow?.division || "").trim().toLowerCase() === "trailers";
+
+    let eventsQuery = supabaseAdmin
       .from("events")
-      .select("id, event_name, event_date, start_time, venue, city, state")
+      .select("id, event_name, event_date, start_time, venue, city, state, division")
       .eq("is_active", true)
       .in("venue", venueNames)
       .order("event_date", { ascending: true })
       .order("start_time", { ascending: true });
+
+    eventsQuery = isTrailersUser
+      ? eventsQuery.eq("division", "trailers")
+      : eventsQuery.neq("division", "trailers");
+
+    const { data: events, error: eventsError } = await eventsQuery;
 
     if (eventsError) {
       console.error("region-events query error:", eventsError);
