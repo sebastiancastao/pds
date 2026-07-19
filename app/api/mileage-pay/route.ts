@@ -197,9 +197,9 @@ export async function GET(req: NextRequest) {
 
         if (!mileage[event.id]) mileage[event.id] = {};
         mileage[event.id][userId] = {
-          miles: Math.round(distToEventVenue * 10) / 10,       // actual distance home → event venue
-          mileagePay: Math.round(mileagePay * 100) / 100,      // based on actual distance
-          differentialMiles: Math.round(differentialMiles * 10) / 10, // extra miles beyond home venue
+          miles: distToEventVenue,          // actual distance home → event venue
+          mileagePay,                       // based on actual distance
+          differentialMiles,                // extra miles beyond home venue
         };
       }
     }

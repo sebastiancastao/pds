@@ -1091,6 +1091,11 @@ function HRDashboardContent() {
                   commissionDollars: eventCommissionDollars,
                   commissionPoolDollars: eventCommissionDollars,
                   adjustedGrossAmount,
+                  ticketSales,
+                  totalSales,
+                  salesTax: tax,
+                  salesFees: eventFees,
+                  otherIncome: eventOtherIncome,
                   totalTips: eventTotalTips,
                   totalRestBreak: 0,
                   totalOther: 0,
@@ -1121,6 +1126,11 @@ function HRDashboardContent() {
             commissionDollars: eventCommissionDollars,
             commissionPoolDollars: eventCommissionDollars,
             adjustedGrossAmount,
+            ticketSales,
+            totalSales,
+            salesTax: tax,
+            salesFees: eventFees,
+            otherIncome: eventOtherIncome,
             totalTips: eventTotalTips,
             totalRestBreak: 0,
             totalOther: 0,
@@ -1404,6 +1414,11 @@ function HRDashboardContent() {
           commissionDollars: eventCommissionDollars,
           commissionPoolDollars: safeCommissionPoolDollars,
           adjustedGrossAmount,
+          ticketSales,
+          totalSales,
+          salesTax: tax,
+          salesFees: eventFees,
+          otherIncome: eventOtherIncome,
           totalTips: eventTotalTips,
           totalRestBreak: eventTotalRestBreak,
           totalOther: eventTotalOther,
@@ -2145,13 +2160,13 @@ function HRDashboardContent() {
         'Tips': Number(roundToThreeDecimals(tips).toFixed(3)),
         'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
         'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
-        'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
+        'Mileage Pay': Number(formatExactMoney(mileagePay)),
         'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
         'Travel Hours': !exportApproval.travel ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
-        'Travel Pay': Number(roundUpThousandsToNextHundred(travelPayExport).toFixed(2)),
+        'Travel Pay': Number(formatExactMoney(travelPayExport)),
         'Reimbursement': Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)),
         'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
-        'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
+        'Total Gross Pay': Number(formatExactMoney(totalGrossPay)),
       };
 
       if (!isHourlyEvent) return baseRow;
@@ -2394,15 +2409,15 @@ function HRDashboardContent() {
           const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
           const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
           const exportApproval = getMileageApproval(event.id, payment.userId);
-          const mileagePay = exportApproval.mileage ? Number(roundUpThousandsToNextHundred(rawMileagePay).toFixed(2)) : 0;
+          const mileagePay = exportApproval.mileage ? Number(formatExactMoney(rawMileagePay)) : 0;
           const travelHours = 0;
-          const travelPay = exportApproval.travel && diffMiles !== null ? Number(roundUpThousandsToNextHundred(computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect)).toFixed(2)) : 0;
+          const travelPay = exportApproval.travel && diffMiles !== null ? Number(formatExactMoney(computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect))) : 0;
           const reimbursementBve = Number(roundUpThousandsToNextHundred(Number(payment.reimbursementAmount ?? 0)).toFixed(2));
           const other = Number(roundUpThousandsToNextHundred(Number(payment.otherAmount ?? 0)).toFixed(2));
           const adjAmtBve = reimbursementBve + other;
-          const totalGrossPay = Number(roundUpThousandsToNextHundred(
+          const totalGrossPay = Number(formatExactMoney(
             breakdown.commissionPaidTotal + tipsRaw + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
-          ).toFixed(2));
+          ));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
           bveTotals.variableIncentive += varIncentive;
@@ -2544,6 +2559,8 @@ function HRDashboardContent() {
   // pay are not part of this journal.
   // Non-event payroll is collapsed into a single "All" row, and a closing row
   // carries the grand total in the Credit column.
+  // A 2nd "Adj Gross Detail" sheet breaks down each show: sales math behind
+  // adjusted gross plus every pay component (including the excluded ones).
   const exportVenueViewToExcel = useCallback(() => {
     if (paymentsByVenue.length === 0) {
       alert('No payment data to export. Please load payments first.');
@@ -2572,7 +2589,16 @@ function HRDashboardContent() {
       .filter(Boolean)
       .join(' - ');
 
-    const showRows: Array<{ name: string; date: string; total: number; variableIncentive: number }> = [];
+    const showRows: Array<{ venue: string; name: string; date: string; total: number; variableIncentive: number; totalSales: number }> = [];
+    // One entry per show for the "Adj Gross Detail" sheet: the sales figures
+    // behind adjusted gross plus every pay component, including the ones the
+    // journal leaves out (mileage, travel, sick pay).
+    const detailEntries: Array<{
+      venue: string; name: string; date: string; isNonEvent: boolean;
+      ticketSales: number; tipsDeducted: number; totalSales: number; tax: number; fees: number; otherIncome: number; adjustedGross: number;
+      commission: number; restBreak: number; reimbursement: number; other: number; tips: number;
+      showPay: number; variableIncentive: number; mileagePay: number; travelPay: number; sickPay: number; totalGross: number;
+    }> = [];
     let nonEventTotal = 0;
     let hasNonEvent = false;
     paymentsByVenue.forEach(v => {
@@ -2581,22 +2607,52 @@ function HRDashboardContent() {
         // totalCommissionPaid holds commission + variable incentive (or plain
         // hourly wages), so subtracting the incentive leaves the commission
         // amount for both commission and hourly shows.
+        const commissionOnly = totals.totalCommissionPaid - totals.totalVariableIncentive;
         const rowTotal =
-          (totals.totalCommissionPaid - totals.totalVariableIncentive) +
+          commissionOnly +
           totals.totalRestBreak +
           totals.totalReimbursement +
           totals.totalOther +
           totals.totalTips;
-        if (isNonEventPayrollEvent(ev)) {
+        const isNonEvent = isNonEventPayrollEvent(ev);
+        const ticketSales = Number(ev.ticketSales || 0);
+        const totalSales = Number(ev.totalSales || 0);
+        detailEntries.push({
+          venue: v.venue || '',
+          name: ev.name || '',
+          date: ev.date || '',
+          isNonEvent,
+          ticketSales,
+          tipsDeducted: Math.max(ticketSales - totalSales, 0),
+          totalSales,
+          tax: Number(ev.salesTax || 0),
+          fees: Number(ev.salesFees || 0),
+          otherIncome: Number(ev.otherIncome || 0),
+          adjustedGross: Number(ev.adjustedGrossAmount || 0),
+          commission: commissionOnly,
+          restBreak: totals.totalRestBreak,
+          reimbursement: totals.totalReimbursement,
+          other: totals.totalOther,
+          tips: totals.totalTips,
+          showPay: rowTotal,
+          variableIncentive: totals.totalVariableIncentive,
+          mileagePay: totals.totalMileagePay,
+          travelPay: totals.totalTravelPay,
+          sickPay: totals.totalSickPay,
+          totalGross: totals.totalGross,
+        });
+        if (isNonEvent) {
           hasNonEvent = true;
           nonEventTotal += rowTotal;
           return;
         }
         showRows.push({
+          venue: v.venue || '',
           name: ev.name || '',
           date: ev.date || '',
           total: rowTotal,
           variableIncentive: totals.totalVariableIncentive,
+          totalSales,
         });
       });
     });
@@ -2612,6 +2668,7 @@ function HRDashboardContent() {
         'Date': excelDateSerial,
         'Payroll Period': payrollPeriodLabel,
         'Payroll Date': payrollDateSerial,
+        'Venue': '',
         'Artist / Show': 'All',
         'Total ': money3(nonEventTotal),
       });
@@ -2627,6 +2684,7 @@ function HRDashboardContent() {
           'Date': excelDateSerial,
           'Payroll Period': payrollPeriodLabel,
           'Payroll Date': payrollDateSerial,
+          'Venue': '',
           'Artist / Show': 'Overhead/Variable Incentive',
           'Show Date': formatShowDate(currentDay),
           'Total ': money3(dayVariableIncentive),
@@ -2644,27 +2702,32 @@ function HRDashboardContent() {
         'Date': excelDateSerial,
         'Payroll Period': payrollPeriodLabel,
         'Payroll Date': payrollDateSerial,
+        'Venue': r.venue,
         'Artist / Show': r.name,
         'Show Date': formatShowDate(r.date),
+        'Total Sales': money3(r.totalSales),
         'Total ': money3(r.total),
       });
       dayVariableIncentive += r.variableIncentive;
     });
     flushOverheadRow();
     const grandTotal = rows.reduce((s, r) => s + (typeof r['Total '] === 'number' ? r['Total '] : 0), 0);
+    const totalSalesSum = showRows.reduce((s, r) => s + r.totalSales, 0);
     rows.push({
       'Journal': JOURNAL_NUMBER,
       'Date': excelDateSerial,
       'Payroll Period': payrollPeriodLabel,
       'Payroll Date': payrollDateSerial,
+      'Venue': '',
       'Artist / Show': 'Total ',
+      'Total Sales': money3(totalSalesSum),
       'Credit': Number(grandTotal.toFixed(2)),
     });
 
-    const header = ['Journal', 'Date', 'Payroll Period', 'Payroll Date', 'Artist / Show', 'Show Date', 'Total ', 'Credit'];
+    const header = ['Journal', 'Date', 'Payroll Period', 'Payroll Date', 'Venue', 'Artist / Show', 'Show Date', 'Total Sales', 'Total ', 'Credit'];
     const worksheet = XLSX.utils.json_to_sheet(rows, { header });
     worksheet['!cols'] = [
-      { wch: 8 }, { wch: 10 }, { wch: 20 }, { wch: 12 }, { wch: 26 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
+      { wch: 8 }, { wch: 10 }, { wch: 20 }, { wch: 12 }, { wch: 25 }, { wch: 26 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
     ];
     for (let i = 0; i < rows.length; i++) {
       const dateCell = worksheet[XLSX.utils.encode_cell({ r: i + 1, c: 1 })];
@@ -2674,6 +2737,52 @@ function HRDashboardContent() {
     }
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Show Pay Summary');
+
+    // 2nd tab: adjusted gross per show with the sales math behind it and every
+    // pay component, so the journal totals can be reconciled. Mileage, travel
+    // and sick pay are listed even though the journal excludes them.
+    detailEntries.sort((a, b) => {
+      const av = (a.venue || '').toLowerCase();
+      const bv = (b.venue || '').toLowerCase();
+      if (av !== bv) return av.localeCompare(bv);
+      if (a.date !== b.date) return (a.date || '').localeCompare(b.date || '');
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
+    const detailRows: any[] = detailEntries.map(d => ({
+      'Venue': d.venue,
+      'Artist / Show': d.isNonEvent ? `${d.name} (Non-Event)`.trim() : d.name,
+      'Show Date': formatShowDate(d.date),
+      'Ticket Sales': money3(d.ticketSales),
+      'Tips (Deducted)': money3(d.tipsDeducted),
+      'Total Sales': money3(d.totalSales),
+      'Tax': money3(d.tax),
+      'Fees': money3(d.fees),
+      'Other Income': money3(d.otherIncome),
+      'Adjusted Gross Amount': money3(d.adjustedGross),
+      'Commission': money3(d.commission),
+      'Rest Break': money3(d.restBreak),
+      'Reimbursement': money3(d.reimbursement),
+      'Bonus/Other': money3(d.other),
+      'Tips Paid': money3(d.tips),
+      'Show Pay (Journal)': money3(d.showPay),
+      'Variable Incentive': money3(d.variableIncentive),
+      'Mileage Pay (Excl.)': money3(d.mileagePay),
+      'Travel Pay (Excl.)': money3(d.travelPay),
+      'Sick Pay (Excl.)': money3(d.sickPay),
+      'Total Gross Pay': money3(d.totalGross),
+    }));
+    if (detailRows.length > 0) {
+      const detailHeader = Object.keys(detailRows[0]);
+      const sumDetailCol = (key: string) => money3(detailRows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0));
+      const detailTotalRow: any = { 'Venue': 'TOTAL', 'Artist / Show': '', 'Show Date': '' };
+      detailHeader.slice(3).forEach(key => { detailTotalRow[key] = sumDetailCol(key); });
+      detailRows.push(detailTotalRow);
+      const detailSheet = XLSX.utils.json_to_sheet(detailRows, { header: detailHeader });
+      detailSheet['!cols'] = detailHeader.map((key, idx) => (
+        idx === 0 ? { wch: 25 } : idx === 1 ? { wch: 26 } : { wch: Math.max(12, key.length + 2) }
+      ));
+      XLSX.utils.book_append_sheet(workbook, detailSheet, 'Adj Gross Detail');
+    }
 
     const mm = String(today.getMonth() + 1).padStart(2, '0');
     const dd = String(today.getDate()).padStart(2, '0');
@@ -2727,9 +2836,9 @@ function HRDashboardContent() {
           const travelHours = 0;
           const travelPay = exportApproval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0;
           const pTipsRaw = getDisplayedTips(event, p);
-          const totalGrossPay = Number(roundUpThousandsToNextHundred(
+          const totalGrossPay = Number(formatExactMoney(
             breakdown.commissionPaidTotal + pTipsRaw + adjAmtNe + mileagePay + travelPay
-          ).toFixed(2));
+          ));
 
           rows.push({
             'Venue': venue.venue,
@@ -2752,10 +2861,10 @@ function HRDashboardContent() {
             'Double Time Pay': doubletimePay,
             'Tips': Number(roundToThreeDecimals(pTipsRaw).toFixed(3)),
             'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
-            'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
+            'Mileage Pay': Number(formatExactMoney(mileagePay)),
             'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
             'Travel Hours': !exportApproval.travel ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
-            'Travel Pay': Number(roundUpThousandsToNextHundred(travelPay).toFixed(2)),
+            'Travel Pay': Number(formatExactMoney(travelPay)),
             'Reimbursement': Number(roundUpThousandsToNextHundred(reimbursementNe).toFixed(2)),
             'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
             'Total Gross Pay': totalGrossPay,
@@ -5085,7 +5194,7 @@ function HRDashboardContent() {
                           </p>
                         </div>
                         <div className="text-right">
-                          <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(venueGross)}</div>
+                          <div className="text-2xl font-bold text-gray-900">${formatExactMoney(venueGross)}</div>
                           <div className="text-sm text-gray-500">{formatHoursDecimal(venueWorkedHours + venueSickHours)} hrs</div>
                         </div>
                       </div>
@@ -5163,7 +5272,7 @@ function HRDashboardContent() {
                         <p className="text-sm text-gray-500">{v.city || '—'}, {v.state || ''}</p>
                       </div>
                       <div className="text-right">
-                        <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(venueDisplayedTotal)}</div>
+                        <div className="text-2xl font-bold text-gray-900">${formatExactMoney(venueDisplayedTotal)}</div>
                         <div className="text-sm text-gray-500">{formatHoursDecimal(v.totalHours + (v.events || []).reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalSickHours, 0))} hrs</div>
                       </div>
                     </div>
@@ -5384,7 +5493,7 @@ function HRDashboardContent() {
                                                           </div>
                                                         ) : (
                                                           <button type="button" onClick={() => { setEditingMileageCell({ eventId: ev.id, userId: p.userId, field: 'mileage' }); setEditingMileageValue(String(mileagePay.toFixed(2))); }} className="flex flex-col gap-0.5 hover:text-blue-800 text-left" title="Click to edit">
-                                                            {mileageOverrideS2 !== undefined ? <span className="text-orange-500">${formatPayrollMoney(mileagePay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatPayrollMoney(mileagePay)}</span>}
+                                                            {mileageOverrideS2 !== undefined ? <span className="text-orange-500">${formatExactMoney(mileagePay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatExactMoney(mileagePay)}</span>}
                                                             {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.differentialMiles != null && md.differentialMiles > 0 ? <div className="text-[10px] text-gray-400">{md.differentialMiles} mi diff ? 2 ? $0.71</div> : null; })()}
                                                           </button>
                                                         )
@@ -5407,7 +5516,7 @@ function HRDashboardContent() {
                                                           <div className="flex flex-col gap-0.5">
                                                             {_travelPay > 0 ? (
                                                               <button type="button" onClick={() => { setEditingMileageCell({ eventId: ev.id, userId: p.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col gap-0.5 hover:text-indigo-800 text-left" title="Click to edit">
-                                                                {travelOverrideS2 !== undefined ? <span className="text-orange-500">${formatPayrollMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatPayrollMoney(travelPay)}</span>}
+                                                                {travelOverrideS2 !== undefined ? <span className="text-orange-500">${formatExactMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatExactMoney(travelPay)}</span>}
                                                                 {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi ÷ 30 × ${formatPayrollMoney(Math.max(normalizeState(ev?.state ?? v?.state) === 'CA' ? 28.50 : 25.94, loadedRate))}/hr</div>}
                                                               </button>
                                                             ) : <span className="text-gray-400">&mdash;</span>}
@@ -5504,8 +5613,8 @@ function HRDashboardContent() {
                                                 )}
                                                 <td className="p-2 text-orange-600">${formatMoney3(eventTotals.totalTips)}</td>
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
-                                                <td className="p-2 text-blue-600">${formatPayrollMoney(eventTotals.totalMileagePay)}</td>
-                                                <td className="p-2 text-indigo-600">${formatPayrollMoney(eventTotals.totalTravelPay)}</td>
+                                                <td className="p-2 text-blue-600">${formatExactMoney(eventTotals.totalMileagePay)}</td>
+                                                <td className="p-2 text-indigo-600">${formatExactMoney(eventTotals.totalTravelPay)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalReimbursement)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalOther)}</td>
                                                 <td className="p-2 text-right text-teal-600">${formatPayrollMoney(eventTotals.totalSickPay)}</td>
