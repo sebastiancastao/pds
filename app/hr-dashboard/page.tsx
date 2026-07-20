@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -498,6 +498,7 @@ function HRDashboardContent() {
   const [travelPayOverrides, setTravelPayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' | 'travel' } | null>(null);
   const [editingMileageValue, setEditingMileageValue] = useState<string>('');
+  const [tipsEqualMode, setTipsEqualMode] = useState<Record<string, boolean>>({});
 
   // Onboarding forms state
   const [onboardingForms, setOnboardingForms] = useState<any[]>([]);
@@ -1187,7 +1188,7 @@ function HRDashboardContent() {
           }),
           allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
         }).amountsById;
-        const tipsSharesByUser = distributeTipsPool({
+        const tipsSharesByUser = distributePoolByHoursRule({
           totalAmount: totalTips,
           members: vendorPayments.flatMap((payment: any) => {
             const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
@@ -1195,7 +1196,7 @@ function HRDashboardContent() {
             if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
             return [{ id: paymentUserId, hours: payrollHours }];
           }),
-          eventDate: eventInfo.event_date,
+          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
         }).amountsById;
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
@@ -1431,6 +1432,15 @@ function HRDashboardContent() {
       console.log('[HR PAYMENTS] venues assembled', { venueCount: Object.keys(byVenue).length });
       const venuesArr = Object.values(byVenue);
       setPaymentsByVenue(venuesArr);
+
+      // Initialize tips distribution mode from persisted event data
+      const initialTipsMode: Record<string, boolean> = {};
+      venuesArr.forEach((v: any) => {
+        v.events.forEach((ev: any) => {
+          if (ev.tipsDistributionMode === 'equal') initialTipsMode[ev.id] = true;
+        });
+      });
+      setTipsEqualMode(initialTipsMode);
 
       // Fetch mileage pay data + approvals for all loaded events
       const allEventIdsForMileage = venuesArr.flatMap(v => v.events.map((ev: any) => ev.id)).filter(Boolean);
@@ -1811,11 +1821,23 @@ function HRDashboardContent() {
   const getDisplayedTips = useCallback((event: any, payment: any): number => {
     const paymentHours = Number(payment?.actualHours || 0);
     if (paymentHours <= 0 || isTrailersDivision(payment?.division)) return 0;
-    // The per-payment tips are computed with distributeTipsPool (plus manual
-    // overrides/deletions) when payments are assembled; reuse them here so the
-    // HR display and exports always match saved payments and paystubs.
-    return Number(payment?.tips || 0);
-  }, []);
+    const totalTips = Number(event?.totalTips || 0);
+    if (totalTips <= 0) return 0;
+    const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
+    const eligible = payments.filter(
+      (p: any) => Number(p?.actualHours || 0) > 0 && !isTrailersDivision(p?.division)
+    );
+    if (eligible.length === 0) return 0;
+    if (tipsEqualMode[event?.id]) {
+      // Equal mode: everyone eligible gets the same share
+      return totalTips / eligible.length;
+    } else {
+      // Prorated mode: proportional to hours worked
+      const totalEligibleHours = eligible.reduce((sum: number, p: any) => sum + Number(p?.actualHours || 0), 0);
+      if (totalEligibleHours <= 0) return 0;
+      return (paymentHours / totalEligibleHours) * totalTips;
+    }
+  }, [tipsEqualMode]);
 
   const getDisplayedEventTotals = useCallback((event: any) => {
     const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
@@ -5334,6 +5356,29 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Tips</div>
                                   <div>${formatMoney3(Number(ev.totalTips || 0))}</div>
+                                  {Number(ev.totalTips || 0) > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        const newEqual = !tipsEqualMode[ev.id];
+                                        setTipsEqualMode(prev => ({ ...prev, [ev.id]: newEqual }));
+                                        try {
+                                          const { data: { session: s } } = await supabase.auth.getSession();
+                                          await fetch(`/api/events/${ev.id}`, {
+                                            method: 'PATCH',
+                                            headers: {
+                                              'Content-Type': 'application/json',
+                                              ...(s?.access_token ? { Authorization: `Bearer ${s.access_token}` } : {}),
+                                            },
+                                            body: JSON.stringify({ tips_distribution_mode: newEqual ? 'equal' : 'prorated' }),
+                                          });
+                                        } catch { /* non-critical */ }
+                                      }}
+                                      className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tipsEqualMode[ev.id] ? 'bg-blue-100 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}`}
+                                    >
+                                      {tipsEqualMode[ev.id] ? 'Equal' : 'Prorated'}
+                                    </button>
+                                  )}
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Rest Break</div>

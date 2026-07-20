@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
-import { distributeTipsPool } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion, isNorCalRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
@@ -3079,7 +3079,7 @@ export default function EventDashboardPage() {
 
     const commissionSharesByUser = liveCommissionSharesByUser;
     const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
-      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid))
     );
 
     return filteredTeamMembers.map((member: any) => {
@@ -4103,7 +4103,7 @@ export default function EventDashboardPage() {
     totalAmount: number,
     getHoursForUser: (uid: string) => number
   ): Record<string, number> => {
-    return distributeTipsPool({
+    return distributePoolByHoursRule({
       totalAmount,
       members: teamMembers.flatMap((member: any) => {
         const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
@@ -4111,7 +4111,7 @@ export default function EventDashboardPage() {
         if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
-      eventDate: event?.event_date,
+      allShortShiftMode: shortShiftModeForDate(event?.event_date),
     }).amountsById;
   };
 
@@ -4666,7 +4666,7 @@ export default function EventDashboardPage() {
       const totalTips = Number(tips) || 0;
       const commissionSharesByUser = liveCommissionSharesByUser;
       const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
-        getActualHoursFromWorkedMs(getMealDeductedMsForSave(uid), true)
+        getActualHoursFromWorkedMs(getMealDeductedMsForSave(uid))
       );
 
       const payrollData = teamMembers.map((member: any) => {

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getMondayOfWeek } from '@/lib/utils';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
-import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
 import { attachRegionMetadataToEvents } from '@/lib/event-region';
@@ -392,10 +392,10 @@ export async function GET(req: NextRequest) {
           members: commissionEligibleMembers,
           allShortShiftMode: shortShiftModeForDate(ev.event_date),
         }).amountsById,
-        tipsSharesByUser: distributeTipsPool({
+        tipsSharesByUser: distributePoolByHoursRule({
           totalAmount: totalTipsEvent,
           members: tipsEligibleMembers,
-          eventDate: ev.event_date,
+          allShortShiftMode: shortShiftModeForDate(ev.event_date),
         }).amountsById,
       };
     }
