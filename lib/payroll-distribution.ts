@@ -54,6 +54,16 @@ export function tipsDistributionModeLabel(mode?: string | null): "Even Split" | 
   return mode === "equal" ? "Even Split" : "Prorated";
 }
 
+// Default tips_distribution_mode for newly created events: even split for
+// events on/after this date, prorated before it. Only applies at event
+// creation time — the toggle can still override it either way afterward.
+export const TIPS_EVEN_SPLIT_DEFAULT_START_DATE = "2026-07-06";
+
+export function defaultTipsDistributionModeForDate(eventDate?: string | null): TipsDistributionMode {
+  if (!eventDate) return "prorated";
+  return eventDate.toString().split("T")[0] >= TIPS_EVEN_SPLIT_DEFAULT_START_DATE ? "equal" : "prorated";
+}
+
 const toPositiveNumber = (value: number): number => {
   const numericValue = Number(value);
   return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0;
