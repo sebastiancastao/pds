@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -494,11 +494,11 @@ function HRDashboardContent() {
   const [adjustmentTypes, setAdjustmentTypes] = useState<Record<string, Record<string, OtherAdjustmentType>>>({});
   const [editingCell, setEditingCell] = useState<{ eventId: string; userId: string; column: 'reimbursement' | 'other' } | null>(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
+  const [savingTipsModeEventId, setSavingTipsModeEventId] = useState<string | null>(null);
   const [mileagePayOverrides, setMileagePayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [travelPayOverrides, setTravelPayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' | 'travel' } | null>(null);
   const [editingMileageValue, setEditingMileageValue] = useState<string>('');
-  const [tipsEqualMode, setTipsEqualMode] = useState<Record<string, boolean>>({});
 
   // Onboarding forms state
   const [onboardingForms, setOnboardingForms] = useState<any[]>([]);
@@ -1188,7 +1188,7 @@ function HRDashboardContent() {
           }),
           allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
         }).amountsById;
-        const tipsSharesByUser = distributePoolByHoursRule({
+        const tipsSharesByUser = distributeTipsPool({
           totalAmount: totalTips,
           members: vendorPayments.flatMap((payment: any) => {
             const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
@@ -1196,7 +1196,7 @@ function HRDashboardContent() {
             if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
             return [{ id: paymentUserId, hours: payrollHours }];
           }),
-          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
+          mode: eventInfo.tips_distribution_mode,
         }).amountsById;
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
@@ -1432,15 +1432,6 @@ function HRDashboardContent() {
       console.log('[HR PAYMENTS] venues assembled', { venueCount: Object.keys(byVenue).length });
       const venuesArr = Object.values(byVenue);
       setPaymentsByVenue(venuesArr);
-
-      // Initialize tips distribution mode from persisted event data
-      const initialTipsMode: Record<string, boolean> = {};
-      venuesArr.forEach((v: any) => {
-        v.events.forEach((ev: any) => {
-          if (ev.tipsDistributionMode === 'equal') initialTipsMode[ev.id] = true;
-        });
-      });
-      setTipsEqualMode(initialTipsMode);
 
       // Fetch mileage pay data + approvals for all loaded events
       const allEventIdsForMileage = venuesArr.flatMap(v => v.events.map((ev: any) => ev.id)).filter(Boolean);
@@ -1821,23 +1812,12 @@ function HRDashboardContent() {
   const getDisplayedTips = useCallback((event: any, payment: any): number => {
     const paymentHours = Number(payment?.actualHours || 0);
     if (paymentHours <= 0 || isTrailersDivision(payment?.division)) return 0;
-    const totalTips = Number(event?.totalTips || 0);
-    if (totalTips <= 0) return 0;
-    const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
-    const eligible = payments.filter(
-      (p: any) => Number(p?.actualHours || 0) > 0 && !isTrailersDivision(p?.division)
-    );
-    if (eligible.length === 0) return 0;
-    if (tipsEqualMode[event?.id]) {
-      // Equal mode: everyone eligible gets the same share
-      return totalTips / eligible.length;
-    } else {
-      // Prorated mode: proportional to hours worked
-      const totalEligibleHours = eligible.reduce((sum: number, p: any) => sum + Number(p?.actualHours || 0), 0);
-      if (totalEligibleHours <= 0) return 0;
-      return (paymentHours / totalEligibleHours) * totalTips;
-    }
-  }, [tipsEqualMode]);
+    // Per-payment tips are already computed with distributeTipsPool (using the
+    // event's persisted tips_distribution_mode) plus overrides/deletions when
+    // payments are assembled above; reuse them here so the HR display and every
+    // export always match the saved mode.
+    return Number(payment?.tips || 0);
+  }, []);
 
   const getDisplayedEventTotals = useCallback((event: any) => {
     const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
@@ -2177,9 +2157,9 @@ function HRDashboardContent() {
         'Rate in Effect': formatPayrollMoney(loadedRate),
         'Hours': hoursHHMM,
         'Hours in Decimal': hoursInDecimal,
-        'Commission Pay': isHourlyEvent ? 0 : Number(displayedCommissionPay.toFixed(3)),
+        'Commission Pay': isHourlyEvent ? 0 : Number(displayedCommissionPay.toFixed(2)),
         'Variable Incentive': isHourlyEvent ? 0 : Number(variableIncentive.toFixed(2)),
-        'Tips': Number(roundToThreeDecimals(tips).toFixed(3)),
+        'Tips': Number(tips.toFixed(2)),
         'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
         'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
         'Mileage Pay': Number(formatExactMoney(mileagePay)),
@@ -2225,9 +2205,9 @@ function HRDashboardContent() {
         'Rate in Effect': '',
         'Hours': '',
         'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
-        'Commission Pay': Number(sumNum('Commission Pay').toFixed(3)),
+        'Commission Pay': Number(sumNum('Commission Pay').toFixed(2)),
         'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
-        'Tips': Number(sumNum('Tips').toFixed(3)),
+        'Tips': Number(sumNum('Tips').toFixed(2)),
         'Rest Break': Number(rowsToSum.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
@@ -2329,10 +2309,11 @@ function HRDashboardContent() {
           'Date': event.date || '',
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
           'Adjusted Gross Amount': Number(Number(event.adjustedGrossAmount || 0).toFixed(2)),
-        'Total Commission': isHourlyEvent ? 0 : Number(Number(event.commissionDollars || 0).toFixed(3)),
-        'Commission per Vendor': isHourlyEvent ? 0 : Number(roundToThreeDecimals(Number(event.commissionPerVendor || 0)).toFixed(3)),
+        'Total Commission': isHourlyEvent ? 0 : Number(Number(event.commissionDollars || 0).toFixed(2)),
+        'Commission per Vendor': isHourlyEvent ? 0 : Number(Number(event.commissionPerVendor || 0).toFixed(2)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
-          'Total Tips': Number(Number(event.totalTips || 0).toFixed(3)),
+          'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
+          'Tips Mode': tipsDistributionModeLabel(event.tipsDistributionMode),
           'Total Rest Break': Number(Number(totalDisplayedRestBreak).toFixed(2)),
           'Total Other': Number(Number(totalDisplayedOther).toFixed(2)),
           'Total Mileage Pay': Number(Number(totalDisplayedMileagePay).toFixed(2)),
@@ -2393,10 +2374,11 @@ function HRDashboardContent() {
         'Date': '',
         'Hours': Number(paymentsByVenue.reduce((s: number, v: any) => s + v.events.reduce((es: number, ev: any) => es + Number(ev.eventHours || 0), 0), 0).toFixed(2)),
         'Adjusted Gross Amount': Number(sumNum('Adjusted Gross Amount').toFixed(2)),
-        'Total Commission': Number(sumNum('Total Commission').toFixed(3)),
+        'Total Commission': Number(sumNum('Total Commission').toFixed(2)),
         'Commission per Vendor': '',
         'Vendors w/ Hours': '',
-        'Total Tips': Number(sumNum('Total Tips').toFixed(3)),
+        'Total Tips': Number(sumNum('Total Tips').toFixed(2)),
+        'Tips Mode': '',
         'Total Rest Break': Number(sumNum('Total Rest Break').toFixed(2)),
         'Total Other': Number(sumNum('Total Other').toFixed(2)),
         'Total Mileage Pay': Number(sumNum('Total Mileage Pay').toFixed(2)),
@@ -2422,10 +2404,10 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, payment);
           const loadedRate = breakdown.rateInEffect;
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
-          const commPay = isHourlyEvent ? 0 : Number(breakdown.commissionPay.toFixed(3));
+          const commPay = isHourlyEvent ? 0 : Number(breakdown.commissionPay.toFixed(2));
           const varIncentive = isHourlyEvent ? 0 : Number(breakdown.variableIncentive.toFixed(2));
           const tipsRaw = getDisplayedTips(event, payment);
-          const tips = Number(roundToThreeDecimals(tipsRaw).toFixed(3));
+          const tips = Number(tipsRaw.toFixed(2));
           const restBreak = isHourlyEvent ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
           const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
           const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
@@ -2484,9 +2466,9 @@ function HRDashboardContent() {
         'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
         'First Name': '', 'Last Name': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '', 'Hours': '',
         'Hours in Decimal': Number(bveTotals.hoursDecimal.toFixed(2)),
-        'Commission Pay': Number(bveTotals.commissionPay.toFixed(3)),
+        'Commission Pay': Number(bveTotals.commissionPay.toFixed(2)),
         'Variable Incentive': Number(bveTotals.variableIncentive.toFixed(2)),
-        'Tips': Number(bveTotals.tips.toFixed(3)),
+        'Tips': Number(bveTotals.tips.toFixed(2)),
         'Rest Break': Number(bveTotals.restBreak.toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(bveTotals.mileagePay.toFixed(2)),
@@ -2557,6 +2539,7 @@ function HRDashboardContent() {
         { wch: 22 }, // Commission per Vendor
         { wch: 16 }, // Vendors w/ Hours
         { wch: 12 }, // Total Tips
+        { wch: 14 }, // Tips Mode
         { wch: 18 }, // Total Rest Break
         { wch: 12 }, // Total Other
         { wch: 12 }, // Total
@@ -2606,7 +2589,7 @@ function HRDashboardContent() {
       if (!m) return dateStr ? String(dateStr) : '';
       return `${m[2]}/${m[3]}/${m[1].slice(2)}`;
     };
-    const money3 = (amount: number) => Number((Number.isFinite(amount) ? amount : 0).toFixed(3));
+    const money3 = (amount: number) => Number((Number.isFinite(amount) ? amount : 0).toFixed(2));
     const payrollPeriodLabel = [formatShowDate(paymentsStartDate), formatShowDate(paymentsEndDate)]
       .filter(Boolean)
       .join(' - ');
@@ -2881,7 +2864,7 @@ function HRDashboardContent() {
             'Overtime Pay': overtimePay,
             'Double Time Hours': doubletimeHours,
             'Double Time Pay': doubletimePay,
-            'Tips': Number(roundToThreeDecimals(pTipsRaw).toFixed(3)),
+            'Tips': Number(pTipsRaw.toFixed(2)),
             'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
             'Mileage Pay': Number(formatExactMoney(mileagePay)),
             'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
@@ -2911,7 +2894,7 @@ function HRDashboardContent() {
       'Overtime Pay': Number(sumNum('Overtime Pay').toFixed(2)),
       'Double Time Hours': Number(sumNum('Double Time Hours').toFixed(2)),
       'Double Time Pay': Number(sumNum('Double Time Pay').toFixed(2)),
-      'Tips': Number(sumNum('Tips').toFixed(3)),
+      'Tips': Number(sumNum('Tips').toFixed(2)),
       'Mileage Miles': '', 'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
       'Travel Differential Miles': '', 'Travel Hours': '',
       'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
@@ -5359,24 +5342,37 @@ function HRDashboardContent() {
                                   {Number(ev.totalTips || 0) > 0 && (
                                     <button
                                       type="button"
+                                      disabled={savingTipsModeEventId === ev.id}
                                       onClick={async () => {
-                                        const newEqual = !tipsEqualMode[ev.id];
-                                        setTipsEqualMode(prev => ({ ...prev, [ev.id]: newEqual }));
+                                        const newMode = ev.tipsDistributionMode === 'equal' ? 'prorated' : 'equal';
+                                        setSavingTipsModeEventId(ev.id);
                                         try {
                                           const { data: { session: s } } = await supabase.auth.getSession();
-                                          await fetch(`/api/events/${ev.id}`, {
+                                          const res = await fetch(`/api/events/${ev.id}`, {
                                             method: 'PATCH',
                                             headers: {
                                               'Content-Type': 'application/json',
                                               ...(s?.access_token ? { Authorization: `Bearer ${s.access_token}` } : {}),
                                             },
-                                            body: JSON.stringify({ tips_distribution_mode: newEqual ? 'equal' : 'prorated' }),
+                                            body: JSON.stringify({ tips_distribution_mode: newMode }),
                                           });
-                                        } catch { /* non-critical */ }
+                                          if (!res.ok) {
+                                            const err = await res.json().catch(() => ({}));
+                                            throw new Error(err.error || 'Failed to update tips distribution mode');
+                                          }
+                                          // Reload so tips shares, saved amounts, and exports all
+                                          // reflect the new mode consistently (not just this button).
+                                          await loadPaymentsData();
+                                        } catch (err: any) {
+                                          setPaymentsError(err?.message || 'Failed to update tips distribution mode');
+                                        } finally {
+                                          setSavingTipsModeEventId(null);
+                                        }
                                       }}
-                                      className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tipsEqualMode[ev.id] ? 'bg-blue-100 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}`}
+                                      title="Toggle how this event's tips are split across staff. Saved immediately and reflected in every export."
+                                      className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border font-medium disabled:opacity-50 ${ev.tipsDistributionMode === 'equal' ? 'bg-blue-100 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}`}
                                     >
-                                      {tipsEqualMode[ev.id] ? 'Equal' : 'Prorated'}
+                                      {savingTipsModeEventId === ev.id ? 'Saving…' : tipsDistributionModeLabel(ev.tipsDistributionMode)}
                                     </button>
                                   )}
                                 </td>

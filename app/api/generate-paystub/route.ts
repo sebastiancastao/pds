@@ -3,7 +3,7 @@ import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { createClient } from "@supabase/supabase-js";
 import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
-import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
@@ -331,10 +331,10 @@ export async function POST(req: NextRequest) {
         members: commissionEligibleMembers,
         allShortShiftMode: shortShiftModeForDate(event?.event_date),
       });
-      const tipsDistribution = distributePoolByHoursRule({
+      const tipsDistribution = distributeTipsPool({
         totalAmount: totalTipsEvent,
         members: tipsEligibleMembers,
-        allShortShiftMode: shortShiftModeForDate(event?.event_date),
+        mode: event?.tips_distribution_mode,
       });
       const commissionEligibleCount =
         commissionDistribution.eligibleCount > 0 ? commissionDistribution.eligibleCount : memberCount;

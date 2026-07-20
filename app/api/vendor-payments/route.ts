@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { decrypt } from '@/lib/encryption';
-import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 
 const supabaseAdmin = createClient(
@@ -431,7 +431,7 @@ export async function GET(req: NextRequest) {
       // 1) Load event for date/state
       const { data: eventRow } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, state, start_time, end_time, ends_next_day')
+        .select('id, event_date, state, start_time, end_time, ends_next_day, tips_distribution_mode')
         .eq('id', eventId)
         .maybeSingle();
       if (!eventRow) return [] as any[];
@@ -527,7 +527,7 @@ export async function GET(req: NextRequest) {
         }),
         allShortShiftMode: shortShiftModeForDate(dateStr),
       }).amountsById;
-      const tipsSharesByUser = distributePoolByHoursRule({
+      const tipsSharesByUser = distributeTipsPool({
         totalAmount: totalTips,
         members: vendorIds.flatMap((uid) => {
           const div = divisionById[uid] || '';
@@ -535,7 +535,7 @@ export async function GET(req: NextRequest) {
           if (div === 'trailers' || hours <= 0) return [];
           return [{ id: uid, hours }];
         }),
-        allShortShiftMode: shortShiftModeForDate(dateStr),
+        mode: (eventRow as any)?.tips_distribution_mode,
       }).amountsById;
 
       // Rest break helper (matches event-dashboard)
@@ -706,7 +706,7 @@ export async function GET(req: NextRequest) {
     // Fetch basic event metadata for display purposes
     const { data: eventsMeta, error: eventsMetaError } = await supabaseAdmin
       .from('events')
-      .select('id, event_name, event_date, venue, city, state, linked_commission_event_id, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income')
+      .select('id, event_name, event_date, venue, city, state, linked_commission_event_id, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
       .in('id', eventIdsToGroup);
     if (eventsMetaError) {
       console.log('[VENDOR-PAYMENTS] eventsMeta error', eventsMetaError.message);

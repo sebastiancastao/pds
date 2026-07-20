@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
 import { decrypt, isEncrypted } from "@/lib/encryption";
+import { distributeTipsPool, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -206,6 +207,7 @@ type EventExportData = {
   date: string;
   startTime: string | null;
   endTime: string | null;
+  tipsModeLabel: string;
   timesheet: Array<{
     name: string;
     clockIn: string;
@@ -349,6 +351,7 @@ async function createPayrollPdf(
     if (evt.startTime || evt.endTime) {
       drawWrapped(`Scheduled: ${evt.startTime || "--"} - ${evt.endTime || "--"}`, { size: 10 });
     }
+    drawWrapped(`Tips Split: ${evt.tipsModeLabel}`, { size: 10 });
     y -= 8;
 
     // --- TIMESHEET ---
@@ -521,7 +524,7 @@ export async function GET(req: NextRequest) {
     // Batch fetch all data in parallel
     const [eventsResult, teamsResult, timeEntriesResult, vendorPaymentsResult, eventPaymentsResult, ratesResult] = await Promise.all([
       supabaseAdmin.from("events")
-        .select("id, event_name, venue, city, state, event_date, start_time, end_time, ends_next_day, tips, fees, other_income, ticket_sales, tax_rate_percent, commission_pool")
+        .select("id, event_name, venue, city, state, event_date, start_time, end_time, ends_next_day, tips, fees, other_income, ticket_sales, tax_rate_percent, commission_pool, tips_distribution_mode")
         .in("id", eventIds),
       supabaseAdmin.from("event_teams")
         .select("event_id, vendor_id")
@@ -704,7 +707,16 @@ export async function GET(req: NextRequest) {
       const perVendorCommissionShare = vendorCountForCommission > 0 ? eventCommissionDollars / vendorCountForCommission : 0;
 
       const totalTips = eventTotalTips;
-      const totalEventHours = vendorPayments.reduce((sum: number, p: any) => sum + getEffectiveHours(p), 0);
+      const tipsSharesByUser = distributeTipsPool({
+        totalAmount: totalTips,
+        members: vendorPayments.flatMap((p: any) => {
+          const uid = (p.user_id || "").toString();
+          const hours = getEffectiveHours(p);
+          if (!uid || isTrailersDivision(p?.users?.division) || p?.tips_deleted === true || hours <= 0) return [];
+          return [{ id: uid, hours }];
+        }),
+        mode: evt.tips_distribution_mode,
+      }).amountsById;
 
       const paysheetRows = vendorPayments.map((payment: any) => {
         const user = payment.users;
@@ -750,7 +762,13 @@ export async function GET(req: NextRequest) {
           ? loadedRateBase
           : (actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate);
 
-        const tips = (totalEventHours > 0 && totalTips > 0) ? totalTips * (actualHours / totalEventHours) : Number(payment.tips || 0);
+        const tips = payment.tips_deleted === true
+          ? 0
+          : payment.tips_override != null
+          ? Number(payment.tips_override)
+          : totalTips > 0
+          ? Number(tipsSharesByUser[(payment.user_id || "").toString()] || 0)
+          : Number(payment.tips || 0);
         const restBreak = getRestBreakAmount(actualHours, eventState);
         const totalPay = totalFinalCommissionAmt + tips + restBreak;
         const finalPay = totalPay + adjustmentAmount;
@@ -807,6 +825,7 @@ export async function GET(req: NextRequest) {
         date: evt.event_date || "--",
         startTime: evt.start_time || null,
         endTime: evt.end_time || null,
+        tipsModeLabel: tipsDistributionModeLabel(evt.tips_distribution_mode),
         timesheet: timesheetRows,
         paysheet: paysheetRows,
         attestations: attestationRows,

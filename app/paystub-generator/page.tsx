@@ -5,7 +5,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
-import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
 
 interface PaymentData {
@@ -71,6 +71,7 @@ interface Event {
   regionName?: string | null;
   event_payment?: EventPaymentSummary | null;
   workers?: Worker[];
+  tips_distribution_mode?: string | null;
 }
 
 type ImportedEmployeeRow = {
@@ -461,10 +462,10 @@ export default function PaystubGenerator() {
       allShortShiftMode: shortShiftModeForDate(event.event_date),
     });
     const totalTips = Number(event.event_payment?.total_tips || 0) || Number(event.tips || 0);
-    const tipsDistribution = distributePoolByHoursRule({
+    const tipsDistribution = distributeTipsPool({
       totalAmount: totalTips,
       members: tipsEligibleMembers,
-      allShortShiftMode: shortShiftModeForDate(event.event_date),
+      mode: event.tips_distribution_mode,
     });
 
     return {

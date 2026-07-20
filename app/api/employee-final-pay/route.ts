@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getMondayOfWeek } from '@/lib/utils';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
-import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
 import { attachRegionMetadataToEvents } from '@/lib/event-region';
@@ -145,7 +145,7 @@ export async function GET(req: NextRequest) {
 
     const { data: rawEvents, error: eventsError } = await supabaseAdmin
       .from('events')
-      .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income')
+      .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
       .gte('event_date', startDate)
       .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
@@ -392,10 +392,10 @@ export async function GET(req: NextRequest) {
           members: commissionEligibleMembers,
           allShortShiftMode: shortShiftModeForDate(ev.event_date),
         }).amountsById,
-        tipsSharesByUser: distributePoolByHoursRule({
+        tipsSharesByUser: distributeTipsPool({
           totalAmount: totalTipsEvent,
           members: tipsEligibleMembers,
-          allShortShiftMode: shortShiftModeForDate(ev.event_date),
+          mode: ev.tips_distribution_mode,
         }).amountsById,
       };
     }

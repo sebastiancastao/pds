@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
-import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion, isNorCalRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
@@ -42,6 +42,7 @@ type EventItem = {
   merchandise_value?: number | null;
   fees?: number | null;
   other_income?: number | null;
+  tips_distribution_mode?: "equal" | "prorated" | null;
 };
 
 type Venue = {
@@ -403,6 +404,7 @@ export default function EventDashboardPage() {
   const [uninvitingMemberId, setUninvitingMemberId] = useState<string | null>(null);
   const [savingTeamRoleMemberId, setSavingTeamRoleMemberId] = useState<string | null>(null);
   const [savingTeamTipsMemberId, setSavingTeamTipsMemberId] = useState<string | null>(null);
+  const [savingTipsDistributionMode, setSavingTipsDistributionMode] = useState(false);
   const [savingTeamStandLeaderMemberId, setSavingTeamStandLeaderMemberId] = useState<string | null>(null);
   const [addVendorSearch, setAddVendorSearch] = useState<string>("");
   const [addVendorState, setAddVendorState] = useState<string>("all");
@@ -2053,6 +2055,37 @@ export default function EventDashboardPage() {
     }
   };
 
+  const handleUpdateTipsDistributionMode = async (mode: "equal" | "prorated") => {
+    if (!eventId || savingTipsDistributionMode || event?.tips_distribution_mode === mode) return;
+
+    setSavingTipsDistributionMode(true);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ tips_distribution_mode: mode }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update tips distribution mode");
+      }
+
+      setEvent((prev) => (prev ? { ...prev, tips_distribution_mode: mode } : prev));
+      markPayrollDataDirty();
+      setMessage(`Tips will now be split ${mode === "equal" ? "evenly" : "prorated by hours"} for this event.`);
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to update tips distribution mode");
+    } finally {
+      setSavingTipsDistributionMode(false);
+    }
+  };
+
   const handleUpdateTeamStandLeader = async (member: any, standLeader: boolean) => {
     if (!eventId || !member?.id) return;
 
@@ -3143,6 +3176,7 @@ export default function EventDashboardPage() {
       }
 
       row.Tips = money(proratedTips);
+      row["Tips Mode"] = tipsDistributionModeLabel(event?.tips_distribution_mode);
 
       if (!hideRestBreakColumn) {
         row["Rest Break"] = money(restBreak);
@@ -4103,7 +4137,7 @@ export default function EventDashboardPage() {
     totalAmount: number,
     getHoursForUser: (uid: string) => number
   ): Record<string, number> => {
-    return distributePoolByHoursRule({
+    return distributeTipsPool({
       totalAmount,
       members: teamMembers.flatMap((member: any) => {
         const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
@@ -4111,7 +4145,7 @@ export default function EventDashboardPage() {
         if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
-      allShortShiftMode: shortShiftModeForDate(event?.event_date),
+      mode: event?.tips_distribution_mode,
     }).amountsById;
   };
 
@@ -4230,7 +4264,7 @@ export default function EventDashboardPage() {
     return buildTipsSharesByUser(Number(tips) || 0, (uid) =>
       getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
     );
-  }, [teamMembers, timesheetTotals, tipsOverrides, tips]);
+  }, [teamMembers, timesheetTotals, tipsOverrides, tips, event?.tips_distribution_mode]);
 
   const getPersistedWorkerHoursForPeriod = (worker: any): number => {
     return getPersistedWorkerHoursForCommission(worker);
@@ -5342,6 +5376,38 @@ export default function EventDashboardPage() {
                           salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
                         }`}
                       />
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <span className="text-xs text-gray-500">Split:</span>
+                      <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                        <button
+                          type="button"
+                          disabled={salesReadOnly || savingTipsDistributionMode}
+                          onClick={() => handleUpdateTipsDistributionMode("prorated")}
+                          title="Split tips proportionally by hours worked"
+                          className={`px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                            (event?.tips_distribution_mode || "prorated") === "prorated"
+                              ? "bg-blue-600 text-white"
+                              : "bg-white text-gray-600 hover:bg-gray-50"
+                          }`}
+                        >
+                          Prorated
+                        </button>
+                        <button
+                          type="button"
+                          disabled={salesReadOnly || savingTipsDistributionMode}
+                          onClick={() => handleUpdateTipsDistributionMode("equal")}
+                          title="Split tips evenly among eligible staff"
+                          className={`px-3 py-1 text-xs font-medium transition-colors border-l border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed ${
+                            event?.tips_distribution_mode === "equal"
+                              ? "bg-blue-600 text-white"
+                              : "bg-white text-gray-600 hover:bg-gray-50"
+                          }`}
+                        >
+                          Even Split
+                        </button>
+                      </div>
+                      {savingTipsDistributionMode && <span className="text-xs text-gray-400">Saving…</span>}
                     </div>
                   </div>
 

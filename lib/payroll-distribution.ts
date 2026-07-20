@@ -28,6 +28,32 @@ type DistributePoolArgs = {
   allShortShiftMode?: AllShortShiftMode;
 };
 
+// Tips distribution is a manual per-event choice (events.tips_distribution_mode),
+// independent of the short-shift proration rule used for commissions above.
+// "equal": pool split evenly among eligible staff, regardless of hours.
+// "prorated" (default): pool split proportionally by hours worked.
+export type TipsDistributionMode = "equal" | "prorated";
+
+type DistributeTipsArgs = {
+  totalAmount: number;
+  members: PoolDistributionMember[];
+  mode?: TipsDistributionMode | string | null;
+};
+
+export function distributeTipsPool({ totalAmount, members, mode }: DistributeTipsArgs): PoolDistributionResult {
+  return distributePoolByHoursRule({
+    totalAmount,
+    members,
+    mode: mode === "equal" ? "equal" : "hours",
+    // No short-shift exception for tips; the mode above is the only lever.
+    shortShiftThresholdHours: 0,
+  });
+}
+
+export function tipsDistributionModeLabel(mode?: string | null): "Even Split" | "Prorated" {
+  return mode === "equal" ? "Even Split" : "Prorated";
+}
+
 const toPositiveNumber = (value: number): number => {
   const numericValue = Number(value);
   return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0;
