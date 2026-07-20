@@ -5386,7 +5386,7 @@ export default function EventDashboardPage() {
                           onClick={() => handleUpdateTipsDistributionMode("prorated")}
                           title="Split tips proportionally by hours worked"
                           className={`px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                            (event?.tips_distribution_mode || "prorated") === "prorated"
+                            event?.tips_distribution_mode === "prorated"
                               ? "bg-blue-600 text-white"
                               : "bg-white text-gray-600 hover:bg-gray-50"
                           }`}
@@ -5399,7 +5399,7 @@ export default function EventDashboardPage() {
                           onClick={() => handleUpdateTipsDistributionMode("equal")}
                           title="Split tips evenly among eligible staff"
                           className={`px-3 py-1 text-xs font-medium transition-colors border-l border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed ${
-                            event?.tips_distribution_mode === "equal"
+                            event?.tips_distribution_mode !== "prorated"
                               ? "bg-blue-600 text-white"
                               : "bg-white text-gray-600 hover:bg-gray-50"
                           }`}

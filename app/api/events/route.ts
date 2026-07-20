@@ -6,7 +6,6 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendNonEventTimesheetCreatedNotification } from "@/lib/email";
 import { getEventAssociationMap } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
-import { defaultTipsDistributionModeForDate } from "@/lib/payroll-distribution";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -124,7 +123,7 @@ export async function POST(req: NextRequest) {
       is_active,
       event_type,
       division,
-      tips_distribution_mode: defaultTipsDistributionModeForDate(event_date),
+      tips_distribution_mode: "equal",
     };
     const { data, error } = await supabaseAdmin.from("events").insert([event]).select();
     // Debug output for DB response/error

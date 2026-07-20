@@ -5,6 +5,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { getEventAssociationMap } from "@/lib/event-associations";
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,

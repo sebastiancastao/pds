@@ -8,6 +8,7 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-d
 import { attachRegionMetadataToEvents } from '@/lib/event-region';
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,

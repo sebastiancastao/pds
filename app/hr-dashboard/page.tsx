@@ -1425,7 +1425,7 @@ function HRDashboardContent() {
           totalOther: eventTotalOther,
           eventTotal,
           eventHours,
-          tipsDistributionMode: eventInfo.tips_distribution_mode || 'prorated',
+          tipsDistributionMode: eventInfo.tips_distribution_mode === 'prorated' ? 'prorated' : 'equal',
           payments: eventPayments
         });
       }

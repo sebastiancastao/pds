@@ -6,6 +6,9 @@ import { deleteEventAssociations } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { canUserAccessEventById } from "@/lib/event-access";
 
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!

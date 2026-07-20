@@ -7,6 +7,7 @@ import { decrypt, isEncrypted } from "@/lib/encryption";
 import { distributeTipsPool, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
 const supabaseAdmin = createClient(

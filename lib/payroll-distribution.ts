@@ -30,8 +30,8 @@ type DistributePoolArgs = {
 
 // Tips distribution is a manual per-event choice (events.tips_distribution_mode),
 // independent of the short-shift proration rule used for commissions above.
-// "equal": pool split evenly among eligible staff, regardless of hours.
-// "prorated" (default): pool split proportionally by hours worked.
+// "equal" (default): pool split evenly among eligible staff, regardless of hours.
+// "prorated": pool split proportionally by hours worked — an explicit opt-in.
 export type TipsDistributionMode = "equal" | "prorated";
 
 type DistributeTipsArgs = {
@@ -44,24 +44,15 @@ export function distributeTipsPool({ totalAmount, members, mode }: DistributeTip
   return distributePoolByHoursRule({
     totalAmount,
     members,
-    mode: mode === "equal" ? "equal" : "hours",
+    // Even split is the default; only an explicit "prorated" opts into hours-based.
+    mode: mode === "prorated" ? "hours" : "equal",
     // No short-shift exception for tips; the mode above is the only lever.
     shortShiftThresholdHours: 0,
   });
 }
 
 export function tipsDistributionModeLabel(mode?: string | null): "Even Split" | "Prorated" {
-  return mode === "equal" ? "Even Split" : "Prorated";
-}
-
-// Default tips_distribution_mode for newly created events: even split for
-// events on/after this date, prorated before it. Only applies at event
-// creation time — the toggle can still override it either way afterward.
-export const TIPS_EVEN_SPLIT_DEFAULT_START_DATE = "2026-07-06";
-
-export function defaultTipsDistributionModeForDate(eventDate?: string | null): TipsDistributionMode {
-  if (!eventDate) return "prorated";
-  return eventDate.toString().split("T")[0] >= TIPS_EVEN_SPLIT_DEFAULT_START_DATE ? "equal" : "prorated";
+  return mode === "prorated" ? "Prorated" : "Even Split";
 }
 
 const toPositiveNumber = (value: number): number => {

@@ -5,6 +5,7 @@ import { attachRegionMetadataToEvents } from "@/lib/event-region";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
