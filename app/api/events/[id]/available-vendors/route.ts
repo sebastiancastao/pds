@@ -5,6 +5,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { canUserAccessLoadedEvent } from "@/lib/event-access";
 import { decrypt } from "@/lib/encryption";
 import { geocodeAddress } from "@/lib/geocoding";
+import { findSameDayConflicts, type SameDayConflict } from "@/lib/team-conflicts";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -408,27 +409,20 @@ export async function GET(
       ? vendorIds
       : Array.from(vendorMetaMap.keys());
 
-    // Step 4 — find vendors already confirmed in other events on the same date
-    const confirmedElsewhereIds = new Set<string>();
-    if (uniqueAvailableVendorIds.length > 0) {
-      const { data: sameDateEvents } = await supabaseAdmin
-        .from('events')
-        .select('id')
-        .eq('event_date', eventDateKey)
-        .neq('id', eventId);
-
-      if (sameDateEvents && sameDateEvents.length > 0) {
-        const sameEventIds = sameDateEvents.map((e: any) => e.id);
-        const { data: confirmedMembers } = await supabaseAdmin
-          .from('event_teams')
-          .select('vendor_id')
-          .in('event_id', sameEventIds)
-          .eq('status', 'confirmed')
-          .in('vendor_id', uniqueAvailableVendorIds);
-
-        if (confirmedMembers) {
-          for (const m of confirmedMembers) confirmedElsewhereIds.add(m.vendor_id);
-        }
+    // Step 4 — find vendors already booked on other events with the same date.
+    // Pending invites count too: a vendor slow to confirm one invite used to
+    // slip past this check and get double-invited.
+    let sameDayConflicts = new Map<string, SameDayConflict>();
+    if (uniqueAvailableVendorIds.length > 0 && !isNonEventTimesheet) {
+      try {
+        sameDayConflicts = await findSameDayConflicts(supabaseAdmin, {
+          eventId,
+          eventDate: eventDateKey,
+          eventType: (event as any).event_type,
+          vendorIds: uniqueAvailableVendorIds,
+        });
+      } catch (conflictErr) {
+        console.warn('[AVAILABLE-VENDORS] Could not check same-date bookings:', conflictErr);
       }
     }
 
@@ -492,7 +486,9 @@ export async function GET(
           partialAvailability: vendorMetaMap.get(vendor.id)?.isPartial ?? false,
           availableFrom: vendorMetaMap.get(vendor.id)?.startTime ?? null,
           availableTo:   vendorMetaMap.get(vendor.id)?.endTime   ?? null,
-          confirmedElsewhere: confirmedElsewhereIds.has(vendor.id),
+          confirmedElsewhere: sameDayConflicts.has(vendor.id),
+          conflictEventName: sameDayConflicts.get(vendor.id)?.eventName ?? null,
+          conflictStatus: sameDayConflicts.get(vendor.id)?.status ?? null,
         };
       })
       .sort((a: any, b: any) => {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { sendNonEventTimesheetLinkEmail } from "@/lib/email";
+import { findSameDayConflicts } from "@/lib/team-conflicts";
 
 export const dynamic = 'force-dynamic';
 
@@ -232,6 +233,31 @@ export async function POST(
         error: 'This invitation has already been responded to',
         currentStatus: teamInvitation.status
       }, { status: 400 });
+    }
+
+    // Refuse to double-confirm: if the vendor is already confirmed on another
+    // event with the same date, the first confirmation wins. Declining stays
+    // allowed so the vendor can clear the extra invite.
+    if (action === 'confirm') {
+      const { data: invitationEvent } = await supabaseAdmin
+        .from('events')
+        .select('id, event_date, event_type')
+        .eq('id', teamInvitation.event_id)
+        .maybeSingle();
+
+      const conflicts = await findSameDayConflicts(supabaseAdmin, {
+        eventId: String(teamInvitation.event_id),
+        eventDate: invitationEvent?.event_date,
+        eventType: invitationEvent?.event_type,
+        vendorIds: [String(teamInvitation.vendor_id)],
+        statuses: ['confirmed'],
+      });
+      const conflict = conflicts.get(String(teamInvitation.vendor_id));
+      if (conflict) {
+        return NextResponse.json({
+          error: `You are already confirmed for "${conflict.eventName}"${conflict.venue ? ` at ${conflict.venue}` : ''} on this date, so this invitation can't be confirmed. If you'd like to switch events, please contact your event manager.`,
+        }, { status: 409 });
+      }
     }
 
     // Update status based on action

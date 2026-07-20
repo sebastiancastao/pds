@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt } from "@/lib/encryption";
 import { sendProposalDeclinedEmail, sendTeamConfirmationEmail } from "@/lib/email";
+import { findSameDayConflicts } from "@/lib/team-conflicts";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -163,7 +164,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         vendor_id,
         proposed_by,
         status,
-        events(id, event_name, event_date, start_time, venue, created_by),
+        events(id, event_name, event_date, start_time, venue, created_by, event_type),
         event_locations(id, name)
       `)
       .eq("id", proposalId)
@@ -199,6 +200,26 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const eventStartTime = formatTime(eventData?.start_time);
     const venueName = String(eventData?.venue || "");
     const locationName = String(locationData?.name || "");
+
+    // Approving auto-invites the vendor, so refuse approvals that would
+    // double-book them on another event the same day.
+    if (action === "approved") {
+      const conflicts = await findSameDayConflicts(supabaseAdmin, {
+        eventId: String(proposal.event_id),
+        eventDate: (eventData as any)?.event_date,
+        eventType: (eventData as any)?.event_type,
+        vendorIds: [String(proposal.vendor_id)],
+      });
+      const conflict = conflicts.get(String(proposal.vendor_id));
+      if (conflict) {
+        return NextResponse.json(
+          {
+            error: `${vendorName} is already ${conflict.status === "confirmed" ? "confirmed" : "invited"} for "${conflict.eventName}"${conflict.venue ? ` at ${conflict.venue}` : ""} on the same date. Resolve that booking before approving this proposal.`,
+          },
+          { status: 409 }
+        );
+      }
+    }
 
     const { error: updateError } = await supabaseAdmin
       .from("vendor_location_proposals")
@@ -239,26 +260,33 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         }
       }
 
-      // Update or insert into event_teams with a fresh confirmation_token
+      // Update or insert into event_teams with a fresh confirmation_token.
+      // A member who already confirmed this event stays confirmed — knocking
+      // them back to pending and re-emailing an invitation confused vendors.
       const confirmationToken = crypto.randomBytes(32).toString("hex");
       const { data: existingTeamRow } = await supabaseAdmin
         .from("event_teams")
-        .select("id")
+        .select("id, status")
         .eq("event_id", proposal.event_id)
         .eq("vendor_id", proposal.vendor_id)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
+      const alreadyConfirmedOnEvent =
+        String((existingTeamRow as any)?.status || "").toLowerCase() === "confirmed";
+
       if (existingTeamRow?.id) {
-        await supabaseAdmin
-          .from("event_teams")
-          .update({
-            status: "pending_confirmation",
-            confirmation_token: confirmationToken,
-            assigned_by: auth.userId,
-          })
-          .eq("id", existingTeamRow.id);
+        if (!alreadyConfirmedOnEvent) {
+          await supabaseAdmin
+            .from("event_teams")
+            .update({
+              status: "pending_confirmation",
+              confirmation_token: confirmationToken,
+              assigned_by: auth.userId,
+            })
+            .eq("id", existingTeamRow.id);
+        }
       } else {
         await supabaseAdmin
           .from("event_teams")
@@ -271,7 +299,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
           });
       }
 
-      if (vendorEmail) {
+      if (vendorEmail && !alreadyConfirmedOnEvent) {
         try {
           // Look up the event creator's profile for manager name / phone
           const eventCreatedBy = String((eventData as any)?.created_by || "");

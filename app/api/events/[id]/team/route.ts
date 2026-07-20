@@ -5,6 +5,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail, sendTeamBuildingNotification, sendAddConfirmUsageNotification, sendNonEventTimesheetLinkEmail } from "@/lib/email";
 import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
+import { findSameDayConflicts } from "@/lib/team-conflicts";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import crypto from "crypto";
 
@@ -308,8 +309,42 @@ export async function POST(
       }, { status: 200 });
     }
 
+    // Server-side guard against same-day double booking. The invite pickers
+    // hide these vendors, but stale modal data, races, and direct API calls
+    // used to get through.
+    const sameDayConflicts = await findSameDayConflicts(supabaseAdmin, {
+      eventId,
+      eventDate: event.event_date,
+      eventType: (event as any).event_type,
+      vendorIds: newVendorIds,
+    });
+
+    const conflictedVendorIds = newVendorIds.filter(id => sameDayConflicts.has(id));
+    const invitableVendorIds = newVendorIds.filter(id => !sameDayConflicts.has(id));
+
+    const conflictNote = conflictedVendorIds.length > 0
+      ? ` Skipped ${conflictedVendorIds.length} vendor${conflictedVendorIds.length !== 1 ? 's' : ''} already booked on another event that day: ${conflictedVendorIds.map(id => {
+          const conflict = sameDayConflicts.get(id);
+          const vendor = (vendors as any[]).find(v => v.id === id);
+          return `${vendor?.email || id} (${conflict?.eventName || 'another event'})`;
+        }).join(', ')}.`
+      : '';
+
+    if (invitableVendorIds.length === 0) {
+      return NextResponse.json({
+        success: true,
+        message: `No new vendors were added.${conflictNote}`,
+        teamSize: existingVendorIds.size,
+        skippedConflicts: conflictedVendorIds.length,
+        emailStats: {
+          sent: 0,
+          failed: 0
+        }
+      }, { status: 200 });
+    }
+
     // Create team assignments only for new vendors
-    const teamMembers = newVendorIds.map(vendorId => ({
+    const teamMembers = invitableVendorIds.map(vendorId => ({
       event_id: eventId,
       vendor_id: vendorId,
       assigned_by: user.id,
@@ -336,7 +371,7 @@ export async function POST(
       }, { status: 500 });
     }
 
-    const totalTeamSize = existingVendorIds.size + newVendorIds.length;
+    const totalTeamSize = existingVendorIds.size + invitableVendorIds.length;
     const alreadyOnTeam = vendorIds.filter(id => existingVendorIds.has(id)).length;
 
     let notifyManagerName = 'Event Manager';
@@ -348,7 +383,7 @@ export async function POST(
       }
     } catch {}
 
-    const newVendorsForNotify = (vendors as any[]).filter(v => newVendorIds.includes(v.id));
+    const newVendorsForNotify = (vendors as any[]).filter(v => invitableVendorIds.includes(v.id));
     const notifyVendorNames: string[] = newVendorsForNotify.map(v => {
       try {
         const f = v.profiles?.first_name ? decrypt(v.profiles.first_name) : '';
@@ -414,18 +449,19 @@ export async function POST(
     if (shouldAutoConfirm) {
       return NextResponse.json({
         success: true,
-        message: alreadyOnTeam > 0
-          ? `Added ${newVendorIds.length} new vendor${newVendorIds.length !== 1 ? 's' : ''} as confirmed (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}.`
-          : `Added ${newVendorIds.length} vendor${newVendorIds.length !== 1 ? 's' : ''} to the team as confirmed. Total team size: ${totalTeamSize}.`,
+        message: (alreadyOnTeam > 0
+          ? `Added ${invitableVendorIds.length} new vendor${invitableVendorIds.length !== 1 ? 's' : ''} as confirmed (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}.`
+          : `Added ${invitableVendorIds.length} vendor${invitableVendorIds.length !== 1 ? 's' : ''} to the team as confirmed. Total team size: ${totalTeamSize}.`) + conflictNote,
         teamSize: totalTeamSize,
-        newMembers: newVendorIds.length,
+        newMembers: invitableVendorIds.length,
         alreadyOnTeam: alreadyOnTeam,
+        skippedConflicts: conflictedVendorIds.length,
         autoConfirmed: true
       }, { status: 200 });
     }
 
     // Send confirmation emails sequentially to avoid rate limiting (429)
-    const newVendors = vendors.filter((v: any) => newVendorIds.includes(v.id));
+    const newVendors = vendors.filter((v: any) => invitableVendorIds.includes(v.id));
 
     // Decrypt manager details once (shared across all emails)
     let managerName = 'Event Manager';
@@ -526,12 +562,13 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      message: alreadyOnTeam > 0
-        ? `Added ${newVendorIds.length} new vendor${newVendorIds.length !== 1 ? 's' : ''} to the team (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}. Awaiting confirmation.`
-        : `Team invitations sent to ${newVendorIds.length} vendor${newVendorIds.length !== 1 ? 's' : ''}. Total team size: ${totalTeamSize}. Awaiting confirmation.`,
+      message: (alreadyOnTeam > 0
+        ? `Added ${invitableVendorIds.length} new vendor${invitableVendorIds.length !== 1 ? 's' : ''} to the team (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}. Awaiting confirmation.`
+        : `Team invitations sent to ${invitableVendorIds.length} vendor${invitableVendorIds.length !== 1 ? 's' : ''}. Total team size: ${totalTeamSize}. Awaiting confirmation.`) + conflictNote,
       teamSize: totalTeamSize,
-      newMembers: newVendorIds.length,
+      newMembers: invitableVendorIds.length,
       alreadyOnTeam: alreadyOnTeam,
+      skippedConflicts: conflictedVendorIds.length,
       emailStats: {
         sent: emailsSent,
         failed: emailsFailed
