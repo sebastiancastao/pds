@@ -146,7 +146,7 @@ export async function GET(req: NextRequest) {
 
     const { data: rawEvents, error: eventsError } = await supabaseAdmin
       .from('events')
-      .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
+      .select('id, name:event_name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
       .gte('event_date', startDate)
       .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
@@ -169,7 +169,7 @@ export async function GET(req: NextRequest) {
     // Fetch vendor payment records for this user in those events
     const { data: vendorPayments, error: vpError } = await supabaseAdmin
       .from('event_vendor_payments')
-      .select('event_id, effective_hours, actual_hours, worked_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, variable_incentive, tips, total_pay')
+      .select('event_id, actual_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, tips, total_pay')
       .eq('user_id', userId)
       .in('event_id', eventIds);
 
@@ -183,9 +183,7 @@ export async function GET(req: NextRequest) {
       .select(`
         event_id,
         user_id,
-        effective_hours,
         actual_hours,
-        worked_hours,
         regular_hours,
         overtime_hours,
         doubletime_hours,

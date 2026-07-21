@@ -8,14 +8,14 @@ import { sendEmail } from "@/lib/email";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-/** Shared helper — sends the Phase 2 approval email. Returns sendEmail result. */
+/** Shared helper: sends the onboarding approval email. Returns sendEmail result. */
 async function sendOnboardingApprovalEmail(
   _adminClient: any,
   _send_email: any,
   userEmail: string,
   fullName: string
 ) {
-  const subject = 'Phase 2 Onboarding Documents Approved';
+  const subject = 'Your Onboarding Has Been Approved';
   const html = `
 <!DOCTYPE html>
 <html>
@@ -28,7 +28,7 @@ async function sendOnboardingApprovalEmail(
             <tr>
               <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px 30px; text-align: center;">
                 <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Congratulations!</h1>
-                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Phase 2 Complete</p>
+                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Onboarding Approved</p>
               </td>
             </tr>
             <tr>
@@ -37,10 +37,10 @@ async function sendOnboardingApprovalEmail(
                   Hello <strong>${fullName}</strong>,
                 </p>
                 <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  Congratulations! Your Phase 2 onboarding documents have been successfully reviewed and approved.
+                  Your onboarding has been approved.
                 </p>
                 <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  You will now advance to <strong>Phase 3</strong> of the onboarding process, which will include calendar availability review and clock-in / clock-out training.
+                  HR will follow up with any remaining training or document review details.
                 </p>
                 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
                   <tr>
@@ -237,7 +237,7 @@ export async function GET(req: NextRequest) {
 
     // Onboarding stage markers to exclude (these are not actual forms).
     // Background-check forms belong to the background phase (tracked in its own
-    // column), so they must not count as Phase 2 onboarding form progress.
+    // column), so they must not count as main onboarding form progress.
     const STAGE_MARKERS = [
       'onboarding-mfa-setup',
       'onboarding-register',

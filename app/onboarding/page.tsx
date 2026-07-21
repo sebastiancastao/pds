@@ -211,7 +211,7 @@ export default function OnboardingPage() {
     }
   };
 
-  // Checkbox 2 — send the Phase 2 approval email (no DB change)
+  // Checkbox 2: send the onboarding approval email (no DB change)
   const handleSendEmail = async (profileId: string) => {
     if (emailSentNow.has(profileId)) return;
     try {
@@ -1035,7 +1035,7 @@ export default function OnboardingPage() {
                                     {sendingEmail === user.id && <span className="ml-1 text-gray-400">(sending…)</span>}
                                   </span>
                                   <span className="text-gray-400 block">
-                                    Sends Phase 2 approval email to employee
+                                    Sends onboarding approval email to employee
                                   </span>
                                   {(user.onboarding_status?.hr_approval_sent_at || emailSentNow.has(user.id)) && (
                                     <span className="text-blue-600 block mt-0.5">

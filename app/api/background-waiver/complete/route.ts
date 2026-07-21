@@ -12,7 +12,7 @@ function userReceiptHtml(first: string) {
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>Background Check Submitted Successfully</title>
+      <title>Onboarding In Process - Pending HR Approval</title>
     </head>
     <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #f5f5f5;">
       <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
@@ -24,7 +24,7 @@ function userReceiptHtml(first: string) {
               <tr>
                 <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
                   <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✓ Submission Successful</h1>
-                  <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Your background check forms have been received</p>
+                  <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Your onboarding is now in process</p>
                 </td>
               </tr>
 
@@ -36,16 +36,16 @@ function userReceiptHtml(first: string) {
                   </p>
 
                   <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                    Thank you for submitting your background check documents. We have successfully received your submission!
+                    Thank you for submitting your onboarding documents. We have successfully received your submission.
                   </p>
 
                   <!-- Status Box -->
                   <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
                     <tr>
                       <td style="padding: 20px;">
-                        <p style="color: #856404; margin: 0 0 10px 0; font-size: 15px; font-weight: bold;">⏳ Important: Subject to Approval</p>
+                        <p style="color: #856404; margin: 0 0 10px 0; font-size: 15px; font-weight: bold;">Important: Pending HR Approval</p>
                         <p style="color: #856404; margin: 0; font-size: 14px; line-height: 1.6;">
-                          Your background check is currently under review by our HR team. We will notify you by email as soon as your background check has been approved.
+                          Your onboarding is now in process and pending approval from HR. We will notify you by email once your onboarding has been approved.
                         </p>
                       </td>
                     </tr>
@@ -54,9 +54,9 @@ function userReceiptHtml(first: string) {
                   <!-- Next Steps -->
                   <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">What happens next?</h3>
                   <ul style="color: #555555; font-size: 15px; line-height: 1.8; margin: 0; padding-left: 20px;">
-                    <li>Our HR team will review your submission</li>
-                    <li>You'll receive an email notification once approved</li>
-                    <li>After approval, you can proceed with the onboarding process</li>
+                    <li>Our HR team will review your onboarding submission</li>
+                    <li>You'll receive an email notification once your onboarding is approved</li>
+                    <li>After approval, you can continue in the portal</li>
                   </ul>
 
                   <!-- Support -->
@@ -64,7 +64,7 @@ function userReceiptHtml(first: string) {
                     <tr>
                       <td style="padding: 20px;">
                         <p style="color: #0c5280; margin: 0; font-size: 14px;">
-                          <strong>Questions?</strong> If you have any questions about your background check status, please contact us at
+                          <strong>Questions?</strong> If you have any questions about your onboarding status, please contact us at
                           <a href="mailto:portal@1pds.net" style="color: #2196F3; text-decoration: none;">portal@1pds.net</a>
                         </p>
                       </td>
@@ -294,7 +294,7 @@ export async function POST(request: NextRequest) {
         const emailResult = await sendEmail({
           from: `PDS HR Team <${fromEmail}>`,
           to: [toEmail],
-          subject: 'Background Check Submitted Successfully - Subject to Approval',
+          subject: 'Onboarding In Process - Pending HR Approval',
           html: userReceiptHtml(first),
         });
         if (!emailResult.success) {
@@ -309,7 +309,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: 'Background check marked as completed',
+      message: 'Onboarding is now in process and pending approval from HR',
       emailSentToUser,
     });
 

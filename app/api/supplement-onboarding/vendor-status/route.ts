@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
  *
  * - mark_complete:   Sets vendor_onboarding_status.onboarding_completed = true (no email sent)
  * - mark_incomplete: Sets vendor_onboarding_status.onboarding_completed = false
- * - send_email:      Sends the Phase 2 approval confirmation email to the employee
+ * - send_email:      Sends the onboarding approval confirmation email to the employee
  */
 export async function POST(req: NextRequest) {
   const user = await getAuthUser(req);
@@ -129,7 +129,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No email address on file for this employee' }, { status: 400 });
     }
 
-    const subject = 'Phase 2 Onboarding Documents Approved';
+    const subject = 'Your Onboarding Has Been Approved';
     const html = `
 <!DOCTYPE html>
 <html>
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
             <tr>
               <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px 30px; text-align: center;">
                 <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Congratulations!</h1>
-                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Phase 2 Complete</p>
+                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Onboarding Approved</p>
               </td>
             </tr>
             <tr>
@@ -151,10 +151,10 @@ export async function POST(req: NextRequest) {
                   Hello <strong>${fullName}</strong>,
                 </p>
                 <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  Congratulations! Your Phase 2 onboarding documents have been successfully reviewed and approved.
+                  Your onboarding has been approved.
                 </p>
                 <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  You will now advance to <strong>Phase 3</strong> of the onboarding process, which will include calendar availability review and clock-in / clock-out training.
+                  HR will follow up with any remaining training or document review details.
                 </p>
                 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
                   <tr>

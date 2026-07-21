@@ -42,6 +42,9 @@ const VALIDATION_REQUEST_TIMEOUT_MS = 10_000;
 const ACTION_REQUEST_TIMEOUT_MS = 12_000;
 const SYNC_REQUEST_TIMEOUT_MS = 15_000;
 const HEARTBEAT_REQUEST_TIMEOUT_MS = 5_000;
+const SERVER_CAPTURE_WARNING =
+  "Code validation needs a server connection, and actions may not be captured on the server right now. If a worker is already verified on screen, actions can still be saved locally.";
+const ROOM_MANAGER_CONTACT_MESSAGE = "Please reach out to the room managers immediately";
 
 type QueuedAction = {
   id: string;
@@ -937,9 +940,7 @@ export default function CheckInKioskPage() {
     } catch (err) {
       if (isAbortError(err)) {
         if (navigator.onLine) setIsSlowConnection(true);
-        setError(
-          "Connection is slow or unavailable. Code validation needs internet. If a worker is already verified on screen, actions can still be saved locally."
-        );
+        setError(SERVER_CAPTURE_WARNING);
       } else {
         setError("Connection error. Please try again.");
       }
@@ -1127,6 +1128,15 @@ export default function CheckInKioskPage() {
   if (!isAuthed) return null;
 
   const codeComplete = isValidCheckinCode(digits.join(""));
+  const shouldShowRoomManagerContact = error.includes("actions may not be captured on the server");
+  const errorMessage = (
+    <div className="min-w-0">
+      <p className="text-sm text-red-800">{error}</p>
+      {shouldShowRoomManagerContact && (
+        <p className="mt-1 text-sm font-bold text-red-700">{ROOM_MANAGER_CONTACT_MESSAGE}</p>
+      )}
+    </div>
+  );
 
   // ─── Rejection reason screen ───────────────────────────────────
   if (showAttestation && showRejectionForm && worker) {
@@ -1156,7 +1166,7 @@ export default function CheckInKioskPage() {
                 <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                 </svg>
-                <p className="text-sm text-red-800">{error}</p>
+                {errorMessage}
               </div>
             )}
 
@@ -1243,7 +1253,7 @@ export default function CheckInKioskPage() {
                 <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                 </svg>
-                <p className="text-sm text-red-800">{error}</p>
+                {errorMessage}
               </div>
             )}
 
@@ -1440,7 +1450,7 @@ export default function CheckInKioskPage() {
                 <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                 </svg>
-                <p className="text-sm text-red-800">{error}</p>
+                {errorMessage}
               </div>
             )}
 
@@ -1685,8 +1695,9 @@ export default function CheckInKioskPage() {
             {isOnline && isSlowConnection && (
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
                 <p className="text-sm text-amber-800 font-medium">
-                  Internet connection is slow. Actions may be saved locally and synced automatically.
+                  Actions may not be captured on the server right now. They may be saved locally and synced automatically.
                 </p>
+                <p className="mt-2 text-sm font-bold text-red-700">{ROOM_MANAGER_CONTACT_MESSAGE}</p>
               </div>
             )}
 

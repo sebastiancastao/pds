@@ -1796,7 +1796,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
 }): Promise<EmailResult> {
   const { vendorEmail, vendorFirstName, vendorLastName, approvedAt } = data;
 
-  const emailSubject = `Background Check Status Open - ${vendorFirstName} ${vendorLastName}`;
+  const emailSubject = `Onboarding Approved - ${vendorFirstName} ${vendorLastName}`;
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -1813,7 +1813,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
           <!-- Header -->
           <tr>
             <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check </h1>
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Onboarding Approved</h1>
               <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Admin Notification</p>
             </td>
           </tr>
@@ -1822,7 +1822,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
           <tr>
             <td style="padding: 40px 30px;">
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                A background check has been marked as open for onboarding in the system.
+                Onboarding has been approved in the system.
               </p>
 
               <!-- Vendor Details Box -->
@@ -1956,7 +1956,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
 }): Promise<EmailResult> {
   const { email, firstName, lastName } = data;
 
-  const emailSubject = 'Background Check Status Open - Complete Your Onboarding';
+  const emailSubject = 'Your Onboarding Has Been Approved';
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -1986,11 +1986,11 @@ export async function sendBackgroundCheckApprovalEmail(data: {
               </p>
 
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                Great news! Your background check has been set as open  to go through onboarding.
+                Your onboarding has been approved.
               </p>
 
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                You are now scheduled to continue with <strong>PDS Onboarding – Part 2</strong>, which includes <strong>MANDATORY TRAINING</strong> for the Updated Handbook and Documents Review.
+                HR will follow up with any required training or document review details.
               </p>
 
               <!-- Important Notice Box -->
@@ -1998,18 +1998,18 @@ export async function sendBackgroundCheckApprovalEmail(data: {
                 <tr>
                   <td style="padding: 20px;">
                     <p style="color: #856404; margin: 0; font-size: 14px;">
-                      <strong>⚠️ Attendance is required</strong> in order to proceed with the onboarding process.
+                      <strong>Important:</strong> Please complete any remaining HR instructions to finish your onboarding requirements.
                     </p>
                   </td>
                 </tr>
               </table>
 
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                A separate email from <a href="mailto:Portal@1pds.net" style="color: #2196F3; text-decoration: none;">Portal@1pds.net</a> will be sent with available training session options and registration details.
+                If training is required, a separate email from <a href="mailto:Portal@1pds.net" style="color: #2196F3; text-decoration: none;">Portal@1pds.net</a> will be sent with available session options and registration details.
               </p>
 
               <!-- What We'll Cover -->
-              <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">📋 During this session, we will:</h3>
+              <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">If training is required, the session may include:</h3>
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb; margin: 20px 0;">
                 <tr>
                   <td style="padding: 24px;">

@@ -347,7 +347,7 @@ export default function OnboardingBackgroundChecksPage() {
     }
   };
 
-  // ── Onboarding: send the Phase 2 approval email (no DB status change) ──
+  // Onboarding: send the approval email (no DB status change)
   const handleSendEmail = async (record: CombinedRecord) => {
     if (!record.onbProfileId) {
       setActionError(prev => ({ ...prev, [record.user_id]: 'No onboarding profile for this user.' }));
@@ -1237,7 +1237,7 @@ export default function OnboardingBackgroundChecksPage() {
                                           HR Approval
                                           {sendingEmail === record.user_id && <span className="ml-1 text-gray-400">(sending…)</span>}
                                         </span>
-                                        <span className="text-gray-400 block">Sends Phase 2 approval email to employee</span>
+                                        <span className="text-gray-400 block">Sends onboarding approval email to employee</span>
                                         {(record.onboarding_status?.hr_approval_sent_at || emailSentNow.has(record.user_id)) && (
                                           <span className="text-blue-600 block mt-0.5">
                                             ✓ Email sent{record.onboarding_status?.hr_approval_sent_at ? ` ${new Date(record.onboarding_status.hr_approval_sent_at).toLocaleDateString()}` : ''}

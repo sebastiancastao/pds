@@ -626,7 +626,7 @@ export default function SupplementOnboardingPage() {
                                       {isEmailLoading && <span className="ml-1 text-gray-400">(sending…)</span>}
                                     </span>
                                     <span className="text-gray-400 block">
-                                      Sends Phase 2 approval email to {emp.email}
+                                      Sends onboarding approval email to {emp.email}
                                     </span>
                                     {emailAlreadySent && (
                                       <span className="text-blue-600 block mt-0.5">✓ Email sent this session</span>

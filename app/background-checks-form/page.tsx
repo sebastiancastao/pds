@@ -880,7 +880,7 @@ export default function BackgroundChecksForm() {
       // NEW WORKFLOW (worker roles): password → MFA setup → background → onboarding.
       // Background check approval is no longer required, so workers continue straight
       // to onboarding. Other roles return to login to resume their own flow.
-      alert('Background check forms submitted successfully!');
+      alert('Your onboarding is now in process and pending approval from HR.');
       if (userRole === 'worker' || userRole === 'vendor' || userRole === 'employee') {
         router.push('/register');
       } else {
@@ -1046,13 +1046,13 @@ export default function BackgroundChecksForm() {
           {checkingApproval ? (
             <>
               <h2 style={{ margin: '0 0 12px 0', fontSize: '24px', color: '#333' }}>
-                Waiting for Approval
+                Onboarding Pending Approval
               </h2>
               <p style={{ margin: '0 0 16px 0', fontSize: '16px', color: '#666' }}>
-                Your background check forms have been submitted successfully.
+                Your onboarding is now in process and pending approval from HR.
               </p>
               <p style={{ margin: '0', fontSize: '14px', color: '#999' }}>
-                Please wait while HR reviews and approves your submission.
+                HR will review your submission and notify you once it has been approved.
               </p>
               <p style={{ margin: '16px 0 0 0', fontSize: '12px', color: '#999' }}>
                 You may close this window and check back later.
@@ -1075,10 +1075,10 @@ export default function BackgroundChecksForm() {
                 </svg>
               </div>
               <h2 style={{ margin: '0 0 12px 0', fontSize: '24px', color: '#333' }}>
-                Completed!
+                Approved!
               </h2>
               <p style={{ margin: '0', fontSize: '16px', color: '#666' }}>
-                Your background check has been completed. Redirecting...
+                Your onboarding has been approved. Redirecting...
               </p>
             </>
           )}
