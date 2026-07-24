@@ -387,8 +387,6 @@ function HRDashboardContent() {
     roundUpThousandsToNextHundred(amount).toFixed(2);
   const formatExactMoney = (amount: number): string =>
     (Number.isFinite(amount) ? amount : 0).toFixed(2);
-  // Commission pay and tips are displayed/exported at 3 decimals so fractional
-  // cents from the pool-distribution math stay visible.
   const roundToThreeDecimals = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
     const absAmount = Math.abs(amount);
@@ -396,7 +394,7 @@ function HRDashboardContent() {
     return amount < 0 ? -rounded : rounded;
   };
   const formatMoney3 = (amount: number): string =>
-    roundToThreeDecimals(amount).toFixed(3);
+    roundToThreeDecimals(amount).toFixed(2);
   const usesPeriodRateBreakdown = (stateCode?: string | null): boolean =>
     isPeriodRateState(normalizeState(stateCode));
   const computeTravelPay = (diffMiles: number, stateCode: string | null | undefined, rateInEffect: number): number => {
@@ -1184,7 +1182,7 @@ function HRDashboardContent() {
             const _divComm = normalizeDivision(payment?.users?.division);
             const _isExplicitNonVendor = _divComm !== '' && !isVendorDivision(_divComm);
             if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
-            return [{ id: paymentUserId, hours: payrollHours }];
+            return [{ id: paymentUserId, hours: payrollHours, forceEvenSplit: payment.commission_even_split ?? undefined }];
           }),
           allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
         }).amountsById;
@@ -1340,8 +1338,13 @@ function HRDashboardContent() {
               ? Number(tipsSharesByUser[paymentUserId] || 0)
               : Number(payment.tips || 0);
 
+            // Manual "Variable Incentive" bonus entered on the event-dashboard Payment tab —
+            // a flat additive $ amount, independent of the computed commission-uplift figure
+            // of the same name shown elsewhere in this dashboard.
+            const manualVariableIncentive = Number(payment.variable_incentive || 0);
+
             const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll);
-            const totalPay = totalFinalCommissionAmt + tips + restBreak;
+            const totalPay = totalFinalCommissionAmt + manualVariableIncentive + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
               userId: paymentUserId,
@@ -1361,6 +1364,8 @@ function HRDashboardContent() {
               commissions: commissionAmt,
               commissionDeleted: payment.commission_deleted === true,
               commissionOverride: payment.commission_override != null ? Number(payment.commission_override) : null,
+              commissionEvenSplit: payment.commission_even_split ?? undefined,
+              manualVariableIncentive,
               tips,
               totalPay,
               adjustmentAmount,
@@ -1662,6 +1667,7 @@ function HRDashboardContent() {
           hours: roundHoursToTwoDecimals(Number(payment?.actualHours || 0)),
           commissionDeleted: payment?.commissionDeleted === true,
           commissionOverride: payment?.commissionOverride ?? null,
+          forceEvenSplit: payment?.commissionEvenSplit,
         })),
       })),
     });
@@ -1739,13 +1745,16 @@ function HRDashboardContent() {
     const overtimePay = Number(payment?.overtimePay || 0);
     const doubletimeHours = Number(payment?.doubletimeHours || 0);
     const doubletimePay = Number(payment?.doubletimePay || 0);
+    // Manual "Variable Incentive" bonus from the event-dashboard Payment tab — a flat
+    // additive amount layered on top of whatever this branch computes below.
+    const manualVariableIncentive = Number(payment?.manualVariableIncentive || 0);
 
     if (isHourlyEvent) {
-      const hourlyPay = regularPay + overtimePay + doubletimePay;
+      const hourlyPay = regularPay + overtimePay + doubletimePay + manualVariableIncentive;
       return {
         rateInEffect: hours > 0 ? (hourlyPay / hours) : Number(payment?.loadedRate ?? regRate),
         commissionPay: 0,
-        variableIncentive: 0,
+        variableIncentive: manualVariableIncentive,
         commissionPaidTotal: hourlyPay,
         regRate,
         hours,
@@ -1764,8 +1773,8 @@ function HRDashboardContent() {
       const periodWorker = payPeriodCommission.byEvent?.[event?.id]?.[payment?.userId];
       const rateInEffect = Number(periodWorker?.rateInEffect || 0);
       const commissionPay = Number(periodWorker?.commissionPay || 0);
-      const variableIncentive = Number(periodWorker?.variableIncentive || 0);
-      const commissionPaidTotal = Number(periodWorker?.commissionPaidTotal || 0);
+      const variableIncentive = Number(periodWorker?.variableIncentive || 0) + manualVariableIncentive;
+      const commissionPaidTotal = Number(periodWorker?.commissionPaidTotal || 0) + manualVariableIncentive;
 
       return {
         rateInEffect,
@@ -1785,11 +1794,11 @@ function HRDashboardContent() {
       };
     }
 
-    const totalFinalCommissionAmt = Number(payment?.totalFinalCommissionAmt ?? 0);
+    const totalFinalCommissionAmt = Number(payment?.totalFinalCommissionAmt ?? 0) + manualVariableIncentive;
     const commissionPay = Number(payment?.commissionShare ?? event?.commissionPerVendor ?? 0);
-    const variableIncentive = hours > 0 && !isTrailers
-      ? Math.max(0, totalFinalCommissionAmt - commissionPay)
-      : 0;
+    const variableIncentive = (hours > 0 && !isTrailers
+      ? Math.max(0, Number(payment?.totalFinalCommissionAmt ?? 0) - commissionPay)
+      : 0) + manualVariableIncentive;
 
     return {
       rateInEffect: Number(payment?.loadedRate ?? regRate),
@@ -1945,7 +1954,9 @@ function HRDashboardContent() {
       const rowReimbursement = stateReimb !== undefined ? Number(stateReimb || 0) : Number(payment?.reimbursementAmount || 0);
       const rowOther = stateOther !== undefined ? Number(stateOther || 0) : Number(payment?.otherAmount || 0);
       totals.totalCommissionPay += isHourlyEvent ? 0 : breakdown.commissionPay;
-      totals.totalVariableIncentive += isHourlyEvent ? 0 : breakdown.variableIncentive;
+      // breakdown.variableIncentive already folds in any manual bonus (which applies
+      // regardless of hourly/commission event type), so don't zero it out for hourly events.
+      totals.totalVariableIncentive += breakdown.variableIncentive;
       totals.totalCommissionPaid += breakdown.commissionPaidTotal;
       totals.totalTips += tips;
       totals.totalRestBreak += restBreak;
@@ -1981,7 +1992,13 @@ function HRDashboardContent() {
     });
     const periodUserTotals = vendor.userId ? payPeriodCommission.byUser?.[vendor.userId] : undefined;
     if (periodUserTotals) {
-      result.totalVariableIncentive = periodUserTotals.totalVariableIncentive;
+      // payPeriodCommission is computed independently of the manual variable-incentive
+      // bonus, so re-add the manual portion on top of the period-aggregate figure.
+      const totalManualVariableIncentive = vendor.events.reduce(
+        (sum, { payment }) => sum + Number(payment?.manualVariableIncentive || 0),
+        0
+      );
+      result.totalVariableIncentive = periodUserTotals.totalVariableIncentive + totalManualVariableIncentive;
     }
     return result;
   }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
@@ -4982,8 +4999,21 @@ function HRDashboardContent() {
                                   )}
                                   {showVendorCommissionColumns && (
                                     <>
-                                      <td className="px-4 py-2 text-sm text-right text-blue-600">{isHourlyEvent ? '—' : `$${formatVendorMoney(breakdown.commissionPay)}`}</td>
-                                      <td className="px-4 py-2 text-sm text-right text-gray-400">—</td>
+                                      <td className="px-4 py-2 text-sm text-right text-blue-600">
+                                        {isHourlyEvent ? '—' : `$${formatVendorMoney(breakdown.commissionPay)}`}
+                                        {!isHourlyEvent && payment.commissionEvenSplit !== undefined && (
+                                          <div className="text-[10px] font-normal text-purple-500" title="Manually overridden on the event-dashboard Payment tab">
+                                            {payment.commissionEvenSplit ? 'Even (manual)' : 'Prorated (manual)'}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-right">
+                                        {Number(payment.manualVariableIncentive || 0) > 0 ? (
+                                          <span className="text-purple-700">${formatVendorMoney(Number(payment.manualVariableIncentive || 0))}</span>
+                                        ) : (
+                                          <span className="text-gray-400">—</span>
+                                        )}
+                                      </td>
                                     </>
                                   )}
                                   <td className="px-4 py-2 text-sm text-right text-orange-600">${formatVendorMoney(Number(payment.tips || 0))}</td>
@@ -5418,7 +5448,12 @@ function HRDashboardContent() {
                                                     {showOT && (
                                                       <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
                                                     )}
-                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
+                                                    <th
+                                                      className="p-2 text-left text-xs font-medium text-gray-500 uppercase"
+                                                      title="Vendor's total commission-eligible pay (the greater of their guaranteed hourly-rate extension or their pool share). The pool share alone is shown underneath for reference."
+                                                    >
+                                                      Commission Pay
+                                                    </th>
                                                   </>
                                                 )}
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
@@ -5512,7 +5547,23 @@ function HRDashboardContent() {
                                                         {showOT && (
                                                           <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                         )}
-                                                        <td className="p-2 text-sm text-blue-600">${formatMoney3(displayedCommissionPay)}</td>
+                                                        <td className="p-2 text-sm text-blue-600">
+                                                          <div>${formatMoney3(displayedCommissionPay)}</div>
+                                                          <div
+                                                            className="text-[10px] text-gray-400 font-normal normal-case"
+                                                            title="Vendor's raw share of the commission pool: even split among staff at 8+ hours, prorated by hours below 8. This is what the guaranteed hourly-rate floor above may be topping up."
+                                                          >
+                                                            Pool share: ${formatMoney3(breakdown.commissionPay)}
+                                                          </div>
+                                                          {p.commissionEvenSplit !== undefined && (
+                                                            <div
+                                                              className="text-[10px] font-normal normal-case text-purple-500"
+                                                              title="Manually overridden on the event-dashboard Payment tab"
+                                                            >
+                                                              {p.commissionEvenSplit ? 'Even split (manual)' : 'Prorated (manual)'}
+                                                            </div>
+                                                          )}
+                                                        </td>
                                                       </>
                                                     )}
                                                     <td className="p-2 text-sm text-orange-600">${formatMoney3(tips)}</td>

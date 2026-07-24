@@ -11,6 +11,10 @@ export function shortShiftModeForDate(eventDate?: string | null): AllShortShiftM
 export type PoolDistributionMember = {
   id: string;
   hours: number;
+  // Manual per-member override of the short-shift proration rule: true forces
+  // this member into the equal-split bucket, false forces them into the
+  // hours-prorated bucket, undefined defers to the hours-vs-threshold rule.
+  forceEvenSplit?: boolean;
 };
 
 export type PoolDistributionResult = {
@@ -67,16 +71,33 @@ export function distributePoolByHoursRule({
   shortShiftThresholdHours = 8,
   allShortShiftMode = "hours",
 }: DistributePoolArgs): PoolDistributionResult {
-  const mergedMembers = new Map<string, number>();
+  const mergedMembers = new Map<string, { hours: number; forceEvenSplit?: boolean }>();
 
   for (const member of members) {
     const memberId = (member?.id || "").toString().trim();
     const memberHours = toPositiveNumber(member?.hours ?? 0);
     if (!memberId || memberHours <= 0) continue;
-    mergedMembers.set(memberId, (mergedMembers.get(memberId) || 0) + memberHours);
+    const existing = mergedMembers.get(memberId);
+    // Tri-state merge across duplicate entries for the same member: an explicit
+    // "force even" anywhere wins, otherwise an explicit "force prorated" wins,
+    // otherwise defer to auto (undefined).
+    const mergedOverride =
+      existing?.forceEvenSplit === true || member?.forceEvenSplit === true
+        ? true
+        : existing?.forceEvenSplit === false || member?.forceEvenSplit === false
+        ? false
+        : undefined;
+    mergedMembers.set(memberId, {
+      hours: (existing?.hours || 0) + memberHours,
+      forceEvenSplit: mergedOverride,
+    });
   }
 
-  const eligibleMembers = Array.from(mergedMembers.entries()).map(([id, hours]) => ({ id, hours }));
+  const eligibleMembers = Array.from(mergedMembers.entries()).map(([id, value]) => ({
+    id,
+    hours: value.hours,
+    forceEvenSplit: value.forceEvenSplit,
+  }));
   const totalEligibleHours = eligibleMembers.reduce((sum, member) => sum + member.hours, 0);
   const safeTotalAmount = toPositiveNumber(totalAmount);
   const zeroAmounts = Object.fromEntries(eligibleMembers.map((member) => [member.id, 0]));
@@ -101,7 +122,12 @@ export function distributePoolByHoursRule({
     };
   }
 
-  const shortShiftMembers = eligibleMembers.filter((member) => member.hours < shortShiftThresholdHours);
+  const isShortShift = (member: { hours: number; forceEvenSplit?: boolean }) => {
+    if (member.forceEvenSplit === true) return false;
+    if (member.forceEvenSplit === false) return true;
+    return member.hours < shortShiftThresholdHours;
+  };
+  const shortShiftMembers = eligibleMembers.filter(isShortShift);
 
   if (shortShiftMembers.length === 0) {
     const equalShare = safeTotalAmount / eligibleMembers.length;
@@ -138,7 +164,7 @@ export function distributePoolByHoursRule({
     shortShiftMembers.map((member) => [member.id, hourlyRate * member.hours])
   );
   const shortShiftTotal = Object.values(shortShiftAmounts).reduce((sum, amount) => sum + amount, 0);
-  const fullShiftMembers = eligibleMembers.filter((member) => member.hours >= shortShiftThresholdHours);
+  const fullShiftMembers = eligibleMembers.filter((member) => !isShortShift(member));
   const remainingAmount = Math.max(0, safeTotalAmount - shortShiftTotal);
   const fullShiftShare = fullShiftMembers.length > 0 ? remainingAmount / fullShiftMembers.length : 0;
 
@@ -146,7 +172,7 @@ export function distributePoolByHoursRule({
     amountsById: Object.fromEntries(
       eligibleMembers.map((member) => [
         member.id,
-        member.hours < shortShiftThresholdHours ? shortShiftAmounts[member.id] || 0 : fullShiftShare,
+        isShortShift(member) ? shortShiftAmounts[member.id] || 0 : fullShiftShare,
       ])
     ),
     eligibleCount: eligibleMembers.length,

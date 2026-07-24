@@ -5,6 +5,9 @@ export type LinkedCommissionWorkerInput = {
   division?: string | null;
   hours: number;
   commissionDeleted?: boolean;
+  // Manual per-vendor override: true forces this worker into the equal-split
+  // bucket, false forces the hours-prorated bucket, undefined is auto.
+  forceEvenSplit?: boolean;
 };
 
 export type LinkedCommissionEventInput = {
@@ -182,6 +185,9 @@ export function buildLinkedCommissionDistribution({
     );
     const totalHoursByUserId: Record<string, number> = {};
     const eventHoursByEventIdByUserId: Record<string, Record<string, number>> = {};
+    // Tri-state per user across the linked group: an explicit "force even" on any
+    // event wins, otherwise an explicit "force prorated" wins, otherwise auto.
+    const forceEvenSplitByUserId: Record<string, boolean | undefined> = {};
 
     for (const event of groupEvents) {
       const eventId = normalizeId(event.eventId);
@@ -190,6 +196,11 @@ export function buildLinkedCommissionDistribution({
         const userId = normalizeId(worker.userId);
         const hours = Number(worker.hours || 0);
         totalHoursByUserId[userId] = Number(totalHoursByUserId[userId] || 0) + hours;
+        if (worker.forceEvenSplit === true) {
+          forceEvenSplitByUserId[userId] = true;
+        } else if (worker.forceEvenSplit === false && forceEvenSplitByUserId[userId] !== true) {
+          forceEvenSplitByUserId[userId] = false;
+        }
         if (!eventHoursByEventIdByUserId[userId]) {
           eventHoursByEventIdByUserId[userId] = {};
         }
@@ -210,6 +221,7 @@ export function buildLinkedCommissionDistribution({
           members: Object.entries(totalHoursByUserId).map(([userId, hours]) => ({
             id: userId,
             hours,
+            forceEvenSplit: forceEvenSplitByUserId[userId],
           })),
           allShortShiftMode: shortShiftModeForDate(groupDate),
         }).amountsById

@@ -20,6 +20,7 @@ interface PaymentData {
   commissions: number | null;
   commission_deleted?: boolean | null;
   commission_override?: number | null;
+  commission_even_split?: boolean | null;
   variable_incentive: number | null;
   rest_break_pay: number | null;
   travel_pay: number | null;
@@ -158,6 +159,7 @@ interface FinalPayEvent {
   commissionPay: number;
   rateInEffect: number;
   variableIncentive: number;
+  manualVariableIncentive?: number;
   commissionPaidTotal: number;
   tips: number;
   totalPay: number;
@@ -441,7 +443,7 @@ export default function PaystubGenerator() {
       ) {
         return [];
       }
-      return [{ id: workerId, hours: hoursWorked }];
+      return [{ id: workerId, hours: hoursWorked, forceEvenSplit: worker?.payment_data?.commission_even_split ?? undefined }];
     });
     const tipsEligibleMembers = (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
       const workerId = (worker?.user_id || '').toString();
@@ -1961,14 +1963,15 @@ export default function PaystubGenerator() {
           const employeeCount = distributedEmployeeCount || getCommissionVendorCountForEvent(event);
           const commissionShareRaw = roundMoney(Number(commissionSharesByUser[reportUserId] || 0));
           const fallbackCommissionPaidTotal = roundMoney(
-            isEventSD
+            (isEventSD
               ? Number(worker.payment_data?.regular_pay || 0) +
                 Number(worker.payment_data?.overtime_pay || 0) +
                 Number(worker.payment_data?.doubletime_pay || 0)
               : Number(worker.payment_data?.regular_pay || 0) +
                 Number(worker.payment_data?.overtime_pay || 0) +
                 Number(worker.payment_data?.doubletime_pay || 0) +
-                Number(worker.payment_data?.commissions || 0)
+                Number(worker.payment_data?.commissions || 0)) +
+              Number(worker.payment_data?.variable_incentive || 0)
           );
           const commissionPaidTotal = roundMoney(
             Number(finalPayData?.commissionPaidTotal ?? fallbackCommissionPaidTotal)
@@ -2121,6 +2124,7 @@ export default function PaystubGenerator() {
             doubletime_pay: worker?.payment_data?.doubletime_pay ?? '',
             variable_incentive: worker?.payment_data?.variable_incentive ?? '',
             commissions: worker?.payment_data?.commissions ?? '',
+            commission_even_split: worker?.payment_data?.commission_even_split ?? null,
             rest_break_pay: worker?.payment_data?.rest_break_pay ?? '',
             travel_pay: worker?.payment_data?.travel_pay ?? '',
             tips: worker?.payment_data?.tips ?? '',

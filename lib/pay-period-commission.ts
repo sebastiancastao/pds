@@ -17,6 +17,7 @@ export type PayPeriodCommissionWorkerInput = {
   commissionDeleted?: boolean;
   commissionOverride?: number | null;
   commissionShare?: number | null;
+  forceEvenSplit?: boolean;
 };
 
 export type PayPeriodCommissionEventInput = {
@@ -134,7 +135,7 @@ export function computePayPeriodCommission({
           return [];
         }
 
-        return [{ id: userId, hours }];
+        return [{ id: userId, hours, forceEvenSplit: worker?.forceEvenSplit }];
       }),
       allShortShiftMode: shortShiftModeForDate(event.date),
     }).amountsById;

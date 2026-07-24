@@ -518,8 +518,17 @@ export default function EventDashboardPage() {
   const [commissionsOverrides, setCommissionsOverrides] = useState<Record<string, number | null>>({});
   const [editingCommissionsMemberId, setEditingCommissionsMemberId] = useState<string | null>(null);
   const [editingCommissionsValue, setEditingCommissionsValue] = useState<string>("");
+  // Manual per-vendor commission-split override, keyed by user_id. Key absent = auto
+  // (hours-threshold rule decides); true = forced into the equal-split bucket;
+  // false = forced into the hours-prorated bucket.
+  const [commissionEvenSplitOverrides, setCommissionEvenSplitOverrides] = useState<Record<string, boolean>>({});
   const [editingTipsMemberId, setEditingTipsMemberId] = useState<string | null>(null);
   const [editingTipsValue, setEditingTipsValue] = useState<string>("");
+  // Manual "Variable Incentive" bonus per user (user_id -> $ amount). Flat additive amount, defaults to 0.
+  const [variableIncentives, setVariableIncentives] = useState<Record<string, number>>({});
+  const [variableIncentivesLoaded, setVariableIncentivesLoaded] = useState(false);
+  const [editingVariableIncentiveMemberId, setEditingVariableIncentiveMemberId] = useState<string | null>(null);
+  const [editingVariableIncentiveValue, setEditingVariableIncentiveValue] = useState<string>("");
   const [editingTimesheetUserId, setEditingTimesheetUserId] = useState<string | null>(null);
   const [timesheetDrafts, setTimesheetDrafts] = useState<Record<string, TimesheetEditDraft>>({});
   const [savingTimesheetUserId, setSavingTimesheetUserId] = useState<string | null>(null);
@@ -1032,7 +1041,8 @@ export default function EventDashboardPage() {
       const needsAdjustments = !adjustmentsLoaded;
       const needsTipsOverrides = !tipsOverridesLoaded;
       const needsCommissionsOverrides = !commissionsOverridesLoaded;
-      if (!needsTeam && !needsTimesheet && !needsAdjustments && !needsTipsOverrides && !needsCommissionsOverrides) return;
+      const needsVariableIncentives = !variableIncentivesLoaded;
+      if (!needsTeam && !needsTimesheet && !needsAdjustments && !needsTipsOverrides && !needsCommissionsOverrides && !needsVariableIncentives) return;
       (async () => {
         setLoadingPaymentTab(true);
         try {
@@ -1042,6 +1052,7 @@ export default function EventDashboardPage() {
           if (needsAdjustments) promises.push(loadAdjustmentsFromPayments());
           if (needsTipsOverrides) promises.push(loadTipsOverrides());
           if (needsCommissionsOverrides) promises.push(loadCommissionOverrides());
+          if (needsVariableIncentives) promises.push(loadVariableIncentives());
           await Promise.all(promises);
         } finally {
           setLoadingPaymentTab(false);
@@ -3379,6 +3390,7 @@ export default function EventDashboardPage() {
       }
       const vendorRows: any[] = eventData?.vendorPayments || [];
       const overrides: Record<string, number | null> = {};
+      const evenSplitOverrides: Record<string, boolean> = {};
       for (const row of vendorRows) {
         const uid = (row.user_id || '').toString();
         if (!uid) continue;
@@ -3387,9 +3399,49 @@ export default function EventDashboardPage() {
         } else if (row.commission_override != null) {
           overrides[uid] = Number(row.commission_override);
         }
+        if (row.commission_even_split === true) {
+          evenSplitOverrides[uid] = true;
+        } else if (row.commission_even_split === false) {
+          evenSplitOverrides[uid] = false;
+        }
       }
       setCommissionsOverrides(overrides);
+      setCommissionEvenSplitOverrides(evenSplitOverrides);
       setCommissionsOverridesLoaded(true);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const loadVariableIncentives = async () => {
+    try {
+      if (!eventId) return;
+      const token = await getSessionToken();
+      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}&ts=${Date.now()}`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const eventData = json.paymentsByEvent?.[eventId];
+      if (eventData?.eventPayment) {
+        setSavedEventPaymentSummary(eventData.eventPayment);
+      }
+      const vendorRows: any[] = eventData?.vendorPayments || [];
+      const amounts: Record<string, number> = {};
+      for (const row of vendorRows) {
+        const uid = (row.user_id || '').toString();
+        if (!uid) continue;
+        if (row.variable_incentive != null) {
+          amounts[uid] = Number(row.variable_incentive);
+        }
+      }
+      setVariableIncentives(amounts);
+      setVariableIncentivesLoaded(true);
     } catch (e) {
       // ignore
     }
@@ -4185,11 +4237,13 @@ export default function EventDashboardPage() {
           division: member?.users?.division,
           hours: getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true),
           commissionDeleted: commissionsOverrides[uid] === null,
+          forceEvenSplit: commissionEvenSplitOverrides[uid],
         };
       }),
     };
   }, [
     commissionsOverrides,
+    commissionEvenSplitOverrides,
     currentEventCommissionPoolDollars,
     event?.event_date,
     eventId,
@@ -4212,6 +4266,7 @@ export default function EventDashboardPage() {
         division: payment?.users?.division,
         hours: getPersistedWorkerHoursForCommission(payment),
         commissionDeleted: payment?.commission_deleted === true,
+        forceEvenSplit: payment?.commission_even_split ?? undefined,
       })),
     };
   }, [
@@ -4312,6 +4367,7 @@ export default function EventDashboardPage() {
         commissionDeleted?: boolean;
         commissionOverride?: number | null;
         commissionShare?: number | null;
+        forceEvenSplit?: boolean;
       }>;
     }> = [];
 
@@ -4333,6 +4389,7 @@ export default function EventDashboardPage() {
               commissionsOverrides[uid] !== undefined && commissionsOverrides[uid] !== null
                 ? Number(commissionsOverrides[uid])
                 : null,
+            forceEvenSplit: commissionEvenSplitOverrides[uid],
           };
         }),
       });
@@ -4358,6 +4415,7 @@ export default function EventDashboardPage() {
               worker?.payment_data?.commission_override != null
                 ? Number(worker.payment_data.commission_override)
                 : null,
+            forceEvenSplit: worker?.payment_data?.commission_even_split ?? undefined,
           })),
         });
       }
@@ -4374,6 +4432,7 @@ export default function EventDashboardPage() {
           division: worker.division,
           hours: worker.hours,
           commissionDeleted: worker.commissionDeleted,
+          forceEvenSplit: worker.forceEvenSplit,
         })),
       })),
     });
@@ -4399,6 +4458,7 @@ export default function EventDashboardPage() {
     periodEvents,
     hasPeriodWindow,
     commissionsOverrides,
+    commissionEvenSplitOverrides,
     selectedLinkedCommissionEventId,
     timesheetTotals,
   ]);
@@ -4430,7 +4490,7 @@ export default function EventDashboardPage() {
       : commissionOverride !== undefined
       ? commissionOverride
       : rawCommissionAmount;
-    const totalFinalCommission = extAmtOnRegRate + commissionAmount;
+    const totalFinalCommissionBase = extAmtOnRegRate + commissionAmount;
     const displayedCommissionPay =
       !trailersDivision && commissionOverride !== null && actualHours > 0
         ? Number(distributedCommissionShare || 0)
@@ -4439,9 +4499,14 @@ export default function EventDashboardPage() {
       !trailersDivision &&
       commissionOverride !== null &&
       actualHours > 0;
-    const variableIncentive = usesPoolShareBreakdown
-      ? Math.max(0, totalFinalCommission - displayedCommissionPay)
+    const rawVariableIncentive = usesPoolShareBreakdown
+      ? Math.max(0, totalFinalCommissionBase - displayedCommissionPay)
       : 0;
+    // Manual "Variable Incentive" bonus entered on the Payment tab — a flat additive
+    // amount layered on top of the computed commission uplift above; never replaces it.
+    const manualVariableIncentive = Number(variableIncentives[uid] || 0);
+    const variableIncentive = rawVariableIncentive + manualVariableIncentive;
+    const totalFinalCommission = totalFinalCommissionBase + manualVariableIncentive;
 
     return {
       commissionAmount,
@@ -4450,6 +4515,7 @@ export default function EventDashboardPage() {
       totalFinalCommission,
       trailersDivision,
       variableIncentive,
+      manualVariableIncentive,
     };
   };
 
@@ -4475,13 +4541,15 @@ export default function EventDashboardPage() {
       : null;
 
     if (isEventSanDiego) {
+      const manualVariableIncentiveSD = Number(variableIncentives[uid] || 0);
       return {
         commissionAmount: 0,
         commissionOverride,
         displayedCommissionPay: 0,
-        totalFinalCommission: Number(sanDiegoBreakdown?.totalPay || 0),
+        totalFinalCommission: Number(sanDiegoBreakdown?.totalPay || 0) + manualVariableIncentiveSD,
         trailersDivision,
-        variableIncentive: 0,
+        variableIncentive: manualVariableIncentiveSD,
+        manualVariableIncentive: manualVariableIncentiveSD,
         finalCommissionRate: Number(sanDiegoBreakdown?.blendedRate || baseRate),
         extAmtOnRegRate,
         isHourlySanDiego: true,
@@ -4497,17 +4565,21 @@ export default function EventDashboardPage() {
     if (eventId && isPeriodRateState(eventState)) {
       const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[uid];
       const displayedCommissionPay = Number(periodWorker?.commissionPay || 0);
-      const variableIncentive = Number(periodWorker?.variableIncentive || 0);
-      const totalFinalCommission = Number(periodWorker?.commissionPaidTotal || 0);
+      const rawVariableIncentive = Number(periodWorker?.variableIncentive || 0);
+      const rawTotalFinalCommission = Number(periodWorker?.commissionPaidTotal || 0);
       const finalCommissionRate = Number(periodWorker?.rateInEffect || 0);
+      const manualVariableIncentivePR = Number(variableIncentives[uid] || 0);
+      const variableIncentive = rawVariableIncentive + manualVariableIncentivePR;
+      const totalFinalCommission = rawTotalFinalCommission + manualVariableIncentivePR;
 
       return {
-        commissionAmount: Math.max(0, totalFinalCommission - extAmtOnRegRate),
+        commissionAmount: Math.max(0, rawTotalFinalCommission - extAmtOnRegRate),
         commissionOverride,
         displayedCommissionPay,
         totalFinalCommission,
         trailersDivision,
         variableIncentive,
+        manualVariableIncentive: manualVariableIncentivePR,
         finalCommissionRate,
         extAmtOnRegRate,
         isHourlySanDiego: false,
@@ -4525,6 +4597,7 @@ export default function EventDashboardPage() {
       displayedCommissionPay,
       totalFinalCommission,
       variableIncentive,
+      manualVariableIncentive,
     } = getCommissionBreakdown({
       uid,
       division,
@@ -4542,6 +4615,7 @@ export default function EventDashboardPage() {
       totalFinalCommission,
       trailersDivision,
       variableIncentive,
+      manualVariableIncentive,
       finalCommissionRate: Math.max(minLoadedRate, rawFinalCommissionRate),
       extAmtOnRegRate,
       isHourlySanDiego: false,
@@ -4552,7 +4626,7 @@ export default function EventDashboardPage() {
       overtimePay: 0,
       doubletimePay: 0,
     };
-  }, [commissionsOverrides, event?.state, event?.city, event?.venue, eventId, isEventSanDiego, payPeriodCommission]);
+  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, eventId, isEventSanDiego, payPeriodCommission]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -4607,6 +4681,7 @@ export default function EventDashboardPage() {
         const {
           commissionAmount,
           commissionOverride,
+          manualVariableIncentive,
         } = getCommissionBreakdown({
           uid,
           division: memberDivision,
@@ -4621,7 +4696,7 @@ export default function EventDashboardPage() {
           ? tipsOverride // manual override
           : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
-        const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak;
+        const totalPay = extAmtOnRegRate + commissionAmount + manualVariableIncentive + proratedTips + restBreak;
 
         return {
           userId: uid,
@@ -4635,6 +4710,8 @@ export default function EventDashboardPage() {
           commissions: commissionAmount,
           commissionOverride: commissionOverride !== undefined && commissionOverride !== null ? commissionOverride : undefined,
           commissionDeleted: commissionOverride === null,
+          commissionEvenSplit: commissionEvenSplitOverrides[uid],
+          variableIncentive: manualVariableIncentive,
           tips: proratedTips,
           tipsOverride: tipsOverride !== undefined && tipsOverride !== null ? tipsOverride : undefined,
           tipsDeleted: tipsOverride === null,
@@ -4671,6 +4748,7 @@ export default function EventDashboardPage() {
       setMessage('Payment data saved successfully!');
       setTipsOverridesLoaded(false); // force re-fetch on next HR tab visit
       setCommissionsOverridesLoaded(false);
+      setVariableIncentivesLoaded(false);
 
       // Auto-clear message after 5 seconds
       setTimeout(() => setMessage(""), 5000);
@@ -7904,6 +7982,7 @@ export default function EventDashboardPage() {
                             <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Pay">Commission Pay</th>
                           </>
                         )}
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Manual bonus added to gross pay">Variable Incentive</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Tips</th>
                         {!hideRestBreakColumn && (
                           <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
@@ -7916,7 +7995,7 @@ export default function EventDashboardPage() {
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={hideRestBreakColumn ? (isEventSanDiego ? 9 : 10) : (isEventSanDiego ? 10 : 11)} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideRestBreakColumn ? (isEventSanDiego ? 10 : 11) : (isEventSanDiego ? 11 : 12)} className="p-8 text-center text-gray-500">
                             No staff found matching filters
                           </td>
                         </tr>
@@ -8077,14 +8156,120 @@ export default function EventDashboardPage() {
                                         )}
                                       </div>
                                     ) : (
-                                      <div className="text-sm font-medium text-blue-600">
-                                        ${formatPayrollMoney(displayedBreakdown.displayedCommissionPay)}
+                                      <div className="flex flex-col gap-1">
+                                        <div className="text-sm font-medium text-blue-600">
+                                          ${formatPayrollMoney(displayedBreakdown.displayedCommissionPay)}
+                                        </div>
+                                        {canEditTimesheets && !displayedBreakdown.trailersDivision && (
+                                          <button
+                                            onClick={() => setCommissionsOverrides(prev => ({ ...prev, [uid]: null }))}
+                                            className="text-[10px] text-red-500 hover:text-red-700 underline"
+                                            title="Remove this vendor from the commission pool split and redistribute their share among the rest"
+                                          >
+                                            Exclude from split
+                                          </button>
+                                        )}
+                                        {canEditTimesheets && !displayedBreakdown.trailersDivision && actualHours > 0 && (() => {
+                                          const splitOverride = commissionEvenSplitOverrides[uid];
+                                          const autoIsEven = actualHours >= 8;
+                                          const effectiveIsEven = splitOverride === true ? true : splitOverride === false ? false : autoIsEven;
+                                          return (
+                                            <div className="flex flex-col gap-0.5">
+                                              <div className="flex items-center gap-1">
+                                                <button
+                                                  onClick={() => setCommissionEvenSplitOverrides(prev => ({ ...prev, [uid]: true }))}
+                                                  className={`text-[10px] px-1.5 py-0.5 rounded border ${effectiveIsEven ? 'bg-blue-100 text-blue-700 border-blue-300 font-semibold' : 'text-gray-400 border-gray-200 hover:text-blue-600 hover:border-blue-300'}`}
+                                                  title="Force this vendor into the equal-split commission bucket, part of the event split"
+                                                >
+                                                  Even split
+                                                </button>
+                                                <button
+                                                  onClick={() => setCommissionEvenSplitOverrides(prev => ({ ...prev, [uid]: false }))}
+                                                  className={`text-[10px] px-1.5 py-0.5 rounded border ${!effectiveIsEven ? 'bg-orange-100 text-orange-700 border-orange-300 font-semibold' : 'text-gray-400 border-gray-200 hover:text-orange-600 hover:border-orange-300'}`}
+                                                  title="Force this vendor into the hours-prorated commission bucket"
+                                                >
+                                                  Prorated
+                                                </button>
+                                              </div>
+                                              {splitOverride !== undefined && (
+                                                <button
+                                                  onClick={() => setCommissionEvenSplitOverrides(prev => {
+                                                    const next = { ...prev };
+                                                    delete next[uid];
+                                                    return next;
+                                                  })}
+                                                  className="text-[9px] text-gray-400 hover:text-gray-600 underline self-start"
+                                                  title={`Clear manual override and use the automatic hours-threshold rule (currently ${autoIsEven ? 'even split' : 'prorated'})`}
+                                                >
+                                                  Reset to auto
+                                                </button>
+                                              )}
+                                            </div>
+                                          );
+                                        })()}
                                       </div>
                                     )}
                                   </td>
 
                                 </>
                               )}
+
+                              {/* Variable Incentive - manual bonus, editable */}
+                              <td className="px-2 py-2 align-top">
+                                {editingVariableIncentiveMemberId === uid ? (
+                                  <div className="flex flex-col gap-1">
+                                    <input
+                                      type="number"
+                                      value={editingVariableIncentiveValue}
+                                      onChange={(e) => setEditingVariableIncentiveValue(e.target.value)}
+                                      className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                      placeholder="0.00"
+                                      step="0.01"
+                                      min="0"
+                                      autoFocus
+                                    />
+                                    <div className="flex gap-1">
+                                      <button
+                                        onClick={() => {
+                                          const val = parseFloat(editingVariableIncentiveValue);
+                                          setVariableIncentives(prev => ({ ...prev, [uid]: isNaN(val) ? 0 : val }));
+                                          setEditingVariableIncentiveMemberId(null);
+                                          setEditingVariableIncentiveValue("");
+                                        }}
+                                        className="text-[10px] text-green-600 hover:text-green-800 font-medium"
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setEditingVariableIncentiveMemberId(null);
+                                          setEditingVariableIncentiveValue("");
+                                        }}
+                                        className="text-[10px] text-gray-500 hover:text-gray-700"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col gap-1">
+                                    <div className={`text-sm font-medium ${variableIncentives[uid] ? 'text-orange-600' : 'text-gray-400'}`}>
+                                      ${formatPayrollMoney(Number(variableIncentives[uid] || 0))}
+                                    </div>
+                                    {canEditTimesheets && (
+                                      <button
+                                        onClick={() => {
+                                          setEditingVariableIncentiveMemberId(uid);
+                                          setEditingVariableIncentiveValue(String(Number(variableIncentives[uid] || 0).toFixed(2)));
+                                        }}
+                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
 
                               {/* Tips */}
                               <td className="px-2 py-2 align-top">

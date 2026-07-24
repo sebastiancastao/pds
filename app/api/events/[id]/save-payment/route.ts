@@ -189,6 +189,8 @@ export async function POST(
       commissions: vp.commissions || 0,
       commission_override: vp.commissionOverride ?? null,
       commission_deleted: vp.commissionDeleted === true,
+      commission_even_split: vp.commissionEvenSplit === true ? true : vp.commissionEvenSplit === false ? false : null,
+      variable_incentive: vp.variableIncentive || 0,
       tips: vp.tips || 0,
       tips_override: vp.tipsOverride ?? null,
       tips_deleted: vp.tipsDeleted === true,

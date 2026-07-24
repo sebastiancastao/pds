@@ -169,7 +169,7 @@ export async function GET(req: NextRequest) {
     // Fetch vendor payment records for this user in those events
     const { data: vendorPayments, error: vpError } = await supabaseAdmin
       .from('event_vendor_payments')
-      .select('event_id, actual_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, tips, total_pay')
+      .select('event_id, actual_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, variable_incentive, tips, total_pay')
       .eq('user_id', userId)
       .in('event_id', eventIds);
 
@@ -189,6 +189,7 @@ export async function GET(req: NextRequest) {
         doubletime_hours,
         commission_override,
         commission_deleted,
+        commission_even_split,
         tips_deleted,
         users:user_id (
           division
@@ -369,7 +370,7 @@ export async function GET(req: NextRequest) {
         ) {
           return [];
         }
-        return [{ id: paymentUserId, hours: actualHours }];
+        return [{ id: paymentUserId, hours: actualHours, forceEvenSplit: row?.commission_even_split ?? undefined }];
       });
       const tipsEligibleMembers = eventRows.flatMap((row: any) => {
         const paymentUserId = (row.user_id || '').toString();
@@ -427,6 +428,7 @@ export async function GET(req: NextRequest) {
             row?.commission_override != null && Number.isFinite(Number(row.commission_override))
               ? Number(row.commission_override)
               : null,
+          forceEvenSplit: row?.commission_even_split ?? undefined,
         })),
       })),
     });
@@ -477,6 +479,10 @@ export async function GET(req: NextRequest) {
           Number(vp.overtime_pay || 0) +
           Number(vp.doubletime_pay || 0) +
           Number(vp.commissions || 0);
+        // Manual "Variable Incentive" bonus entered on the event-dashboard Payment tab —
+        // a flat additive $ amount, independent of the computed commission-uplift figure
+        // of the same name below. Layered on top, never replacing it.
+        const manualVariableIncentive = roundMoney(Number(vp.variable_incentive || 0));
         const sanDiegoHourlyBreakdown = isEventSD
           ? computeSanDiegoHourlyBreakdown(
               actualHours,
@@ -491,19 +497,19 @@ export async function GET(req: NextRequest) {
               ? Number(periodWorker?.commissionPay || 0)
               : distributedCommission
         );
-        const commissionPaidTotal = roundMoney(
+        const rawCommissionPaidTotal =
           isEventSD
             ? Number(sanDiegoHourlyBreakdown?.totalPay || 0)
             : usesPeriodRate
               ? Number(periodWorker?.commissionPaidTotal || 0)
-              : persistedCommissionPaidTotal
-        );
+              : persistedCommissionPaidTotal;
+        const commissionPaidTotal = roundMoney(rawCommissionPaidTotal + manualVariableIncentive);
         const variableIncentive = roundMoney(
-          isEventSD
+          (isEventSD
             ? 0
             : usesPeriodRate
               ? Number(periodWorker?.variableIncentive || 0)
-              : Math.max(0, commissionPaidTotal - commissionPay)
+              : Math.max(0, rawCommissionPaidTotal - commissionPay)) + manualVariableIncentive
         );
         const loadedRate = roundMoney(
           isEventSD
@@ -511,7 +517,7 @@ export async function GET(req: NextRequest) {
             : actualHours > 0
               ? Math.max(
                   getMinimumLoadedRate(eventState),
-                  (commissionPaidTotal + adjustmentAmount) / actualHours
+                  (rawCommissionPaidTotal + adjustmentAmount) / actualHours
                 )
               : 0
         );
@@ -555,6 +561,7 @@ export async function GET(req: NextRequest) {
           commissionPay,
           rateInEffect,
           variableIncentive,
+          manualVariableIncentive,
           commissionPaidTotal,
           tips: resolvedTips,
           totalPay,
@@ -590,8 +597,10 @@ export async function GET(req: NextRequest) {
         }
 
         const minimumRateInEffect = getMinimumLoadedRate(ev.state);
+        const manualVariableIncentive = Number(ev.manualVariableIncentive || 0);
         const variableIncentive = roundMoney(
-          Math.max(0, minimumRateInEffect - payPeriodRateInEffect) * Number(ev.actualHours || 0)
+          Math.max(0, minimumRateInEffect - payPeriodRateInEffect) * Number(ev.actualHours || 0) +
+            manualVariableIncentive
         );
         const commissionPaidTotal = roundMoney(Number(ev.commissionPay || 0) + variableIncentive);
         const restPay = roundMoney(
