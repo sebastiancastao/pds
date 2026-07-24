@@ -2172,26 +2172,12 @@ export default function PaystubGenerator() {
       }));
 
       const wb = XLSX.utils.book_new();
-      const uniqueAdjustedGrossPercents = Array.from(
-        new Set(
-          normalizedCommissionReportRows.map((row) =>
-            Number(row.adjustedGrossPercent || 0).toFixed(6)
-          )
-        )
-      );
-      const adjustedGrossPercentHeader =
-        uniqueAdjustedGrossPercents.length === 1
-          ? `${(Number(uniqueAdjustedGrossPercents[0]) * 100)
-              .toFixed(2)
-              .replace(/\.?0+$/, '')}% of Adjusted Gross`
-          : '% of Adjusted Gross';
       const commissionReportSheetData: Array<Array<string | number>> = [
         [
           'Show Date/Event Date',
           'Event Name',
           'Venue/Stadium',
-          'Adjusted Gross',
-          adjustedGrossPercentHeader,
+          'COMMISSION POOL PER AGREEMENT',
           'Gross Commission',
           '# of Employees',
           'Commission',
@@ -2209,7 +2195,6 @@ export default function PaystubGenerator() {
           row.showDate,
           row.eventName,
           row.venueStadium,
-          row.adjustedGross,
           row.adjustedGrossPercent,
           row.grossCommission,
           row.employeeCount,
@@ -2324,7 +2309,6 @@ export default function PaystubGenerator() {
         '',
         '',
         '',
-        '',
         'TOTALS',
         roundMoney(totals.commission),
         roundHours(totals.hoursWorked),
@@ -2343,7 +2327,6 @@ export default function PaystubGenerator() {
         { wch: 18 },
         { wch: 28 },
         { wch: 22 },
-        { wch: 16 },
         { wch: 18 },
         { wch: 18 },
         { wch: 14 },
@@ -2359,12 +2342,12 @@ export default function PaystubGenerator() {
         { wch: 24 },
       ];
       commissionReportSheet['!autofilter'] = {
-        ref: `A1:Q${commissionReportSheetData.length}`,
+        ref: `A1:P${commissionReportSheetData.length}`,
       };
 
-      // D=AdjGross, F=GrossComm, H=Commission, J=RateInEffect, K=VariableRate, L=VariableIncentive, M=Tips, N=RestPay, O=TravelPay, P=Bonus, Q=FinalPay
-      const currencyColumns = ['D', 'F', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q'];
-      const numericColumns = ['I'];
+      // E=GrossComm, G=Commission, I=RateInEffect, J=VariableRate, K=VariableIncentive, L=Tips, M=RestPay, N=TravelPay, O=Bonus, P=FinalPay
+      const currencyColumns = ['E', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+      const numericColumns = ['H'];
       for (let rowIndex = 2; rowIndex <= commissionReportSheetData.length; rowIndex += 1) {
         for (const column of currencyColumns) {
           const cell = commissionReportSheet[`${column}${rowIndex}`] as XLSX.CellObject | undefined;
@@ -2372,7 +2355,7 @@ export default function PaystubGenerator() {
             cell.z = '$#,##0.00';
           }
         }
-        const percentCell = commissionReportSheet[`E${rowIndex}`] as XLSX.CellObject | undefined;
+        const percentCell = commissionReportSheet[`D${rowIndex}`] as XLSX.CellObject | undefined;
         if (percentCell && typeof percentCell.v === 'number') {
           percentCell.z = '0.##%';
         }

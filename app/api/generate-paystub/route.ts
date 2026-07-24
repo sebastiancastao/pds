@@ -1249,20 +1249,6 @@ export async function POST(req: NextRequest) {
       const reportPage = pdfDoc.addPage([612, 792]);
       const fmtMoney = (n: number) =>
         `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      const fmtPercent = (n: number) => {
-        const percentValue = Number(n || 0) * 100;
-        const roundedPercent = Math.round((percentValue + Number.EPSILON) * 100) / 100;
-        return `${roundedPercent.toFixed(2).replace(/\.?0+$/, "")}%`;
-      };
-      const uniqueCommissionPoolPercents = Array.from(
-        new Set(
-          displayRows.map((row) => Number(row.commissionPoolPercent || 0).toFixed(6))
-        )
-      );
-      const commissionPoolHeader =
-        uniqueCommissionPoolPercents.length === 1
-          ? `${fmtPercent(Number(uniqueCommissionPoolPercents[0]))} of Adj.`
-          : "% of Adj.";
       const fmtDate = (ds: string) => {
         if (!ds) return "";
         const [yy, mm, dd] = ds.split("-");
@@ -1280,7 +1266,7 @@ export async function POST(req: NextRequest) {
       const drawRL = (x1: number, y1: number, x2: number) => {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
-      const C = { date: 20, show: 56, venue: 101, adjGross: 147, pool: 186, numEmp: 223, comm: 261, hours: 299, rate: 332, varRate: 364, varInc: 404, tips: 436, restPay: 466, travelPay: 496, bonus: 526, finalPay: 556 };
+      const C = { date: 20, show: 56, venue: 101, pool: 147, numEmp: 184, comm: 222, hours: 260, rate: 293, varRate: 325, varInc: 365, tips: 397, restPay: 427, travelPay: 457, bonus: 487, finalPay: 517 };
       const splitReportAddressLines = (rawAddress?: string | null) => {
         const str = (rawAddress || "").toString().trim();
         if (!str) return ["", "", ""] as const;
@@ -1316,8 +1302,7 @@ export async function POST(req: NextRequest) {
       drawR("Show Date /", C.date, y, { bold: true, size: 6 });
       drawR("Event Name /", C.show, y, { bold: true, size: 6 });
       drawR("Venue /", C.venue, y, { bold: true, size: 6 });
-      drawR("Adjusted", C.adjGross, y, { bold: true, size: 6 });
-      drawR(commissionPoolHeader, C.pool, y, { bold: true, size: 6 });
+      drawR("COMMISSION POOL", C.pool, y, { bold: true, size: 6 });
       drawR("# of", C.numEmp, y, { bold: true, size: 6 });
       drawR("Commission", C.comm, y, { bold: true, size: 6 });
       drawR("Hours", C.hours, y, { bold: true, size: 6 });
@@ -1334,8 +1319,7 @@ export async function POST(req: NextRequest) {
       drawR("Event Date", C.date, y, { bold: true, size: 6 });
       drawR("Show Name", C.show, y, { bold: true, size: 6 });
       drawR("Stadium Name", C.venue, y, { bold: true, size: 6 });
-      drawR("Gross Sales", C.adjGross, y, { bold: true, size: 6 });
-      drawR("Gross Sales", C.pool, y, { bold: true, size: 6 });
+      drawR("PER AGREEMENT", C.pool, y, { bold: true, size: 6 });
       drawR("Employees", C.numEmp, y, { bold: true, size: 6 });
       drawR("Paid", C.comm, y, { bold: true, size: 6 });
       drawR("Worked", C.hours, y, { bold: true, size: 6 });
@@ -1347,7 +1331,6 @@ export async function POST(req: NextRequest) {
       y -= 4;
       drawRL(20, y, 592);
       y -= 11;
-      let grandAdjustedGross = 0;
       let grandCommissionPool = 0;
       let grandEmployees = 0;
       let grandCommission = 0;
@@ -1365,7 +1348,6 @@ export async function POST(req: NextRequest) {
         drawR(fmtDate(row.dateStr), C.date, y, { size: 6 });
         drawR(showT, C.show, y, { size: 6 });
         drawR(venueT, C.venue, y, { size: 6 });
-        drawR(fmtMoney(row.adjGrossSales), C.adjGross, y, { size: 6 });
         drawR(fmtMoney(row.commissionPoolDollars), C.pool, y, { size: 6 });
         drawR(row.numEmployees.toString(), C.numEmp, y, { size: 6 });
         drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
@@ -1378,7 +1360,6 @@ export async function POST(req: NextRequest) {
         drawR(fmtMoney(row.travelPay), C.travelPay, y, { size: 6 });
         drawR(fmtMoney(row.bonus), C.bonus, y, { size: 6 });
         drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
-        grandAdjustedGross += row.adjGrossSales;
         grandCommissionPool += row.commissionPoolDollars;
         grandEmployees += row.numEmployees;
         grandCommission += row.commissionPerEmployee;
@@ -1457,7 +1438,6 @@ export async function POST(req: NextRequest) {
         });
       }
       drawR("Total for Pay Period", C.date, y, { bold: true, size: 6 });
-      drawR(fmtMoney(grandAdjustedGross), C.adjGross, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandCommissionPool), C.pool, y, { bold: true, size: 6 });
       drawR(grandEmployees.toString(), C.numEmp, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandCommission), C.comm, y, { bold: true, size: 6 });
