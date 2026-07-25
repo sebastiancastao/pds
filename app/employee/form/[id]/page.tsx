@@ -7,6 +7,7 @@ import PDFFormEditor from '@/app/components/PDFFormEditor';
 import { isCaTempAgreementCustomFormTitle } from '@/app/lib/temp-agreement';
 import { getTempAgreementSignaturePlacement } from '@/app/lib/temp-agreement-signature-placement';
 import { getKnownCustomFlatFormLayout } from '@/app/lib/custom-flat-form-layout';
+import { parsePayrollPacketVirtualStoragePath } from '@/lib/payroll-packet-custom-forms';
 
 type FormMeta = {
   id: string;
@@ -17,6 +18,7 @@ type FormMeta = {
   allow_venue_display: boolean;
   delivery_kind?: 'pdf' | 'viewer';
   viewer_url?: string | null;
+  storage_path?: string | null;
 };
 
 type AssignedVenue = {
@@ -63,6 +65,301 @@ const TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX =
 const isTempAgreementTitle = (title?: string | null) => isCaTempAgreementCustomFormTitle(title);
 
 const isI9Title = (title?: string | null) => /i-?9/i.test(title ?? '');
+
+// Which state a "packet" custom form's state withholding certificate belongs to,
+// derived from the virtual storage path (payroll-packet:{state}:fillable) set by
+// the admin/pdf-forms "state" and "packet" presets. Mirrors StatePayrollFormViewer's
+// state-tax detection so employee-facing forms get the same required-field checks.
+const getStateTaxStateCode = (storagePath?: string | null): string | null => {
+  const parsed = parsePayrollPacketVirtualStoragePath(storagePath);
+  if (!parsed || parsed.mode !== 'packet' || parsed.formType !== 'fillable') return null;
+  return ['ca', 'az', 'ny', 'wi'].includes(parsed.stateCode) ? parsed.stateCode : null;
+};
+
+type StateTaxFieldValidationResult = {
+  missingFieldNames: string[];
+  message: string;
+  page: number;
+} | null;
+
+const getPdfFieldPage = (pdfDoc: any, field: any): number => {
+  try {
+    const widgets = field?.acroField?.getWidgets?.() || [];
+    if (!widgets.length) return 1;
+    const widget = widgets[0];
+    const pageRef = widget?.P?.();
+    if (!pageRef) return 1;
+    const pages = pdfDoc.getPages();
+    const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+    return pageIndex >= 0 ? pageIndex + 1 : 1;
+  } catch {
+    return 1;
+  }
+};
+
+// CA DE-4
+const validateCaDe4Fields = (form: any): StateTaxFieldValidationResult => {
+  const requiredFields = [
+    { name: 'Name 1', page: 1, friendly: 'Name' },
+    { name: 'Social Security Number 1', page: 1, friendly: 'Social Security Number' },
+    { name: 'Address 1', page: 1, friendly: 'Address' },
+    { name: 'City', page: 1, friendly: 'City' },
+    { name: 'State', page: 1, friendly: 'State' },
+    { name: 'ZIP Code', page: 1, friendly: 'ZIP Code' },
+    { name: '1a', page: 1, friendly: '1a' },
+    { name: '1b', page: 1, friendly: '1b' },
+    { name: '1c', page: 1, friendly: '1c' },
+    { name: 'Date Employee Signed', page: 1, friendly: 'Date Employee Signed' },
+  ];
+
+  for (const fieldInfo of requiredFields) {
+    try {
+      const value = form.getTextField(fieldInfo.name).getText();
+      if (!value || value.trim() === '') {
+        return {
+          missingFieldNames: [fieldInfo.name],
+          message: `Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`,
+          page: fieldInfo.page,
+        };
+      }
+    } catch (err) {
+      console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+    }
+  }
+
+  const filingStatusFields = ['Filing Status 1', 'Filing Status 2', 'Filing Status 3'];
+  let hasFilingStatus = false;
+  for (const fieldName of filingStatusFields) {
+    try {
+      if (form.getCheckBox(fieldName).isChecked()) { hasFilingStatus = true; break; }
+    } catch (err) {
+      console.warn(`Field ${fieldName} not found or error checking:`, err);
+    }
+  }
+  if (!hasFilingStatus) {
+    return { missingFieldNames: filingStatusFields, message: 'Please select a Filing Status on page 1 of the PDF', page: 1 };
+  }
+
+  const worksheetAFields = ['WKsheetA_A', 'WKsheetA_B', 'WKsheetA_C', 'WKsheetA_D', 'WKsheetA_E', 'WKsheetA_F'];
+  let hasWorksheetAValue = false;
+  for (const fieldName of worksheetAFields) {
+    try {
+      const value = form.getTextField(fieldName).getText();
+      if (value && value.trim() !== '') { hasWorksheetAValue = true; break; }
+    } catch (err) {
+      console.warn(`Field ${fieldName} not found or error checking:`, err);
+    }
+  }
+  if (!hasWorksheetAValue) {
+    return { missingFieldNames: worksheetAFields, message: 'Please fill in at least one Worksheet A field on page 3 of the PDF', page: 3 };
+  }
+
+  return null;
+};
+
+// AZ A-4
+const validateAzA4Fields = (form: any, pdfDoc: any): StateTaxFieldValidationResult => {
+  const requiredFields = [
+    { name: 'azFirstName', friendly: 'Employee Legal Name' },
+    { name: 'azSSN', friendly: 'Social Security Number' },
+    { name: 'homeAdress', friendly: 'Employee Address' },
+    { name: 'city', friendly: 'City' },
+    { name: 'state', friendly: 'State' },
+    { name: 'zip', friendly: 'ZIP Code' },
+    { name: 'date', friendly: 'Date Signed' },
+  ];
+
+  for (const fieldInfo of requiredFields) {
+    try {
+      const field = form.getTextField(fieldInfo.name);
+      const value = field.getText();
+      if (!value || value.trim() === '') {
+        const page = getPdfFieldPage(pdfDoc, field);
+        return {
+          missingFieldNames: [fieldInfo.name],
+          message: `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`,
+          page,
+        };
+      }
+    } catch (err) {
+      console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+    }
+  }
+
+  const withholdingCheckboxes = [
+    'OneCheckBox', 'pointFiveCheckBox ', 'onePercentCheckBox', 'onePointFiveCheckBox',
+    'twoPercentCheckBox', 'twoPointFiveCheckBox', 'threePercentCheckBox', 'threePointFiveCheckBox',
+    'extraAmmountCheckBox', 'twoCheckBox',
+  ];
+  let hasWithholdingSelection = false;
+  let extraAmountSelected = false;
+  for (const fieldName of withholdingCheckboxes) {
+    try {
+      const field = form.getCheckBox(fieldName);
+      if (field.isChecked()) {
+        hasWithholdingSelection = true;
+        if (fieldName === 'extraAmmountCheckBox') extraAmountSelected = true;
+      }
+    } catch (err) {
+      console.warn(`Field ${fieldName} not found or error checking:`, err);
+    }
+  }
+  if (!hasWithholdingSelection) {
+    let page = 1;
+    try { page = getPdfFieldPage(pdfDoc, form.getCheckBox(withholdingCheckboxes[0])); } catch { /* keep default page */ }
+    return {
+      missingFieldNames: withholdingCheckboxes,
+      message: `Please select a withholding percentage or additional amount option on page ${page} of the PDF`,
+      page,
+    };
+  }
+  if (extraAmountSelected) {
+    try {
+      const field = form.getTextField('extraAmmount');
+      const value = field.getText();
+      if (!value || value.trim() === '') {
+        const page = getPdfFieldPage(pdfDoc, field);
+        return {
+          missingFieldNames: ['extraAmmount'],
+          message: `Please enter the additional withholding amount on page ${page} of the PDF`,
+          page,
+        };
+      }
+    } catch (err) {
+      console.warn('Field extraAmmount not found or error checking:', err);
+    }
+  }
+
+  return null;
+};
+
+// NY IT-2104
+const validateNyIt2104Fields = (form: any, pdfDoc: any): StateTaxFieldValidationResult => {
+  const requiredFields = [
+    { name: 'First name and middle initial', friendly: 'First name & middle initial' },
+    { name: 'Last name', friendly: 'Last name' },
+    { name: 'Permanent mailing address', friendly: 'Permanent home address' },
+    { name: 'City, village or post office', friendly: 'City' },
+    { name: 'State', friendly: 'State' },
+    { name: 'ZIP code', friendly: 'ZIP code' },
+    { name: 'Your SSN', friendly: 'Social Security Number' },
+    { name: 'Date', friendly: 'Date' },
+  ];
+
+  for (const fieldInfo of requiredFields) {
+    try {
+      const field = form.getTextField(fieldInfo.name);
+      const value = field.getText();
+      if (!value || value.trim() === '') {
+        const page = getPdfFieldPage(pdfDoc, field);
+        return {
+          missingFieldNames: [fieldInfo.name],
+          message: `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`,
+          page,
+        };
+      }
+    } catch (err) {
+      console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+    }
+  }
+
+  const getFieldValue = (name: string) => {
+    try { return (form.getTextField(name)?.getText() || '').trim(); } catch { return ''; }
+  };
+  const checkAtLeastOneFilled = (names: string[], friendly: string): StateTaxFieldValidationResult => {
+    const values = names.map(getFieldValue);
+    if (values.every((value) => !value)) {
+      let sampleField: any = null;
+      try { sampleField = form.getTextField(names[0]); } catch { /* try next */ }
+      if (!sampleField) { try { sampleField = form.getTextField(names[1]); } catch { /* fall back to page 1 */ } }
+      const page = sampleField ? getPdfFieldPage(pdfDoc, sampleField) : 1;
+      return { missingFieldNames: names, message: `Please fill in at least one of the ${friendly} fields on page ${page}`, page };
+    }
+    return null;
+  };
+
+  const line12 = checkAtLeastOneFilled(['line 1', 'line 2'], '"line 1" or "line 2"');
+  if (line12) return line12;
+  const line345 = checkAtLeastOneFilled(['line 3', 'line 4', 'line 5'], '"line 3", "line 4", or "line 5"');
+  if (line345) return line345;
+
+  try {
+    const statusField = form.getCheckBox('Status');
+    if (!statusField.isChecked()) {
+      const page = getPdfFieldPage(pdfDoc, statusField);
+      return { missingFieldNames: ['Status'], message: `Please select a filing status option on page ${page} of the PDF`, page };
+    }
+  } catch (err) {
+    console.warn('Status checkbox validation failed:', err);
+  }
+
+  return null;
+};
+
+// WI WT-4
+const validateWiWt4Fields = (form: any, pdfDoc: any): StateTaxFieldValidationResult => {
+  const requiredFields = [
+    { name: 'wiFirstName', friendly: 'Employee Legal Name' },
+    { name: 'wiSSN', friendly: 'Social Security Number' },
+    { name: 'homeAddress', friendly: 'Employee Address' },
+    { name: 'DOB', friendly: 'Date of Birth' },
+    { name: 'city', friendly: 'City' },
+    { name: 'state', friendly: 'State' },
+    { name: 'zip', friendly: 'ZIP Code' },
+    { name: 'total', friendly: 'Total' },
+    { name: 'date', friendly: 'Date Signed' },
+  ];
+
+  for (const fieldInfo of requiredFields) {
+    try {
+      const field = form.getTextField(fieldInfo.name);
+      const value = field.getText();
+      if (!value || value.trim() === '') {
+        const page = getPdfFieldPage(pdfDoc, field);
+        return {
+          missingFieldNames: [fieldInfo.name],
+          message: `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`,
+          page,
+        };
+      }
+    } catch (err) {
+      console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+    }
+  }
+
+  const exemptionFields = ['exemptionYS', 'exemptionSpouse', 'exemptionDependents'];
+  const exemptionValues = exemptionFields.map((name) => {
+    try { return (form.getTextField(name).getText() || '').trim(); } catch { return ''; }
+  });
+  if (exemptionValues.every((value) => value === '')) {
+    let page = 1;
+    try { page = getPdfFieldPage(pdfDoc, form.getTextField(exemptionFields[0])); } catch { /* keep default page */ }
+    return {
+      missingFieldNames: exemptionFields,
+      message: `Please fill in at least one exemption field (Self, Spouse, or Dependents) on page ${page} of the PDF`,
+      page,
+    };
+  }
+
+  return null;
+};
+
+const validateStateTaxFields = async (
+  stateCode: string,
+  pdfBytes: Uint8Array
+): Promise<StateTaxFieldValidationResult> => {
+  const { PDFDocument } = await import('pdf-lib');
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const form = pdfDoc.getForm();
+
+  switch (stateCode) {
+    case 'ca': return validateCaDe4Fields(form);
+    case 'az': return validateAzA4Fields(form, pdfDoc);
+    case 'ny': return validateNyIt2104Fields(form, pdfDoc);
+    case 'wi': return validateWiWt4Fields(form, pdfDoc);
+    default: return null;
+  }
+};
 
 export default function EmployeeFormPage() {
   const router = useRouter();
@@ -237,16 +534,23 @@ export default function EmployeeFormPage() {
     currentPdfBytesRef.current = bytes;
   }, []);
 
-  const clearTempAgreementValidation = useCallback(() => {
+  const stateTaxValidationActiveRef = useRef(false);
+
+  const clearFieldValidationError = useCallback(() => {
     setMissingRequiredFields([]);
-    setError((current) =>
-      current.startsWith(TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX) ? '' : current
-    );
+    setError((current) => {
+      if (current.startsWith(TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX)) return '';
+      if (stateTaxValidationActiveRef.current) {
+        stateTaxValidationActiveRef.current = false;
+        return '';
+      }
+      return current;
+    });
   }, []);
 
   const handleEditorFieldChange = useCallback(() => {
-    clearTempAgreementValidation();
-  }, [clearTempAgreementValidation]);
+    clearFieldValidationError();
+  }, [clearFieldValidationError]);
 
   // ─── Document upload ───────────────────────────────────────────────────────
   const refForSlot = (slot: SlotId) =>
@@ -386,7 +690,7 @@ export default function EmployeeFormPage() {
 
   // ─── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
-    clearTempAgreementValidation();
+    clearFieldValidationError();
 
     if (!currentPdfBytesRef.current) {
       setError('PDF not loaded yet. Please wait a moment and try again.'); return;
@@ -400,6 +704,32 @@ export default function EmployeeFormPage() {
     if (meta?.allow_print_name && !printName.trim()) {
       setError('Please print your name before submitting.'); return;
     }
+
+    const stateTaxStateCode = getStateTaxStateCode(meta?.storage_path);
+    if (stateTaxStateCode) {
+      try {
+        const result = await validateStateTaxFields(stateTaxStateCode, currentPdfBytesRef.current);
+        if (result) {
+          stateTaxValidationActiveRef.current = true;
+          setMissingRequiredFields(result.missingFieldNames);
+          setError(result.message);
+
+          window.setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="${result.page}"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+      } catch (err) {
+        console.error('Error validating state tax fields:', err);
+      }
+    }
+
     if (isTempAgreementTitle(meta?.title)) {
       const validation = validateTempAgreementEmbeddedFields();
       if (!validation.isValid) {
