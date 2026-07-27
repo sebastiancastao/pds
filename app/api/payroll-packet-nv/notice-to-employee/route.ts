@@ -71,14 +71,14 @@ export async function GET(request: NextRequest) {
 
     try {
       const employerRepNameField = form.getTextField('PRINT NAME of Employer representative');
-      employerRepNameField.setText('Dawn M. Kaplan Lister');
+      employerRepNameField.setText('Mardel Deis');
       employerRepNameField.enableReadOnly();
     } catch (error) {
       console.warn('[NOTICE_TO_EMPLOYEE_NV] Failed to set employer representative name', error);
     }
 
     try {
-      const signaturePath = join(process.cwd(), 'image001.png');
+      const signaturePath = join(process.cwd(), 'signature-mardel-deis.png');
       const signatureBytes = readFileSync(signaturePath);
       const signatureImage = await pdfDoc.embedPng(signatureBytes);
       const signatureField = form.getField('Signature8') as any;

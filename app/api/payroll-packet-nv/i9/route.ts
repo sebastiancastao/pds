@@ -64,7 +64,7 @@ export async function GET() {
     let embeddedEmployerSignature = false;
     try {
       const employerNameField = form.getTextField('Last Name First Name and Title of Employer or Authorized Representative');
-      employerNameField.setText('Dawn Kaplan\nHuman Resource');
+      employerNameField.setText('Mardel Deis\nHuman Resource');
       employerNameField.enableReadOnly();
     } catch (error) {
       console.warn('[I9 NV] Failed to set employer representative name/title', error);
@@ -87,7 +87,7 @@ export async function GET() {
     }
 
     try {
-      const signaturePath = join(process.cwd(), 'image001.png');
+      const signaturePath = join(process.cwd(), 'signature-mardel-deis.png');
       const signatureBytes = readFileSync(signaturePath);
       const signatureImage = await pdfDoc.embedPng(signatureBytes);
       const signatureField = form.getField('Signature of Employer or AR') as any;

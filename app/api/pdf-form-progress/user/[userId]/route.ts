@@ -34,8 +34,8 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const NOTICE_TO_EMPLOYEE_EMPLOYER_REP_NAME = 'Dawn M. Kaplan Lister';
-const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME = 'image001.png';
+const NOTICE_TO_EMPLOYEE_EMPLOYER_REP_NAME = 'Mardel Deis';
+const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME = 'signature-mardel-deis.png';
 // PDF coordinates: larger Y is higher on page. Negative values move content down.
 const SIGNATURE_Y_SHIFT = 80;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;

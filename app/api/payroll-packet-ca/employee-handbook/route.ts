@@ -248,7 +248,7 @@ export async function GET(request: NextRequest) {
       backgroundColor: rgb(1, 1, 1),
     });
 
-    const employerRepName = 'Dawn M. Kaplan Lister';
+    const employerRepName = 'Mardel Deis';
     const employerRepTitle = 'Human Resource Director';
     const nextEmployerPage = pages.length > 3 ? pages[pages.length - 4] : null;
 
@@ -332,7 +332,7 @@ export async function GET(request: NextRequest) {
 
     // Employer Representative Signature (static image)
     try {
-      const signatureBytes = readFileSync(join(process.cwd(), 'image001.png'));
+      const signatureBytes = readFileSync(join(process.cwd(), 'signature-mardel-deis.png'));
       const signatureImage = await pdfDoc.embedPng(signatureBytes);
       const signatureWidth = 140;
       const scale = signatureWidth / signatureImage.width;
