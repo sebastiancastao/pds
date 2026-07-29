@@ -110,6 +110,23 @@ export interface Database {
         Insert: Omit<Database['public']['Tables']['audit_logs']['Row'], 'id' | 'created_at'>;
         Update: never; // Audit logs are immutable
       };
+      email_logs: {
+        Row: {
+          id: string;
+          recipient_user_id: string | null;
+          recipient_email: string;
+          recipient_type: 'to' | 'cc';
+          from_address: string;
+          subject: string;
+          html_body: string;
+          status: 'sent' | 'failed';
+          error_message: string | null;
+          provider_message_id: string | null;
+          created_at: string;
+        };
+        Insert: Omit<Database['public']['Tables']['email_logs']['Row'], 'id' | 'created_at'>;
+        Update: never; // Email logs are immutable
+      };
       documents: {
         Row: {
           id: string;

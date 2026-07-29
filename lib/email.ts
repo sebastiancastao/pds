@@ -2,6 +2,7 @@
 // Secure email delivery for temporary passwords and notifications via Resend
 
 import { Resend, type Attachment } from 'resend';
+import { createServerClient } from './supabase';
 
 // Initialize Resend client
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -64,10 +65,18 @@ function mergeBccRecipients(bcc?: string | string[]): string | string[] | undefi
 
 async function sendResendEmail(data: ResendEmailPayload) {
   const { bcc, ...emailData } = data;
-  return resend.emails.send({
+  const payload: ResendEmailPayload = {
     ...emailData,
     bcc: mergeBccRecipients(bcc),
+  };
+  const result = await resend.emails.send(payload);
+  await logSentEmail({
+    payload,
+    status: result.error ? 'failed' : 'sent',
+    messageId: result.data?.id,
+    errorMessage: result.error ? formatResendError(result.error) : undefined,
   });
+  return result;
 }
 
 function formatResendError(error: any): string {
@@ -75,6 +84,89 @@ function formatResendError(error: any): string {
   const statusCode = Number(error?.statusCode || error?.status || 0);
   const message = (error?.message || error?.name || 'Email provider error').toString();
   return statusCode ? `[${statusCode}] ${message}` : message;
+}
+
+// ============================================
+// Email Delivery Logging (powers the per-employee Inbox)
+// ============================================
+// Every send in this file funnels through sendResendEmail() above, so logging
+// is hooked in exactly once here rather than in each send* helper below.
+//
+// Only "to" and "cc" are logged — bcc is reserved for internal monitoring
+// copies (MONITORING_BCC / EMAIL_GLOBAL_BCC merged in by mergeBccRecipients)
+// and admin "blast" audiences sent in bcc-mode, neither of which should
+// populate an individual employee's inbox.
+//
+// Logging failures are swallowed (logged to console) so a database hiccup
+// never breaks actual email delivery.
+const EMAIL_LOG_LOOKUP_CHUNK_SIZE = 200;
+const EMAIL_LOG_INSERT_CHUNK_SIZE = 500;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function logSentEmail(params: {
+  payload: ResendEmailPayload;
+  status: 'sent' | 'failed';
+  messageId?: string;
+  errorMessage?: string;
+}): Promise<void> {
+  try {
+    const { payload, status, messageId, errorMessage } = params;
+    const recipients: { email: string; type: 'to' | 'cc' }[] = [
+      ...normalizeEmailList(payload.to).map((email) => ({ email, type: 'to' as const })),
+      ...normalizeEmailList(payload.cc).map((email) => ({ email, type: 'cc' as const })),
+    ];
+    if (recipients.length === 0) return;
+
+    // Cast to `any`: postgrest-js's compile-time select/insert type parsing
+    // is unreliable for narrower column lists in this project (see the same
+    // workaround in app/api/auth/signup/route.ts); the query shapes below are
+    // hand-verified against the email_logs migration.
+    const supabase = createServerClient() as any;
+    const uniqueEmails = [...new Set(recipients.map((r) => r.email))];
+
+    const userIdByEmail = new Map<string, string>();
+    for (const chunk of chunkArray(uniqueEmails, EMAIL_LOG_LOOKUP_CHUNK_SIZE)) {
+      const { data: matchedUsers, error: lookupError } = await supabase
+        .from('users')
+        .select('id, email')
+        .in('email', chunk);
+      if (lookupError) {
+        console.error('⚠️ Email log recipient lookup failed (non-fatal):', lookupError.message);
+        continue;
+      }
+      for (const u of matchedUsers || []) {
+        userIdByEmail.set(String(u.email).toLowerCase(), u.id);
+      }
+    }
+
+    const rows = recipients.map((r) => ({
+      recipient_user_id: userIdByEmail.get(r.email) ?? null,
+      recipient_email: r.email,
+      recipient_type: r.type,
+      from_address: payload.from,
+      subject: payload.subject,
+      html_body: payload.html,
+      status,
+      error_message: errorMessage ?? null,
+      provider_message_id: messageId ?? null,
+    }));
+
+    for (const chunk of chunkArray(rows, EMAIL_LOG_INSERT_CHUNK_SIZE)) {
+      const { error: insertError } = await supabase.from('email_logs').insert(chunk);
+      if (insertError) {
+        console.error('⚠️ Failed to insert email log rows (non-fatal):', insertError.message);
+      }
+    }
+  } catch (logError: any) {
+    console.error('⚠️ Failed to log sent email (non-fatal):', logError?.message || logError);
+  }
 }
 
 function escapeHtml(input: unknown): string {

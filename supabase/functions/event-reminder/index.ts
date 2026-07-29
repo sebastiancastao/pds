@@ -304,6 +304,40 @@ function buildEmailHtml(opts: {
 </html>`.trim();
 }
 
+// Best-effort mirror of every reminder send into public.email_logs so it
+// shows up in the recipient's Inbox on /employees/[id], alongside every
+// other app email (which is logged from lib/email.ts on the Next.js side).
+// Never throws: a logging failure must not affect reminder delivery/dedup.
+async function logEmailAttempt(
+  supabase: ReturnType<typeof createClient>,
+  params: {
+    vendorId: string;
+    email: string;
+    from: string;
+    subject: string;
+    html: string;
+    status: "sent" | "failed";
+    messageId?: string;
+    errorMessage?: string;
+  },
+): Promise<void> {
+  try {
+    await supabase.from("email_logs").insert({
+      recipient_user_id: params.vendorId,
+      recipient_email: params.email,
+      recipient_type: "to",
+      from_address: params.from,
+      subject: params.subject,
+      html_body: params.html,
+      status: params.status,
+      error_message: params.errorMessage ?? null,
+      provider_message_id: params.messageId ?? null,
+    });
+  } catch (_e) {
+    // non-fatal
+  }
+}
+
 async function sendResend(
   apiKey: string,
   from: string,
@@ -500,6 +534,10 @@ Deno.serve(async (req: Request) => {
             .eq("event_id", ev.id)
             .eq("vendor_id", vendorId)
             .eq("reminder_type", REMINDER_TYPE);
+          await logEmailAttempt(supabase, {
+            vendorId, email, from: FROM, subject, html,
+            status: "failed", errorMessage: sendRes.error,
+          });
           results.push({ event_id: ev.id, vendor_id: vendorId, email, error: sendRes.error });
           continue;
         }
@@ -510,6 +548,10 @@ Deno.serve(async (req: Request) => {
           .eq("event_id", ev.id)
           .eq("vendor_id", vendorId)
           .eq("reminder_type", REMINDER_TYPE);
+        await logEmailAttempt(supabase, {
+          vendorId, email, from: FROM, subject, html,
+          status: "sent", messageId: sendRes.id,
+        });
 
         sentCount++;
         results.push({ event_id: ev.id, vendor_id: vendorId, email, message_id: sendRes.id });

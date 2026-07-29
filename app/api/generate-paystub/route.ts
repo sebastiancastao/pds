@@ -1931,7 +1931,7 @@ export async function POST(req: NextRequest) {
         const payPeriodTotals = caCommissionRows.reduce(
           (acc, row) => ({
             commission: acc.commission + row.commissionPerEmployee,
-            hoursWorked: acc.hoursWorked + round2(row.hoursWorked),
+            hoursWorked: acc.hoursWorked + roundPayrollAmount(row.hoursWorked),
           }),
           { commission: 0, hoursWorked: 0 }
         );
@@ -1939,52 +1939,56 @@ export async function POST(req: NextRequest) {
           payPeriodTotals.hoursWorked > 0
             ? payPeriodTotals.commission / payPeriodTotals.hoursWorked
             : 0;
-        const payPeriodRateInEffect = round2(rawPayPeriodRateInEffect);
+        const payPeriodRateInEffect = roundPayrollAmount(rawPayPeriodRateInEffect);
 
         const rows = caCommissionRows.map((row) => {
           if (!row.usesPeriodRate || row.hoursWorked <= 0) return row;
           const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || paystubState);
           const rawVariableRate = Math.max(0, minimumRateInEffect - rawPayPeriodRateInEffect);
-          const variableRate = round2(rawVariableRate);
-          const variableIncentive = round2(rawVariableRate * row.hoursWorked);
+          const variableRate = roundPayrollAmount(rawVariableRate);
+          const variableIncentive = roundPayrollAmount(rawVariableRate * row.hoursWorked);
           return {
             ...row,
             variableRate,
             variableIncentive,
-            finalPay: round2(row.commissionPerEmployee + variableIncentive + row.tips + row.restBreak),
+            finalPay: roundPayrollAmount(row.commissionPerEmployee + variableIncentive + row.tips + row.restBreak),
           };
         });
 
         return { rows, payPeriodRateInEffect, rawPayPeriodRateInEffect };
       })();
 
+      // NOTE: These aggregates mirror addCommissionReportPage's math exactly (same
+      // roundPayrollAmount helper, same reduce order over caCommissionRows) so that the
+      // "Variable Incentive" row on the Earnings table always agrees with the Variable
+      // Rate shown on the Commission Report's "Total for Pay Period" row.
       const rawCommissionHoursForEarnings =
         normalizedCaCommissionRows.rows.reduce((sum, row) => sum + row.hoursWorked, 0);
-      const commissionHoursForEarnings = round2(rawCommissionHoursForEarnings);
+      const commissionHoursForEarnings = roundPayrollAmount(rawCommissionHoursForEarnings);
 
       const rawCommissionTotalForEarnings =
         normalizedCaCommissionRows.rows.reduce((sum, row) => sum + row.commissionPerEmployee, 0);
-      const commissionTotalForEarnings = round2(rawCommissionTotalForEarnings);
+      const commissionTotalForEarnings = roundPayrollAmount(rawCommissionTotalForEarnings);
 
       const rawVariableIncentiveTotalForEarnings = normalizedCaCommissionRows.rows.reduce((sum, row) => {
         if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
         const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
-        return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * round2(row.hoursWorked));
+        return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
       }, 0);
-      const variableIncentiveTotalForEarnings = round2(rawVariableIncentiveTotalForEarnings);
+      const variableIncentiveTotalForEarnings = roundPayrollAmount(rawVariableIncentiveTotalForEarnings);
 
       const rawCommissionRateForEarnings =
         rawCommissionHoursForEarnings > 0
           ? rawCommissionTotalForEarnings / rawCommissionHoursForEarnings
           : 0;
-      const commissionRateInEffectForEarnings = round2(rawCommissionRateForEarnings);
+      const commissionRateInEffectForEarnings = roundPayrollAmount(rawCommissionRateForEarnings);
 
       const rawVariableRateForEarnings =
         rawCommissionHoursForEarnings > 0
           ? rawVariableIncentiveTotalForEarnings / rawCommissionHoursForEarnings
           : 0;
-      const variableRateForEarnings = round2(rawVariableRateForEarnings);
-      const totalFinalCommissionForEarnings = round2(
+      const variableRateForEarnings = roundPayrollAmount(rawVariableRateForEarnings);
+      const totalFinalCommissionForEarnings = roundPayrollAmount(
         commissionTotalForEarnings + variableIncentiveTotalForEarnings
       );
 
@@ -2008,7 +2012,7 @@ export async function POST(req: NextRequest) {
       const totalFinalCommissionRounded = totalFinalCommissionForEarnings;
       const totalCommissionRounded = commissionTotalForEarnings;
       const totalDoubletimePayRounded = round2(totalDoubletimePayAmount);
-      const totalVariableIncentiveRounded = round2(rawVariableIncentiveTotalForEarnings);
+      const totalVariableIncentiveRounded = roundPayrollAmount(rawVariableIncentiveTotalForEarnings);
       const totalTravelPayRounded = round2(totalTravelPay);
       const totalTipsRounded = round2(totalTips);
       const totalRestBreakRounded = round2(totalRestBreak);
