@@ -1193,16 +1193,14 @@ export async function sendTeamConfirmationEmail(data: {
                           <span style="color: #1d1d1f; font-size: 15px; font-weight: 500;">${eventDate}</span>
                         </td>
                       </tr>
-                      ${eventStartTime ? `
                       <tr>
                         <td style="padding: 10px 0; vertical-align: top;">
                           <span style="color: #6b7280; font-size: 15px; font-weight: 500;">Start Time:</span>
                         </td>
                         <td style="padding: 10px 0; text-align: right;">
-                          <span style="color: #1d1d1f; font-size: 15px; font-weight: 500;">${eventStartTime}</span>
+                          <span style="color: #1d1d1f; font-size: 15px; font-weight: 500;">TBA</span>
                         </td>
                       </tr>
-                      ` : ''}
                       ${managerName ? `
                       <tr>
                         <td style="padding: 10px 0; vertical-align: top;">

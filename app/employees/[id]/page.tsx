@@ -385,6 +385,7 @@ export default function WorkerProfilePage() {
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
   const [sickRequestEventId, setSickRequestEventId] = useState<string>("");
+  const [sickRequestReason, setSickRequestReason] = useState<string>("");
   const [sickRequestDate, setSickRequestDate] = useState<string>(
     () => new Date().toISOString().slice(0, 10)
   );
@@ -1329,6 +1330,12 @@ export default function WorkerProfilePage() {
       return;
     }
 
+    const trimmedSickRequestReason = sickRequestReason.trim();
+    if (!trimmedSickRequestReason) {
+      setSickRequestError("Please provide a reason for this sick leave request.");
+      return;
+    }
+
     if (
       (sickRequestMinDate && sickRequestDate < sickRequestMinDate) ||
       (sickRequestMaxDate && sickRequestDate > sickRequestMaxDate)
@@ -1359,6 +1366,7 @@ export default function WorkerProfilePage() {
           hours: parsedHours,
           date: sickRequestDate,
           event_id: sickRequestEventId,
+          reason: trimmedSickRequestReason,
         }),
       });
 
@@ -1373,6 +1381,7 @@ export default function WorkerProfilePage() {
           );
           setSickRequestHours("");
           setSickRequestEventId("");
+          setSickRequestReason("");
           return;
         }
         throw new Error(data?.error || "Failed to submit sick leave request");
@@ -1385,6 +1394,7 @@ export default function WorkerProfilePage() {
       setSickRequestSuccess("Sick leave request sent successfully.");
       setSickRequestHours("");
       setSickRequestEventId("");
+      setSickRequestReason("");
     } catch (error: any) {
       setSickRequestError(error?.message || "Failed to submit sick leave request");
     } finally {
@@ -3211,11 +3221,29 @@ export default function WorkerProfilePage() {
                       )}
                     </div>
 
-                    <div className="flex items-end">
+                    <div className="md:col-span-4">
+                      <label
+                        htmlFor="sick-request-reason"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Reason
+                      </label>
+                      <textarea
+                        id="sick-request-reason"
+                        required
+                        rows={2}
+                        value={sickRequestReason}
+                        onChange={(event) => setSickRequestReason(event.target.value)}
+                        placeholder="Briefly describe the reason for this sick leave request"
+                        className="w-full resize-none rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="flex items-end md:col-span-4 md:justify-end">
                       <button
                         type="submit"
                         disabled={submittingSickRequest}
-                        className="inline-flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                        className="inline-flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300 md:w-auto md:px-8"
                       >
                         {submittingSickRequest ? "Sending..." : "Send Request"}
                       </button>

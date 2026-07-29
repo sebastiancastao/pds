@@ -1052,12 +1052,43 @@ export async function GET(
       });
     }
 
+    type RawCancellationRequestRow = {
+      id: string;
+      team_member_id: string | null;
+      vendor_id: string | null;
+      cancellation_date: string | null;
+      reason: string;
+      requested_by: string | null;
+      room_manager_emails: string[] | null;
+      notification_sent: boolean;
+      created_at: string;
+    };
+
+    let rawCancellationRows: RawCancellationRequestRow[] = [];
+
+    const { data: cancellationRows, error: cancellationRowsError } = await supabaseAdmin
+      .from('event_cancellation_requests')
+      .select('id, team_member_id, vendor_id, cancellation_date, reason, requested_by, room_manager_emails, notification_sent, created_at')
+      .eq('event_id', eventId)
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (cancellationRowsError && !isMissingRelationError(cancellationRowsError)) {
+      console.error('Error fetching event_cancellation_requests:', cancellationRowsError);
+    }
+    rawCancellationRows = cancellationRows || [];
+
     const vendorIds = new Set<string>();
     const actorIds = new Set<string>();
 
     for (const row of rawUninviteRows) {
       if (row.vendor_id) vendorIds.add(row.vendor_id);
       if (row.uninvited_by_user_id) actorIds.add(row.uninvited_by_user_id);
+    }
+
+    for (const row of rawCancellationRows) {
+      if (row.vendor_id) vendorIds.add(row.vendor_id);
+      if (row.requested_by) actorIds.add(row.requested_by);
     }
 
     const relatedUserIds = Array.from(new Set<string>([...vendorIds, ...actorIds]));
@@ -1125,9 +1156,31 @@ export async function GET(
       };
     });
 
+    const cancellationRequests = rawCancellationRows.map((row) => {
+      const vendorUser = row.vendor_id ? userLookup.get(row.vendor_id) : undefined;
+      const requestedByUser = row.requested_by ? userLookup.get(row.requested_by) : undefined;
+
+      return {
+        id: row.id,
+        team_member_id: row.team_member_id || null,
+        vendor_id: row.vendor_id || null,
+        vendor_name: vendorUser?.name || 'Unknown',
+        vendor_email: vendorUser?.email || '',
+        cancellation_date: row.cancellation_date || null,
+        reason: row.reason || '',
+        requested_by: row.requested_by || null,
+        requested_by_name: requestedByUser?.name || 'Unknown',
+        requested_by_email: requestedByUser?.email || '',
+        room_manager_emails: Array.isArray(row.room_manager_emails) ? row.room_manager_emails : [],
+        notification_sent: Boolean(row.notification_sent),
+        created_at: row.created_at || null,
+      };
+    });
+
     return NextResponse.json({
       team: decryptedTeamMembers || [],
       uninvited_history: uninvitedHistory,
+      cancellation_requests: cancellationRequests,
     }, { status: 200 });
 
   } catch (error: any) {

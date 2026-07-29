@@ -1266,7 +1266,7 @@ export async function POST(req: NextRequest) {
       const drawRL = (x1: number, y1: number, x2: number) => {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
-      const C = { date: 20, show: 56, venue: 101, pool: 147, numEmp: 184, comm: 222, hours: 260, rate: 293, varRate: 325, varInc: 365, tips: 397, restPay: 427, travelPay: 457, bonus: 487, finalPay: 517 };
+      const C = { date: 20, show: 56, venue: 101, pool: 147, numEmp: 212, comm: 250, hours: 288, rate: 321, varRate: 353, varInc: 393, tips: 435, restPay: 465, travelPay: 495, bonus: 525, finalPay: 555 };
       const splitReportAddressLines = (rawAddress?: string | null) => {
         const str = (rawAddress || "").toString().trim();
         if (!str) return ["", "", ""] as const;

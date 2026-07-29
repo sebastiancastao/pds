@@ -92,6 +92,7 @@ function buildRequestEmailHtml(params: {
   sickDate: string;
   durationHours: number;
   eventLabel: string;
+  reason: string;
 }) {
   const dateLabel = new Date(`${params.sickDate}T00:00:00Z`).toLocaleDateString(
     "en-US",
@@ -139,6 +140,10 @@ function buildRequestEmailHtml(params: {
         <td style="padding: 6px 10px; color: #374151;">Requested At</td>
         <td style="padding: 6px 10px; font-weight: 600;">${requestedAt}</td>
       </tr>
+      <tr>
+        <td style="padding: 6px 10px; color: #374151; vertical-align: top;">Reason</td>
+        <td style="padding: 6px 10px; font-weight: 600;">${params.reason}</td>
+      </tr>
     </table>
   </body>
 </html>
@@ -157,10 +162,18 @@ export async function POST(req: NextRequest) {
     const durationHoursRaw = Number(body?.hours);
     const durationHours = Number(durationHoursRaw.toFixed(2));
     const eventId = String(body?.event_id || "").trim();
+    const reason = String(body?.reason || "").trim();
 
     if (!sickDate) {
       return NextResponse.json(
         { error: "A valid sick leave date is required" },
+        { status: 400 }
+      );
+    }
+
+    if (!reason) {
+      return NextResponse.json(
+        { error: "A reason for the sick leave request is required" },
         { status: 400 }
       );
     }
@@ -261,7 +274,7 @@ export async function POST(req: NextRequest) {
         end_date: sickDate,
         duration_hours: durationHours,
         status: "pending",
-        reason: "Employee sick leave request from /employees profile page",
+        reason,
       })
       .select(
         "id, event_id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at"
@@ -303,6 +316,7 @@ export async function POST(req: NextRequest) {
       sickDate,
       durationHours,
       eventLabel,
+      reason,
     });
 
     const emailResult = await sendEmail({
