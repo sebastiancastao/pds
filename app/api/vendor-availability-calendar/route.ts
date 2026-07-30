@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { decrypt } from '@/lib/encryption';
+import { safeDecrypt } from '@/lib/encryption';
 
 export const dynamic = 'force-dynamic';
 
@@ -176,8 +176,8 @@ export async function GET(req: NextRequest) {
       let firstName = '';
       let lastName = '';
       try {
-        firstName = profile?.first_name ? decrypt(profile.first_name) : '';
-        lastName = profile?.last_name ? decrypt(profile.last_name) : '';
+        firstName = profile?.first_name ? safeDecrypt(profile.first_name) : '';
+        lastName = profile?.last_name ? safeDecrypt(profile.last_name) : '';
       } catch {
         firstName = 'Vendor';
       }

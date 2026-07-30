@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { canUserAccessLoadedEvent } from "@/lib/event-access";
-import { decrypt } from "@/lib/encryption";
+import { safeDecrypt } from "@/lib/encryption";
 import { geocodeAddress } from "@/lib/geocoding";
 import { findSameDayConflicts, type SameDayConflict } from "@/lib/team-conflicts";
 
@@ -445,9 +445,9 @@ export async function GET(
         let lastName = '';
         let phone = '';
         try {
-          firstName = vendor.profiles?.first_name ? decrypt(vendor.profiles.first_name) : '';
-          lastName = vendor.profiles?.last_name ? decrypt(vendor.profiles.last_name) : '';
-          phone = vendor.profiles?.phone ? decrypt(vendor.profiles.phone) : '';
+          firstName = vendor.profiles?.first_name ? safeDecrypt(vendor.profiles.first_name) : '';
+          lastName = vendor.profiles?.last_name ? safeDecrypt(vendor.profiles.last_name) : '';
+          phone = vendor.profiles?.phone ? safeDecrypt(vendor.profiles.phone) : '';
         } catch (_) {
           // fallback to blanks if decryption fails
           firstName = firstName || 'Vendor';
