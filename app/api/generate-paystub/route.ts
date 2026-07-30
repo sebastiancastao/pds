@@ -1302,7 +1302,7 @@ export async function POST(req: NextRequest) {
       drawR("Show Date /", C.date, y, { bold: true, size: 6 });
       drawR("Event Name /", C.show, y, { bold: true, size: 6 });
       drawR("Venue /", C.venue, y, { bold: true, size: 6 });
-      drawR("COMMISSION POOL", C.pool, y, { bold: true, size: 6 });
+      drawR("Commission pool", C.pool, y, { bold: true, size: 6 });
       drawR("# of", C.numEmp, y, { bold: true, size: 6 });
       drawR("Commission", C.comm, y, { bold: true, size: 6 });
       drawR("Hours", C.hours, y, { bold: true, size: 6 });
@@ -1319,7 +1319,7 @@ export async function POST(req: NextRequest) {
       drawR("Event Date", C.date, y, { bold: true, size: 6 });
       drawR("Show Name", C.show, y, { bold: true, size: 6 });
       drawR("Stadium Name", C.venue, y, { bold: true, size: 6 });
-      drawR("PER AGREEMENT", C.pool, y, { bold: true, size: 6 });
+      drawR("Per agreement", C.pool, y, { bold: true, size: 6 });
       drawR("Employees", C.numEmp, y, { bold: true, size: 6 });
       drawR("Paid", C.comm, y, { bold: true, size: 6 });
       drawR("Worked", C.hours, y, { bold: true, size: 6 });
@@ -1438,8 +1438,6 @@ export async function POST(req: NextRequest) {
         });
       }
       drawR("Total for Pay Period", C.date, y, { bold: true, size: 6 });
-      drawR(fmtMoney(grandCommissionPool), C.pool, y, { bold: true, size: 6 });
-      drawR(grandEmployees.toString(), C.numEmp, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandCommission), C.comm, y, { bold: true, size: 6 });
       drawR(Number(grandHoursWorked).toFixed(2), C.hours, y, { bold: true, size: 6 });
       drawR(`$${averageRateInEffect.toFixed(2)}`, C.rate, y, { bold: true, size: 6 });
