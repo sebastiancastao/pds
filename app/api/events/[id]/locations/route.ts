@@ -112,7 +112,7 @@ async function getLocationsAndAssignments(eventId: string) {
       .order("created_at", { ascending: true }),
     supabaseAdmin
       .from("event_location_assignments")
-      .select("id, event_id, location_id, vendor_id, is_leader, created_at, updated_at")
+      .select("id, event_id, location_id, vendor_id, is_leader, is_runner, created_at, updated_at")
       .eq("event_id", eventId),
   ]);
 
@@ -267,6 +267,7 @@ export async function PUT(
     const locationId = normalizeText(body?.locationId);
     const teamMemberIdsRaw: unknown[] | null = Array.isArray(body?.teamMemberIds) ? body.teamMemberIds : null;
     const leaderId = body?.leaderId !== undefined ? normalizeText(body?.leaderId) : undefined;
+    const runnerId = body?.runnerId !== undefined ? normalizeText(body?.runnerId) : undefined;
     const name = body?.name !== undefined ? normalizeText(body?.name) : undefined;
     const notes = body?.notes !== undefined ? normalizeText(body?.notes) : undefined;
     const hasCallTime = body && Object.prototype.hasOwnProperty.call(body, "callTime");
@@ -492,6 +493,62 @@ export async function PUT(
 
         if (setLeaderError) {
           return NextResponse.json({ error: setLeaderError.message }, { status: 500 });
+        }
+      }
+    }
+
+    if (runnerId !== undefined) {
+      // Clear existing runner for this location
+      const { error: clearRunnerError } = await supabaseAdmin
+        .from("event_location_assignments")
+        .update({ is_runner: false })
+        .eq("event_id", eventId)
+        .eq("location_id", locationId);
+
+      if (clearRunnerError) {
+        return NextResponse.json({ error: clearRunnerError.message }, { status: 500 });
+      }
+
+      if (runnerId) {
+        // Verify the vendor is assigned to this location and is confirmed on the event team
+        const { data: runnerAssignment, error: runnerAssignmentError } = await supabaseAdmin
+          .from("event_location_assignments")
+          .select("vendor_id")
+          .eq("event_id", eventId)
+          .eq("location_id", locationId)
+          .eq("vendor_id", runnerId)
+          .maybeSingle();
+
+        if (runnerAssignmentError) {
+          return NextResponse.json({ error: runnerAssignmentError.message }, { status: 500 });
+        }
+        if (!runnerAssignment) {
+          return NextResponse.json({ error: "Vendor is not assigned to this location" }, { status: 400 });
+        }
+
+        const { data: teamMember, error: teamMemberError } = await supabaseAdmin
+          .from("event_teams")
+          .select("status")
+          .eq("event_id", eventId)
+          .eq("vendor_id", runnerId)
+          .maybeSingle();
+
+        if (teamMemberError) {
+          return NextResponse.json({ error: teamMemberError.message }, { status: 500 });
+        }
+        if (!teamMember || String(teamMember.status || "").toLowerCase() !== "confirmed") {
+          return NextResponse.json({ error: "Only confirmed vendors can be set as runner" }, { status: 400 });
+        }
+
+        const { error: setRunnerError } = await supabaseAdmin
+          .from("event_location_assignments")
+          .update({ is_runner: true })
+          .eq("event_id", eventId)
+          .eq("location_id", locationId)
+          .eq("vendor_id", runnerId);
+
+        if (setRunnerError) {
+          return NextResponse.json({ error: setRunnerError.message }, { status: 500 });
         }
       }
     }
