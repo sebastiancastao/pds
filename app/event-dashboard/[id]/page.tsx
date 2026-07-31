@@ -553,6 +553,11 @@ export default function EventDashboardPage() {
   // Manual "Variable Incentive" bonus per user (user_id -> $ amount). Flat additive amount, defaults to 0.
   const [variableIncentives, setVariableIncentives] = useState<Record<string, number>>({});
   const [variableIncentivesLoaded, setVariableIncentivesLoaded] = useState(false);
+  // Hours already worked earlier in the week (Mon..day-before-event), per user_id.
+  // Mirrors HR Dashboard's weeklyHoursMap: used to apply AZ/NY weekly-OT rules and
+  // San Diego's weekly-overtime-hours conversion to the Payment tab math.
+  const [weeklyHoursByUser, setWeeklyHoursByUser] = useState<Record<string, number>>({});
+  const [weeklyHoursLoaded, setWeeklyHoursLoaded] = useState(false);
   const [editingVariableIncentiveMemberId, setEditingVariableIncentiveMemberId] = useState<string | null>(null);
   const [editingVariableIncentiveValue, setEditingVariableIncentiveValue] = useState<string>("");
   const [editingTimesheetUserId, setEditingTimesheetUserId] = useState<string | null>(null);
@@ -1087,6 +1092,49 @@ export default function EventDashboardPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId]);
+
+  // Prior-week worked hours (Mon..day-before-event) for AZ/NY weekly-OT and San Diego
+  // weekly-overtime-hours conversion — mirrors HR Dashboard's /api/weekly-hours usage.
+  // Runs once teamMembers are available so we know which user_ids to request.
+  useEffect(() => {
+    if (activeTab !== "hr") return;
+    if (!eventId || !event?.event_date) return;
+    const stateCode = (event.state || "").toUpperCase().trim();
+    // Computed inline (rather than reusing the `isEventSanDiego` const declared further
+    // down in this component) since this effect runs earlier in render order.
+    const isSDEvent = isSanDiegoRegion({ city: event?.city, venue: event?.venue });
+    const needsWeekly = stateCode === "AZ" || stateCode === "NY" || isSDEvent;
+    if (!needsWeekly || weeklyHoursLoaded) return;
+    if (teamMembers.length === 0) return;
+
+    (async () => {
+      try {
+        const userIds = Array.from(new Set(
+          teamMembers
+            .map((m: any) => (m.user_id || m.vendor_id || m.users?.id || "").toString())
+            .filter(Boolean)
+        ));
+        if (userIds.length === 0) {
+          setWeeklyHoursLoaded(true);
+          return;
+        }
+        const token = await getSessionToken();
+        const payload = [{ event_id: eventId, event_date: event.event_date, user_ids: userIds }];
+        const res = await fetch(`/api/weekly-hours?events=${encodeURIComponent(JSON.stringify(payload))}`, {
+          method: "GET",
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setWeeklyHoursByUser(data?.[eventId] || {});
+        }
+      } catch (e) {
+        console.warn("[PAYMENT] Failed to fetch weekly hours:", e);
+      } finally {
+        setWeeklyHoursLoaded(true);
+      }
+    })();
+  }, [activeTab, eventId, event?.event_date, event?.state, event?.city, event?.venue, teamMembers, weeklyHoursLoaded]);
 
   // Live polling: refresh timesheet data every 15s when on the timesheet tab and not editing
   useEffect(() => {
@@ -4291,8 +4339,11 @@ export default function EventDashboardPage() {
   };
 
   const getRestBreakAmount = (actualHours: number, state: string): number => {
-    if (isEventSanDiego) return 0;
-    return actualHours >= 14 ? 17 : actualHours > 10 ? 12.5 : actualHours > 0 ? 9 : 0;
+    // Matches HR Dashboard's getRestBreakAmount: no rest break for San Diego (its blended
+    // OT/DT rate already covers it) or for "special" non-event hourly payroll.
+    if (isEventSanDiego || isNonEventTimesheet) return 0;
+    if (actualHours <= 0) return 0;
+    return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
   };
   const roundPayrollAmount = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
@@ -4659,6 +4710,39 @@ export default function EventDashboardPage() {
     };
   };
 
+  // AZ/NY weekly-OT rule (mirrors HR Dashboard's inline AZ/NY branch in loadPaymentsData):
+  // once a worker crosses 40 hours worked so far this week (Mon..prior day, plus this
+  // shift), the "Ext Amt on Reg Rate" baseline used to gate commission uplift is
+  // recomputed at 1.5x a loaded rate that itself is floored at a $150 per-event minimum.
+  // Below the 40-hour threshold, this returns the flat (non-OT) ext amt unchanged.
+  const getAzNyAdjustedExtAmt = ({
+    actualHours,
+    baseRate,
+    flatExtAmtOnRegRate,
+    distributedCommissionShare,
+    trailersDivision,
+    priorWeeklyHours,
+  }: {
+    actualHours: number;
+    baseRate: number;
+    flatExtAmtOnRegRate: number;
+    distributedCommissionShare: number;
+    trailersDivision: boolean;
+    priorWeeklyHours: number;
+  }): number => {
+    if (actualHours <= 0) return flatExtAmtOnRegRate;
+    const isWeeklyOT = (priorWeeklyHours + actualHours) > 40;
+    if (!isWeeklyOT) return flatExtAmtOnRegRate;
+    const extAmtRegular = Math.round(actualHours * baseRate * 100) / 100;
+    const prelimCommission = (!trailersDivision && distributedCommissionShare > 0)
+      ? Math.max(0, distributedCommissionShare - flatExtAmtOnRegRate)
+      : 0;
+    const totalFinalCommissionBase = Math.max(150, extAmtRegular + prelimCommission);
+    const loadedRateBase = totalFinalCommissionBase / actualHours;
+    const otRate = loadedRateBase * 1.5;
+    return Math.round(otRate * actualHours * 100) / 100;
+  };
+
   const getDisplayedPaymentBreakdown = useCallback(({
     uid,
     division,
@@ -4676,11 +4760,12 @@ export default function EventDashboardPage() {
     const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
     const trailersDivision = isTrailersDivision(division);
     const commissionOverride = commissionsOverrides[uid];
-    const sanDiegoBreakdown = isEventSanDiego
-      ? computeSanDiegoHourlyBreakdown(actualHours, baseRate)
-      : null;
+    const priorWeeklyHours = Number(weeklyHoursByUser[uid] || 0);
 
     if (isEventSanDiego) {
+      // San Diego's blended OT/DT rate accounts for weekly overtime by converting some
+      // regular hours to OT once prior-week + this shift's hours exceed 40.
+      const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(actualHours, baseRate, priorWeeklyHours);
       const manualVariableIncentiveSD = Number(variableIncentives[uid] || 0);
       return {
         commissionAmount: 0,
@@ -4691,7 +4776,7 @@ export default function EventDashboardPage() {
         variableIncentive: manualVariableIncentiveSD,
         manualVariableIncentive: manualVariableIncentiveSD,
         finalCommissionRate: Number(sanDiegoBreakdown?.blendedRate || baseRate),
-        extAmtOnRegRate,
+        extAmtOnRegRate: Number(sanDiegoBreakdown?.totalPay || 0),
         isHourlySanDiego: true,
         regularHours: Number(sanDiegoBreakdown?.regularHours || 0),
         overtimeHours: Number(sanDiegoBreakdown?.overtimeHours || 0),
@@ -4699,6 +4784,31 @@ export default function EventDashboardPage() {
         regularPay: Number(sanDiegoBreakdown?.regularPay || 0),
         overtimePay: Number(sanDiegoBreakdown?.overtimePay || 0),
         doubletimePay: Number(sanDiegoBreakdown?.doubletimePay || 0),
+      };
+    }
+
+    if (isNonEventTimesheet) {
+      // "Special" (non-event) payroll is pure hourly: no commission pool, no rest break.
+      // Matches HR Dashboard's isNonEventPayrollEvent -> isHourlyPayroll treatment.
+      const manualVariableIncentiveNE = Number(variableIncentives[uid] || 0);
+      const hourlyPay = extAmtOnRegRate + manualVariableIncentiveNE;
+      return {
+        commissionAmount: 0,
+        commissionOverride,
+        displayedCommissionPay: 0,
+        totalFinalCommission: hourlyPay,
+        trailersDivision,
+        variableIncentive: manualVariableIncentiveNE,
+        manualVariableIncentive: manualVariableIncentiveNE,
+        finalCommissionRate: actualHours > 0 ? hourlyPay / actualHours : baseRate,
+        extAmtOnRegRate,
+        isHourlySanDiego: true,
+        regularHours: actualHours,
+        overtimeHours: 0,
+        doubletimeHours: 0,
+        regularPay: extAmtOnRegRate,
+        overtimePay: 0,
+        doubletimePay: 0,
       };
     }
 
@@ -4732,6 +4842,21 @@ export default function EventDashboardPage() {
       };
     }
 
+    // AZ/NY: the ext amt fed into the commission-vs-hourly comparison is bumped to a
+    // weekly-OT rate (with a $150/event floor on the loaded rate used to derive it)
+    // once this worker crosses 40 hours for the week. Other states use the flat ext amt.
+    const isAzOrNy = eventState === "AZ" || eventState === "NY";
+    const commissionExtAmtOnRegRate = isAzOrNy
+      ? getAzNyAdjustedExtAmt({
+          actualHours,
+          baseRate,
+          flatExtAmtOnRegRate: extAmtOnRegRate,
+          distributedCommissionShare,
+          trailersDivision,
+          priorWeeklyHours,
+        })
+      : extAmtOnRegRate;
+
     const {
       commissionAmount,
       displayedCommissionPay,
@@ -4742,7 +4867,7 @@ export default function EventDashboardPage() {
       uid,
       division,
       actualHours,
-      extAmtOnRegRate,
+      extAmtOnRegRate: commissionExtAmtOnRegRate,
       distributedCommissionShare,
     });
     const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
@@ -4757,16 +4882,16 @@ export default function EventDashboardPage() {
       variableIncentive,
       manualVariableIncentive,
       finalCommissionRate: Math.max(minLoadedRate, rawFinalCommissionRate),
-      extAmtOnRegRate,
+      extAmtOnRegRate: commissionExtAmtOnRegRate,
       isHourlySanDiego: false,
       regularHours: actualHours,
       overtimeHours: 0,
       doubletimeHours: 0,
-      regularPay: extAmtOnRegRate,
+      regularPay: commissionExtAmtOnRegRate,
       overtimePay: 0,
       doubletimePay: 0,
     };
-  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, eventId, isEventSanDiego, payPeriodCommission]);
+  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, event?.event_type, eventId, isEventSanDiego, isNonEventTimesheet, payPeriodCommission, weeklyHoursByUser]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -4794,41 +4919,28 @@ export default function EventDashboardPage() {
         getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
       );
 
-      // Build vendor payments array using the same UI hour calculation.
+      // Build vendor payments array using the same breakdown the Payment tab displays
+      // (getDisplayedPaymentBreakdown), so saved data always matches what's on screen —
+      // including San Diego/AZ/NY weekly-OT and period-rate (CA/NV/WI) pay-period math.
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = getDisplayedWorkedMs(uid);
         const actualHours = getActualHoursFromWorkedMs(totalMs, true);
         const memberDivision = member.users?.division;
 
-        // No OT/DT logic in Payment tab
-        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-        const regularPay = isEventSanDiego
-          ? Math.round(regularHours * baseRate * 100) / 100
-          : 0; // for non-SD, regularPay stored as extAmtOnRegRate below
-        const overtimePay = isEventSanDiego ? Math.round(overtimeHours * baseRate * 1.5 * 100) / 100 : 0;
-        const doubletimePay = isEventSanDiego ? Math.round(doubletimeHours * baseRate * 2 * 100) / 100 : 0;
-
         // Users with division "trailers" should NOT receive commissions or tips
         const trailersDivision = isTrailersDivision(memberDivision);
-
-        const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
-        const restBreak = getRestBreakAmount(actualHours, eventState);
         const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
-        // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
-        // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const {
-          commissionAmount,
-          commissionOverride,
-          manualVariableIncentive,
-        } = getCommissionBreakdown({
+        const breakdown = getDisplayedPaymentBreakdown({
           uid,
           division: memberDivision,
           actualHours,
-          extAmtOnRegRate,
+          baseRate,
           distributedCommissionShare,
         });
+        const restBreak = getRestBreakAmount(actualHours, eventState);
+
         const tipsOverride = tipsOverrides[uid];
         const proratedTips = tipsOverride === null
           ? 0 // tips deleted for this user
@@ -4836,22 +4948,22 @@ export default function EventDashboardPage() {
           ? tipsOverride // manual override
           : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
-        const totalPay = extAmtOnRegRate + commissionAmount + manualVariableIncentive + proratedTips + restBreak;
+        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak;
 
         return {
           userId: uid,
           actualHours,
-          regularHours,
-          overtimeHours,
-          doubletimeHours,
-          regularPay: isEventSanDiego ? regularPay : extAmtOnRegRate,
-          overtimePay,
-          doubletimePay,
-          commissions: commissionAmount,
-          commissionOverride: commissionOverride !== undefined && commissionOverride !== null ? commissionOverride : undefined,
-          commissionDeleted: commissionOverride === null,
+          regularHours: breakdown.regularHours,
+          overtimeHours: breakdown.overtimeHours,
+          doubletimeHours: breakdown.doubletimeHours,
+          regularPay: breakdown.regularPay,
+          overtimePay: breakdown.overtimePay,
+          doubletimePay: breakdown.doubletimePay,
+          commissions: breakdown.commissionAmount,
+          commissionOverride: breakdown.commissionOverride !== undefined && breakdown.commissionOverride !== null ? breakdown.commissionOverride : undefined,
+          commissionDeleted: breakdown.commissionOverride === null,
           commissionEvenSplit: commissionEvenSplitOverrides[uid],
-          variableIncentive: manualVariableIncentive,
+          variableIncentive: breakdown.manualVariableIncentive,
           tips: proratedTips,
           tipsOverride: tipsOverride !== undefined && tipsOverride !== null ? tipsOverride : undefined,
           tipsDeleted: tipsOverride === null,
@@ -4928,51 +5040,37 @@ export default function EventDashboardPage() {
         const actualHours = getActualHoursFromWorkedMs(totalMs);
         const memberDivision = member.users?.division;
 
-        // Calculate pay
-        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-        const overtimePay = isEventSanDiego ? Math.round(overtimeHours * baseRate * 1.5 * 100) / 100 : 0;
-        const doubletimePay = isEventSanDiego ? Math.round(doubletimeHours * baseRate * 2 * 100) / 100 : 0;
-
         // Users with division "trailers" should NOT receive commissions or tips
         const trailersDivision = isTrailersDivision(memberDivision);
-
-        const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
-        const restBreak = getRestBreakAmount(actualHours, eventState);
         const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
-        // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
-        // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const {
-          commissionAmount,
-          displayedCommissionPay,
-          totalFinalCommission,
-          variableIncentive,
-        } = getCommissionBreakdown({
+        // Same breakdown the Payment tab table displays, so emailed totals match what's
+        // shown/saved (San Diego/AZ/NY weekly-OT, CA/NV/WI period-rate math included).
+        const breakdown = getDisplayedPaymentBreakdown({
           uid,
           division: memberDivision,
           actualHours,
-          extAmtOnRegRate,
+          baseRate,
           distributedCommissionShare,
         });
+        const restBreak = getRestBreakAmount(actualHours, eventState);
         const proratedTips = !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
         const adjustment = adjustments[uid] || 0;
 
-        const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak + adjustment;
+        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + adjustment;
 
         return {
           email: member.users?.email,
           firstName: profile?.first_name || "Team Member",
           lastName: profile?.last_name || "",
-          regularHours: regularHours.toFixed(2),
-          regularPay: isEventSanDiego
-            ? formatPayrollMoney(Math.round(regularHours * baseRate * 100) / 100)
-            : formatPayrollMoney(extAmtOnRegRate),
-          overtimeHours: overtimeHours.toFixed(2),
-          overtimePay: formatPayrollMoney(overtimePay),
-          doubletimeHours: doubletimeHours.toFixed(2),
-          doubletimePay: formatPayrollMoney(doubletimePay),
-          commissionPay: formatPayrollMoney(displayedCommissionPay),
-          variableIncentive: formatPayrollMoney(variableIncentive),
+          regularHours: breakdown.regularHours.toFixed(2),
+          regularPay: formatPayrollMoney(breakdown.regularPay),
+          overtimeHours: breakdown.overtimeHours.toFixed(2),
+          overtimePay: formatPayrollMoney(breakdown.overtimePay),
+          doubletimeHours: breakdown.doubletimeHours.toFixed(2),
+          doubletimePay: formatPayrollMoney(breakdown.doubletimePay),
+          commissionPay: formatPayrollMoney(breakdown.displayedCommissionPay),
+          variableIncentive: formatPayrollMoney(breakdown.variableIncentive),
           tips: formatPayrollMoney(proratedTips),
           restBreak: formatPayrollMoney(restBreak),
           adjustment: formatPayrollMoney(adjustment),

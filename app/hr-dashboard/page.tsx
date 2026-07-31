@@ -2104,6 +2104,9 @@ function HRDashboardContent() {
 
     // Event-level summary rows (matches payroll header metrics in UI)
     const summaryRows: any[] = [];
+    // Variable Incentive is a pay-period-level bonus, not attributable to a single
+    // event, so it's accumulated here and only shown once on the summary TOTAL row.
+    let payPeriodVariableIncentiveTotal = 0;
     const allVendorDetailRows: any[] = [];
     const vendorRows: any[] = [];
     const hourlyRows: any[] = [];
@@ -2293,6 +2296,7 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
           return sum + breakdown.variableIncentive;
         }, 0);
+        payPeriodVariableIncentiveTotal += totalDisplayedVariableIncentive;
         const totalDisplayedCommissionPaid = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
           return sum + breakdown.commissionPaidTotal;
@@ -2335,7 +2339,7 @@ function HRDashboardContent() {
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
           'Adjusted Gross Amount': Number(Number(event.adjustedGrossAmount || 0).toFixed(2)),
         'Total Commission': isHourlyEvent ? 0 : Number(Number(event.commissionDollars || 0).toFixed(2)),
-        'Variable Incentive': Number(totalDisplayedVariableIncentive.toFixed(2)),
+        'Variable Incentive': '',
         'Total Labor Cost /Hourly': Number(totalDisplayedHourlyLaborCost.toFixed(2)),
         'Commission per Vendor': isHourlyEvent ? 0 : Number(Number(event.commissionPerVendor || 0).toFixed(2)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
@@ -2402,7 +2406,7 @@ function HRDashboardContent() {
         'Hours': Number(paymentsByVenue.reduce((s: number, v: any) => s + v.events.reduce((es: number, ev: any) => es + Number(ev.eventHours || 0), 0), 0).toFixed(2)),
         'Adjusted Gross Amount': Number(sumNum('Adjusted Gross Amount').toFixed(2)),
         'Total Commission': Number(sumNum('Total Commission').toFixed(2)),
-        'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
+        'Variable Incentive': Number(payPeriodVariableIncentiveTotal.toFixed(2)),
         'Total Labor Cost /Hourly': Number(sumNum('Total Labor Cost /Hourly').toFixed(2)),
         'Commission per Vendor': '',
         'Vendors w/ Hours': '',
