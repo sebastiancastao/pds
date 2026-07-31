@@ -2298,6 +2298,14 @@ function HRDashboardContent() {
           return sum + breakdown.commissionPaidTotal;
         }, 0);
         const isHourlyEvent = isHourlyPayrollEvent(event);
+        // Hourly wage total (Regular + Overtime + Double Time) for the event's pay period,
+        // separate from any manual "Variable Incentive" bonus which has its own column.
+        const totalDisplayedHourlyLaborCost = isHourlyEvent
+          ? eventPayments.reduce((sum: number, p: any) => {
+              const breakdown = getDisplayedPaymentBreakdown(event, p);
+              return sum + breakdown.regularPay + breakdown.overtimePay + breakdown.doubletimePay;
+            }, 0)
+          : 0;
         const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)), 0);
         const totalDisplayedOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const totalDisplayedTravelPay = eventPayments.reduce((sum: number, p: any) => {
@@ -2327,6 +2335,8 @@ function HRDashboardContent() {
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
           'Adjusted Gross Amount': Number(Number(event.adjustedGrossAmount || 0).toFixed(2)),
         'Total Commission': isHourlyEvent ? 0 : Number(Number(event.commissionDollars || 0).toFixed(2)),
+        'Variable Incentive': Number(totalDisplayedVariableIncentive.toFixed(2)),
+        'Total Labor Cost /Hourly': Number(totalDisplayedHourlyLaborCost.toFixed(2)),
         'Commission per Vendor': isHourlyEvent ? 0 : Number(Number(event.commissionPerVendor || 0).toFixed(2)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
           'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
@@ -2392,6 +2402,8 @@ function HRDashboardContent() {
         'Hours': Number(paymentsByVenue.reduce((s: number, v: any) => s + v.events.reduce((es: number, ev: any) => es + Number(ev.eventHours || 0), 0), 0).toFixed(2)),
         'Adjusted Gross Amount': Number(sumNum('Adjusted Gross Amount').toFixed(2)),
         'Total Commission': Number(sumNum('Total Commission').toFixed(2)),
+        'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
+        'Total Labor Cost /Hourly': Number(sumNum('Total Labor Cost /Hourly').toFixed(2)),
         'Commission per Vendor': '',
         'Vendors w/ Hours': '',
         'Total Tips': Number(sumNum('Total Tips').toFixed(2)),
@@ -2553,6 +2565,8 @@ function HRDashboardContent() {
         { wch: 10 }, // Hours
         { wch: 22 }, // Adjusted Gross Amount
         { wch: 18 }, // Total Commission
+        { wch: 18 }, // Variable Incentive
+        { wch: 20 }, // Total Labor Cost /Hourly
         { wch: 22 }, // Commission per Vendor
         { wch: 16 }, // Vendors w/ Hours
         { wch: 12 }, // Total Tips
