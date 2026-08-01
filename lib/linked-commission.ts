@@ -1,4 +1,4 @@
-import { distributePoolByHoursRule, shortShiftModeForDate } from "./payroll-distribution";
+import { distributePoolByHoursRule, roundAmountsToCents, shortShiftModeForDate } from "./payroll-distribution";
 
 export type LinkedCommissionWorkerInput = {
   userId: string;
@@ -214,18 +214,22 @@ export function buildLinkedCommissionDistribution({
       .filter(Boolean)
       .sort()[0];
 
-    const commissionShareByUserId = Object.fromEntries(
-      Object.entries(
-        distributePoolByHoursRule({
-          totalAmount: totalCommissionPoolDollars,
-          members: Object.entries(totalHoursByUserId).map(([userId, hours]) => ({
-            id: userId,
-            hours,
-            forceEvenSplit: forceEvenSplitByUserId[userId],
-          })),
-          allShortShiftMode: shortShiftModeForDate(groupDate),
-        }).amountsById
-      ).map(([userId, share]) => [userId, roundMoney(Number(share || 0))])
+    const rawCommissionSharesByUserId = distributePoolByHoursRule({
+      totalAmount: totalCommissionPoolDollars,
+      members: Object.entries(totalHoursByUserId).map(([userId, hours]) => ({
+        id: userId,
+        hours,
+        forceEvenSplit: forceEvenSplitByUserId[userId],
+      })),
+      allShortShiftMode: shortShiftModeForDate(groupDate),
+    }).amountsById;
+    // Round to cents via largest-remainder so per-user shares always sum to
+    // exactly totalCommissionPoolDollars — rounding each user's share
+    // independently (roundMoney per entry) can drift the total by a few cents,
+    // which surfaced as the commission split not matching the pool percentage.
+    const commissionShareByUserId = roundAmountsToCents(
+      rawCommissionSharesByUserId,
+      totalCommissionPoolDollars
     );
 
     const commissionShareByEventIdForGroup: Record<string, Record<string, number>> = {};

@@ -445,6 +445,16 @@ export default function EventDashboardPage() {
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
   const [savedEventPaymentSummary, setSavedEventPaymentSummary] = useState<any | null>(null);
   const [commissionLinkCandidates, setCommissionLinkCandidates] = useState<CommissionLinkCandidate[]>([]);
+  // Mirrors commissionLinkCandidates so loadLinkedCommissionEventContext can read the latest
+  // list without depending on it — that dependency used to change the callback's identity
+  // whenever candidates finished loading, re-triggering the fetch effect a few seconds after
+  // the initial (correct) load and swapping in the /api/events list's possibly-stale
+  // commission_pool (that route lacks fetchCache: 'force-no-store', see
+  // nextjs-fetch-cache-stale-supabase memory) in place of the always-fresh vendor-payments data.
+  const commissionLinkCandidatesRef = useRef<CommissionLinkCandidate[]>([]);
+  useEffect(() => {
+    commissionLinkCandidatesRef.current = commissionLinkCandidates;
+  }, [commissionLinkCandidates]);
   const [commissionLinkCandidatesLoaded, setCommissionLinkCandidatesLoaded] = useState(false);
   const [loadingCommissionLinkCandidates, setLoadingCommissionLinkCandidates] = useState(false);
   const [selectedLinkedCommissionEventId, setSelectedLinkedCommissionEventId] = useState<string>("");
@@ -1409,9 +1419,13 @@ export default function EventDashboardPage() {
 
       const data = await res.json();
       const linkedEventData = data?.paymentsByEvent?.[normalizedLinkedEventId] || null;
+      // eventInfo comes from this same no-store request, so it's always current. The
+      // /api/events list (commissionLinkCandidatesRef) is only a fallback for the brief
+      // window before that list has loaded — it must not take priority, since that route
+      // can serve a stale commission_pool via Next's fetch Data Cache.
       const linkedEventMeta =
-        commissionLinkCandidates.find((candidate) => candidate.id === normalizedLinkedEventId) ||
         linkedEventData?.eventInfo ||
+        commissionLinkCandidatesRef.current.find((candidate) => candidate.id === normalizedLinkedEventId) ||
         null;
 
       setLinkedCommissionEventContext({
@@ -1426,7 +1440,7 @@ export default function EventDashboardPage() {
     } finally {
       setLoadingLinkedCommissionEventContext(false);
     }
-  }, [commissionLinkCandidates, getSessionToken]);
+  }, [getSessionToken]);
 
   useEffect(() => {
     if (!eventId) return;

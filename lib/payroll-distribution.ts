@@ -64,6 +64,60 @@ const toPositiveNumber = (value: number): number => {
   return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0;
 };
 
+const roundMoney = (value: number): number =>
+  Math.round(((Number.isFinite(value) ? value : 0) + Number.EPSILON) * 100) / 100;
+
+/**
+ * Round a set of dollar amounts (e.g. distributePoolByHoursRule's per-member
+ * shares) to the nearest cent so they sum to exactly `totalAmount` (rounded to
+ * cents), using a largest-remainder allocation. Rounding each member's share
+ * independently (plain Math.round per entry) can drift the summed total away
+ * from the pool by a few cents once there are more than a couple of members —
+ * this is what showed up as the commission split total not matching the pool
+ * percentage on the sales tab.
+ */
+export function roundAmountsToCents(
+  amountsById: Record<string, number>,
+  totalAmount: number
+): Record<string, number> {
+  const entries = Object.entries(amountsById);
+  if (entries.length === 0) return {};
+
+  const totalCents = Math.round(roundMoney(totalAmount) * 100);
+
+  if (entries.length === 1) {
+    return { [entries[0][0]]: totalCents / 100 };
+  }
+
+  const withCents = entries.map(([id, amount]) => {
+    const rawCents = (Number.isFinite(amount) ? amount : 0) * 100;
+    const floorCents = Math.floor(rawCents);
+    return { id, floorCents, remainder: rawCents - floorCents };
+  });
+
+  let remainingCents = totalCents - withCents.reduce((sum, entry) => sum + entry.floorCents, 0);
+  const order = [...withCents].sort((a, b) => {
+    if (b.remainder !== a.remainder) return b.remainder - a.remainder;
+    return a.id.localeCompare(b.id);
+  });
+
+  if (remainingCents > 0) {
+    for (let index = 0; index < order.length && remainingCents > 0; index += 1) {
+      order[index].floorCents += 1;
+      remainingCents -= 1;
+    }
+  } else if (remainingCents < 0) {
+    // Only reachable via floating-point noise (floors should never exceed the
+    // total in the common case); take back cents from the smallest remainders.
+    for (let index = order.length - 1; index >= 0 && remainingCents < 0; index -= 1) {
+      order[index].floorCents -= 1;
+      remainingCents += 1;
+    }
+  }
+
+  return Object.fromEntries(withCents.map((entry) => [entry.id, entry.floorCents / 100]));
+}
+
 export function distributePoolByHoursRule({
   totalAmount,
   members,

@@ -455,14 +455,28 @@ export default function EditEventPage() {
               />
             </div>
             <div>
-              <label className="font-semibold block mb-1">Commission Pool</label>
-              <input 
-                name="commission_pool" 
-                value={form.commission_pool || ""} 
-                onChange={handleChange} 
-                type="number" 
-                step="0.01" 
+              <label className="font-semibold block mb-1">Commission Pool (%)</label>
+              <input
+                name="commission_pool"
+                // Stored as a fraction (0.04 = 4%), same convention as the event-dashboard
+                // Sales tab and create-event form — display/parse as a percentage so this
+                // field can't be saved as a raw whole number (e.g. "1" meaning 100% instead
+                // of 1%), which previously made commission_pool_dollars == net_sales.
+                value={((Number(form.commission_pool) || 0) * 100).toString()}
+                onChange={(e) => {
+                  const val = e.target.value.replace('%', '').trim();
+                  if (val === '') {
+                    setForm(prev => ({ ...prev, commission_pool: null }));
+                    return;
+                  }
+                  const numVal = Number(val);
+                  if (isNaN(numVal)) return;
+                  setForm(prev => ({ ...prev, commission_pool: numVal / 100 }));
+                }}
+                type="number"
+                step="0.01"
                 min="0"
+                placeholder="4"
                 className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
               />
             </div>
