@@ -5,6 +5,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, isEncrypted } from "@/lib/encryption";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 import { validateCheckinLinkToken } from "@/lib/checkin-link-token";
+import { getTimezoneForState, toZonedIso, addDaysToDateString } from "@/lib/timezones";
 
 export const runtime = "nodejs";
 
@@ -60,24 +61,10 @@ function decryptProfileNamePart(value: unknown, workerIdForLog: string): string 
   }
 }
 
-function addOneDay(dateStr: string): string {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().split("T")[0];
-}
-
-/** Converts a wall-clock date+time in Pacific time to UTC milliseconds. */
-function parseEventMs(dateStr: string, timeStr: string): number {
-  const naiveUtcMs = Date.parse(`${dateStr}T${timeStr}Z`);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return t === "hour" && v === "24" ? "00" : v; };
-  const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
-  return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
+/** Converts a wall-clock date+time in the event's own local (state) time zone to UTC milliseconds. */
+function parseEventMs(dateStr: string, timeStr: string, timeZone: string): number {
+  const iso = toZonedIso(dateStr, timeStr, timeZone);
+  return iso ? new Date(iso).getTime() : NaN;
 }
 
 /**
@@ -199,7 +186,8 @@ export async function POST(req: NextRequest) {
 
       if (eventData?.event_date && eventData?.start_time) {
         const dateStr = String(eventData.event_date).split("T")[0];
-        const eventStartMs = parseEventMs(dateStr, String(eventData.start_time));
+        const tz = getTimezoneForState(eventData.state);
+        const eventStartMs = parseEventMs(dateStr, String(eventData.start_time), tz);
 
         const windowOpenMs = eventStartMs - 3 * 60 * 60 * 1000;
 
@@ -207,9 +195,9 @@ export async function POST(req: NextRequest) {
         // Mirror computeEventWindow: treat as next-day if ends_next_day OR end <= start.
         let windowCloseMs: number;
         if (eventData.end_time) {
-          let eventEndMs = parseEventMs(dateStr, String(eventData.end_time));
+          let eventEndMs = parseEventMs(dateStr, String(eventData.end_time), tz);
           if (eventData.ends_next_day || eventEndMs <= eventStartMs) {
-            eventEndMs = parseEventMs(addOneDay(dateStr), String(eventData.end_time));
+            eventEndMs = parseEventMs(addDaysToDateString(dateStr, 1) || dateStr, String(eventData.end_time), tz);
           }
           windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
         } else {
