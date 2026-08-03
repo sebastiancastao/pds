@@ -4015,12 +4015,18 @@ export default function EventDashboardPage() {
     const liveCommissionPool = resolvedCommissionNetSales * resolvedCommissionPoolPercent;
     if (liveCommissionPool > 0) return liveCommissionPool;
 
-    const savedPoolDollars = Number(savedEventPaymentSummary?.commission_pool_dollars || 0);
-    if (savedPoolDollars > 0) return savedPoolDollars;
-
+    // Prefer recomputing Net Sales × Commission % from the saved summary before
+    // trusting a cached flat dollar figure — a stale/legacy commission_pool_dollars
+    // can equal net_sales outright (e.g. from a pre-fix 100%-saved percent), which
+    // would otherwise surface the adjusted gross amount as if it were the commission.
     const savedNetSales = Number(savedEventPaymentSummary?.net_sales || 0);
     const savedPoolPercent = Number(savedEventPaymentSummary?.commission_pool_percent || 0) || 0;
-    return savedNetSales > 0 && savedPoolPercent > 0 ? savedNetSales * savedPoolPercent : 0;
+    if (savedNetSales > 0 && savedPoolPercent > 0) {
+      return savedNetSales * savedPoolPercent;
+    }
+
+    // Last resort: only reached when we have no usable percent to recompute from.
+    return Number(savedEventPaymentSummary?.commission_pool_dollars || 0);
   }, [
     resolvedCommissionNetSales,
     resolvedCommissionPoolPercent,
@@ -4032,25 +4038,31 @@ export default function EventDashboardPage() {
   const linkedEventCommissionPoolDollars = useMemo(() => {
     const linkedSummary = linkedCommissionEventContext?.eventPayment || null;
     const linkedEvent = linkedCommissionEventContext?.event || null;
-    const savedPoolDollars = Number(linkedSummary?.commission_pool_dollars || 0);
-    if (savedPoolDollars > 0) return savedPoolDollars;
-
-    const savedNetSales = Number(linkedSummary?.net_sales || 0);
     const savedPoolPercent = Number(
       linkedSummary?.commission_pool_percent ?? linkedEvent?.commission_pool ?? 0
     );
+
+    // Prefer recomputing Net Sales × Commission % (saved, or freshly derived from the
+    // linked event's sales fields) before trusting a cached flat dollar figure — see
+    // matching note in currentEventCommissionPoolDollars above.
+    const savedNetSales = Number(linkedSummary?.net_sales || 0);
     if (savedNetSales > 0 && savedPoolPercent > 0) {
       return savedNetSales * savedPoolPercent;
     }
 
-    const grossCollected = Number((linkedEvent as any)?.ticket_sales || 0);
-    const tipsAmount = Number((linkedEvent as any)?.tips || 0);
-    const feesAmount = Number((linkedEvent as any)?.fees || 0);
-    const otherIncomeAmount = Number((linkedEvent as any)?.other_income || 0);
-    const totalSales = Math.max(grossCollected - tipsAmount, 0);
-    const taxAmount = totalSales * (Number((linkedEvent as any)?.tax_rate_percent || 0) / 100);
-    const netSales = Math.max(totalSales - taxAmount - feesAmount + otherIncomeAmount, 0);
-    return netSales * Math.max(savedPoolPercent, 0);
+    if (savedPoolPercent > 0) {
+      const grossCollected = Number((linkedEvent as any)?.ticket_sales || 0);
+      const tipsAmount = Number((linkedEvent as any)?.tips || 0);
+      const feesAmount = Number((linkedEvent as any)?.fees || 0);
+      const otherIncomeAmount = Number((linkedEvent as any)?.other_income || 0);
+      const totalSales = Math.max(grossCollected - tipsAmount, 0);
+      const taxAmount = totalSales * (Number((linkedEvent as any)?.tax_rate_percent || 0) / 100);
+      const netSales = Math.max(totalSales - taxAmount - feesAmount + otherIncomeAmount, 0);
+      return netSales * savedPoolPercent;
+    }
+
+    // Last resort: only reached when we have no usable percent to recompute from.
+    return Number(linkedSummary?.commission_pool_dollars || 0);
   }, [linkedCommissionEventContext]);
 
   const commissionPerVendor = useMemo(() => {
@@ -4531,9 +4543,8 @@ export default function EventDashboardPage() {
   };
 
   const getResolvedPoolDollarsForPeriodEvent = (periodEvent: any): number => {
-    const savedPoolDollars = Number(periodEvent?.event_payment?.commission_pool_dollars || 0);
-    if (savedPoolDollars > 0) return savedPoolDollars;
-
+    // Prefer recomputing Net Sales × Commission % before trusting a cached flat
+    // dollar figure — see matching note in currentEventCommissionPoolDollars above.
     const savedNetSales = Number(periodEvent?.event_payment?.net_sales || 0);
     const savedPoolPercent = Number(periodEvent?.event_payment?.commission_pool_percent || 0);
     const configuredPoolPercent = Number(periodEvent?.commission_pool || 0);
@@ -4547,15 +4558,20 @@ export default function EventDashboardPage() {
       return savedNetSales * resolvedPoolPercent;
     }
 
-    const ticketSales = Number(periodEvent?.ticket_sales || 0);
-    const eventTips = Number(periodEvent?.tips || 0);
-    const eventFees = Number(periodEvent?.fees || 0);
-    const eventOtherIncome = Number(periodEvent?.other_income || 0);
-    const taxRate = Number(periodEvent?.tax_rate_percent || 0);
-    const totalSales = Math.max(ticketSales - eventTips, 0);
-    const tax = totalSales * (taxRate / 100);
-    const netSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
-    return netSales * resolvedPoolPercent;
+    if (resolvedPoolPercent > 0) {
+      const ticketSales = Number(periodEvent?.ticket_sales || 0);
+      const eventTips = Number(periodEvent?.tips || 0);
+      const eventFees = Number(periodEvent?.fees || 0);
+      const eventOtherIncome = Number(periodEvent?.other_income || 0);
+      const taxRate = Number(periodEvent?.tax_rate_percent || 0);
+      const totalSales = Math.max(ticketSales - eventTips, 0);
+      const tax = totalSales * (taxRate / 100);
+      const netSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
+      return netSales * resolvedPoolPercent;
+    }
+
+    // Last resort: only reached when we have no usable percent to recompute from.
+    return Number(periodEvent?.event_payment?.commission_pool_dollars || 0);
   };
 
   const payPeriodCommission = useMemo(() => {

@@ -499,9 +499,16 @@ export async function GET(req: NextRequest) {
 
       // 6) Commissions/Tips pool to distribute (if summary exists)
       const totalTips = Number(eventPaymentSummary?.total_tips || 0);
-      const commissionPool = (Number(eventPaymentSummary?.net_sales || 0) * Number(eventPaymentSummary?.commission_pool_percent || 0))
-        || Number(eventPaymentSummary?.commission_pool_dollars || 0)
-        || Number(eventPaymentSummary?.total_commissions || 0) || 0;
+      // Prefer recomputing Net Sales × Commission % whenever a percent is known —
+      // falling straight to commission_pool_dollars/total_commissions here would
+      // silently reuse a stale cached figure that can equal net_sales outright
+      // (e.g. from a pre-fix 100%-saved percent), surfacing the adjusted gross
+      // amount as if it were the commission instead of net_sales × percent.
+      const summaryPoolPercent = Number(eventPaymentSummary?.commission_pool_percent || 0);
+      const commissionPool = summaryPoolPercent > 0
+        ? Number(eventPaymentSummary?.net_sales || 0) * summaryPoolPercent
+        : Number(eventPaymentSummary?.commission_pool_dollars || 0)
+          || Number(eventPaymentSummary?.total_commissions || 0) || 0;
 
       // 7) Load user division data upfront for commission/tips logic
       const { data: usersForDivision } = await supabaseAdmin
