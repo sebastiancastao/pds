@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
+import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown, type DailyPayBreakdown } from "@/lib/daily-overtime";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
@@ -937,6 +938,44 @@ function HRDashboardContent() {
         }
       }
 
+      // Non-event ("special") timesheets are pure hourly with no commission pool, and
+      // California overtime/doubletime has to be computed per calendar day rather than
+      // off the weekly total. Fetch each non-event event's actual daily clock-in/out
+      // breakdown up front so both the "no saved payroll yet" fallback below and the
+      // saved-payment path can compute per-day OT/DT and expose a day-by-day view.
+      const nonEventDaysByEvent: Record<string, Record<string, Array<{ date: string; hours: number }>>> = {};
+      const nonEventEventsToFetch = filtered.filter((e: any) => isNonEventPayrollEvent(e));
+      if (nonEventEventsToFetch.length > 0) {
+        await Promise.all(nonEventEventsToFetch.map(async (e: any) => {
+          try {
+            const tsRes = await fetch(`/api/events/${e.id}/timesheet`, {
+              method: 'GET',
+              headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+            });
+            if (!tsRes.ok) return;
+            const tsJson = await tsRes.json();
+            const totals = tsJson?.totals || {};
+            const daysByUser = tsJson?.days || {};
+            const isMultiDay = Boolean(tsJson?.multiDay);
+            const perUser: Record<string, Array<{ date: string; hours: number }>> = {};
+            const userIds = new Set<string>([...Object.keys(totals), ...Object.keys(daysByUser)]);
+            userIds.forEach((uid) => {
+              if (isMultiDay && Array.isArray(daysByUser[uid]) && daysByUser[uid].length > 0) {
+                perUser[uid] = daysByUser[uid].map((d: any) => ({ date: d.date, hours: Number(d.totalMs || 0) / 3600000 }));
+              } else {
+                const ms = Number(totals[uid] || 0);
+                if (ms > 0) {
+                  perUser[uid] = [{ date: e.event_date || '', hours: ms / 3600000 }];
+                }
+              }
+            });
+            nonEventDaysByEvent[e.id] = perUser;
+          } catch (err) {
+            console.warn('[HR PAYMENTS] Failed to load non-event daily timesheet', { eventId: e.id, error: err });
+          }
+        }));
+      }
+
 
       for (const eventInfo of filtered) {
         const eventId = eventInfo.id;
@@ -1042,34 +1081,48 @@ function HRDashboardContent() {
                     ? (eventCommissionDollars / vendorsWithHours)
                     : 0;
 
-                // Map team members to payment format with zeros
+                // Map team members to payment format. For non-event timesheets, use the
+                // real clocked hours (payroll may not have been Saved on the event
+                // dashboard yet, but the underlying clock-in/out data already exists) so
+                // this doesn't silently show as all-zero. Other event types still show
+                // zeros here since there's no per-day commission concept to fall back on.
+                const nonEventDays = nonEventDaysByEvent[eventId] || {};
+                const fallbackBaseRate = isEventSD ? SAN_DIEGO_BASE_RATE : configuredBaseRate;
                 const teamPayments = sortPaymentsAlphabetically(
                   teamMembers.map((member: any) => {
                     const user = member.users;
                     const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
                     const firstName = profile?.first_name || 'N/A';
                     const lastName = profile?.last_name || '';
+                    const uid = (member.vendor_id || member.user_id || user?.id || '').toString();
+
+                    const memberDayHours = isNonEventPayroll ? (nonEventDays[uid] || []) : [];
+                    const dailyBreakdown: DailyPayBreakdown[] = memberDayHours.length > 0
+                      ? computeDailyBreakdownList(memberDayHours, fallbackBaseRate)
+                      : [];
+                    const daySums = dailyBreakdown.length > 0 ? sumDailyBreakdown(dailyBreakdown) : null;
 
                     return {
-                      userId: (member.vendor_id || member.user_id || user?.id || '').toString(),
+                      userId: uid,
                       firstName,
                       lastName,
                       email: user?.email || 'N/A',
-                      actualHours: 0,
-                      regularHours: 0,
-                      regularPay: 0,
-                      overtimeHours: 0,
-                      overtimePay: 0,
-                      doubletimeHours: 0,
-                      doubletimePay: 0,
+                      actualHours: daySums ? daySums.hours : 0,
+                      regularHours: daySums ? daySums.regularHours : 0,
+                      regularPay: daySums ? daySums.regularPay : 0,
+                      overtimeHours: daySums ? daySums.overtimeHours : 0,
+                      overtimePay: daySums ? daySums.overtimePay : 0,
+                      doubletimeHours: daySums ? daySums.doubletimeHours : 0,
+                      doubletimePay: daySums ? daySums.doubletimePay : 0,
+                      dailyBreakdown,
                       commissions: 0,
                       commissionDeleted: false,
                       commissionOverride: null,
                       tips: 0,
-                      totalPay: 0,
+                      totalPay: daySums ? daySums.totalPay : 0,
                       adjustmentAmount: 0,
                       adjustmentType: DEFAULT_OTHER_ADJUSTMENT_TYPE,
-                      finalPay: 0,
+                      finalPay: daySums ? daySums.totalPay : 0,
                       status: member.status // Include confirmation status
                     };
                   })
@@ -1098,8 +1151,8 @@ function HRDashboardContent() {
                   totalTips: eventTotalTips,
                   totalRestBreak: 0,
                   totalOther: 0,
-                  eventTotal: 0,
-                  eventHours: 0,
+                  eventTotal: teamPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0),
+                  eventHours: teamPayments.reduce((sum: number, p: any) => sum + Number(p.actualHours || 0), 0),
                   payments: teamPayments
                 });
                 continue;
@@ -1244,6 +1297,7 @@ function HRDashboardContent() {
             let doubletimeHours = 0;
             let doubletimePay = 0;
             let regularPay = extAmtOnRegRateNonAzNy;
+            let dailyBreakdown: DailyPayBreakdown[] = [];
 
             if (isEventSD) {
               const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(
@@ -1262,15 +1316,22 @@ function HRDashboardContent() {
               loadedRate = sanDiegoBreakdown.blendedRate;
               commissionAmt = 0;
             } else if (isNonEventPayroll) {
-              regularHours = roundedPayrollHours;
-              overtimeHours = 0;
-              overtimePay = 0;
-              doubletimeHours = 0;
-              doubletimePay = 0;
-              regularPay = extAmtOnRegRateNonAzNy;
-              extAmtOnRegRate = regularPay;
-              totalFinalCommissionAmt = regularPay;
-              loadedRate = roundedPayrollHours > 0 ? regularPay / roundedPayrollHours : baseRate;
+              // Straight hourly, no commission pool. California overtime/doubletime is
+              // computed per calendar day from the actual clock-in/out breakdown fetched
+              // above, not the flat 1.5x wage-floor multiplier used for commission events.
+              const memberDayHours = nonEventDaysByEvent[eventId]?.[paymentUserId]
+                || (roundedPayrollHours > 0 ? [{ date: eventInfo.event_date || '', hours: roundedPayrollHours }] : []);
+              dailyBreakdown = computeDailyBreakdownList(memberDayHours, baseRate);
+              const daySums = sumDailyBreakdown(dailyBreakdown);
+              regularHours = daySums.regularHours;
+              overtimeHours = daySums.overtimeHours;
+              overtimePay = daySums.overtimePay;
+              doubletimeHours = daySums.doubletimeHours;
+              doubletimePay = daySums.doubletimePay;
+              regularPay = daySums.regularPay;
+              extAmtOnRegRate = daySums.totalPay;
+              totalFinalCommissionAmt = daySums.totalPay;
+              loadedRate = roundedPayrollHours > 0 ? daySums.totalPay / roundedPayrollHours : baseRate;
               commissionAmt = 0;
             } else if (isAZorNY) {
               // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
@@ -1383,6 +1444,7 @@ function HRDashboardContent() {
               totalGrossPay: finalPay,
               isSanDiegoHourly: isEventSD,
               isNonEventHourly: isNonEventPayroll,
+              dailyBreakdown,
             };
           })
         );
@@ -2855,16 +2917,7 @@ function HRDashboardContent() {
         const eventPayments = Array.isArray(event.payments) ? event.payments : [];
         eventPayments.forEach((p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
-          const hours = breakdown.hours;
-          const hoursInDecimal = roundHoursToTwoDecimals(hours);
           const regRate = breakdown.regRate;
-          const rateInEffect = breakdown.rateInEffect;
-          const regularHours = Number(breakdown.regularHours.toFixed(2));
-          const regularPay = Number(roundUpThousandsToNextHundred(breakdown.regularPay).toFixed(2));
-          const overtimeHours = Number(breakdown.overtimeHours.toFixed(2));
-          const overtimePay = Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2));
-          const doubletimeHours = Number(breakdown.doubletimeHours.toFixed(2));
-          const doubletimePay = Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2));
           const reimbursementNe = Number(p.reimbursementAmount ?? 0);
           const other = Number(p.otherAmount ?? 0);
           const adjAmtNe = reimbursementNe + other;
@@ -2876,38 +2929,77 @@ function HRDashboardContent() {
           const travelHours = 0;
           const travelPay = exportApproval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0;
           const pTipsRaw = getDisplayedTips(event, p);
-          const totalGrossPay = Number(formatExactMoney(
-            breakdown.commissionPaidTotal + pTipsRaw + adjAmtNe + mileagePay + travelPay
-          ));
 
-          rows.push({
-            'Venue': venue.venue,
-            'City': venue.city || '',
-            'State': venue.state || '',
-            'Event Name': event.name,
-            'Event Date': event.date || '',
-            'First Name': p.firstName || '',
-            'Last Name': p.lastName || '',
-            'Email': p.email || '',
-            'Reg Rate': formatPayrollMoney(regRate),
-            'Rate in Effect': formatPayrollMoney(rateInEffect),
-            'Hours': formatHoursHHMM(hours),
-            'Hours in Decimal': hoursInDecimal,
-            'Regular Time Hours': regularHours,
-            'Regular Time Pay': regularPay,
-            'Overtime Hours': overtimeHours,
-            'Overtime Pay': overtimePay,
-            'Double Time Hours': doubletimeHours,
-            'Double Time Pay': doubletimePay,
-            'Tips': Number(pTipsRaw.toFixed(2)),
-            'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
-            'Mileage Pay': Number(formatExactMoney(mileagePay)),
-            'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
-            'Travel Hours': !exportApproval.travel ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
-            'Travel Pay': Number(formatExactMoney(travelPay)),
-            'Reimbursement': Number(roundUpThousandsToNextHundred(reimbursementNe).toFixed(2)),
-            'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
-            'Total Gross Pay': totalGrossPay,
+          // Break the period down into one row per calendar day worked, using the
+          // per-day CA overtime/doubletime split computed when the data was loaded.
+          // Falls back to a single period-level row if no daily breakdown is available
+          // (e.g. the timesheet lookup failed to load).
+          const dailyRows: Array<{ date: string; hours: number; regularHours: number; regularPay: number; overtimeHours: number; overtimePay: number; doubletimeHours: number; doubletimePay: number }> =
+            Array.isArray(p.dailyBreakdown) && p.dailyBreakdown.length > 0
+              ? p.dailyBreakdown
+              : [{
+                  date: event.date || '',
+                  hours: breakdown.hours,
+                  regularHours: breakdown.regularHours,
+                  regularPay: breakdown.regularPay,
+                  overtimeHours: breakdown.overtimeHours,
+                  overtimePay: breakdown.overtimePay,
+                  doubletimeHours: breakdown.doubletimeHours,
+                  doubletimePay: breakdown.doubletimePay,
+                }];
+
+          dailyRows.forEach((day, dayIdx) => {
+            const isLastDay = dayIdx === dailyRows.length - 1;
+            const dayHours = Number(day.hours || 0);
+            const dayRegularPay = Number(roundUpThousandsToNextHundred(day.regularPay).toFixed(2));
+            const dayOvertimePay = Number(roundUpThousandsToNextHundred(day.overtimePay).toFixed(2));
+            const dayDoubletimePay = Number(roundUpThousandsToNextHundred(day.doubletimePay).toFixed(2));
+            const dayRateInEffect = dayHours > 0
+              ? (Number(day.regularPay || 0) + Number(day.overtimePay || 0) + Number(day.doubletimePay || 0)) / dayHours
+              : breakdown.rateInEffect;
+
+            // One-off period-level amounts (tips, mileage, travel, reimbursement, other)
+            // aren't tied to a single day, so they're carried only on the last day's row
+            // — the TOTAL row below still adds up to the same period total either way.
+            const dayTips = isLastDay ? Number(pTipsRaw.toFixed(2)) : 0;
+            const dayMileagePay = isLastDay ? Number(formatExactMoney(mileagePay)) : 0;
+            const dayTravelPay = isLastDay ? Number(formatExactMoney(travelPay)) : 0;
+            const dayReimbursement = isLastDay ? Number(roundUpThousandsToNextHundred(reimbursementNe).toFixed(2)) : 0;
+            const dayOther = isLastDay ? Number(roundUpThousandsToNextHundred(other).toFixed(2)) : 0;
+            const dayTotalGrossPay = Number(formatExactMoney(
+              dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + (isLastDay ? adjAmtNe : 0) + dayMileagePay + dayTravelPay
+            ));
+
+            rows.push({
+              'Venue': venue.venue,
+              'City': venue.city || '',
+              'State': venue.state || '',
+              'Event Name': event.name,
+              'Event Date': event.date || '',
+              'Work Date': day.date || '',
+              'First Name': p.firstName || '',
+              'Last Name': p.lastName || '',
+              'Email': p.email || '',
+              'Reg Rate': formatPayrollMoney(regRate),
+              'Rate in Effect': formatPayrollMoney(dayRateInEffect),
+              'Hours': formatHoursHHMM(dayHours),
+              'Hours in Decimal': roundHoursToTwoDecimals(dayHours),
+              'Regular Time Hours': Number(Number(day.regularHours || 0).toFixed(2)),
+              'Regular Time Pay': dayRegularPay,
+              'Overtime Hours': Number(Number(day.overtimeHours || 0).toFixed(2)),
+              'Overtime Pay': dayOvertimePay,
+              'Double Time Hours': Number(Number(day.doubletimeHours || 0).toFixed(2)),
+              'Double Time Pay': dayDoubletimePay,
+              'Tips': dayTips,
+              'Mileage Miles': !exportApproval.mileage || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+              'Mileage Pay': dayMileagePay,
+              'Travel Differential Miles': !exportApproval.travel || !isLastDay ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
+              'Travel Hours': !exportApproval.travel || !isLastDay ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
+              'Travel Pay': dayTravelPay,
+              'Reimbursement': dayReimbursement,
+              'Other': dayOther,
+              'Total Gross Pay': dayTotalGrossPay,
+            });
           });
         });
       });
@@ -2920,7 +3012,7 @@ function HRDashboardContent() {
 
     const sumNum = (key: string) => rows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
     rows.push({
-      'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
+      'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '', 'Work Date': '',
       'First Name': '', 'Last Name': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '',
       'Hours': '', 'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
       'Regular Time Hours': Number(sumNum('Regular Time Hours').toFixed(2)),
@@ -2940,7 +3032,7 @@ function HRDashboardContent() {
 
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [
-      { wch: 25 }, { wch: 15 }, { wch: 8 }, { wch: 30 }, { wch: 12 },
+      { wch: 25 }, { wch: 15 }, { wch: 8 }, { wch: 30 }, { wch: 12 }, { wch: 12 },
       { wch: 18 }, { wch: 18 }, { wch: 30 }, { wch: 10 }, { wch: 12 },
       { wch: 8 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
       { wch: 13 }, { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 },
@@ -4921,6 +5013,15 @@ function HRDashboardContent() {
                   const showVendorCommissionColumns = vendorHasCommissionEvents;
                   const showVendorRestBreakColumn = vendorHasCommissionEvents;
                   const formatVendorMoney = (amount: number) => formatExactMoney(amount);
+                  // Column count for the per-event row, used to span the daily-breakdown
+                  // sub-row beneath non-event ("special") timesheets that cover multiple days.
+                  const vendorRowColSpan =
+                    4 +
+                    (showVendorHourlyColumns ? 3 : 0) +
+                    (showVendorCommissionColumns ? 2 : 0) +
+                    1 +
+                    (showVendorRestBreakColumn ? 1 : 0) +
+                    6;
 
                   return (
                     <div key={vendor.userId || vendor.email} className="apple-card">
@@ -4988,8 +5089,10 @@ function HRDashboardContent() {
                               const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
                               const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay + sickPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
+                              const dailyBreakdown = Array.isArray(payment.dailyBreakdown) ? payment.dailyBreakdown : [];
                               return (
-                                <tr key={`${event.id}-${idx}`} className="hover:bg-gray-50">
+                                <Fragment key={`${event.id}-${idx}`}>
+                                <tr className="hover:bg-gray-50">
                                   <td className="px-4 py-2 text-sm">
                                     <Link href={eventHref} className="text-blue-600 hover:text-blue-800 hover:underline">{event.name}</Link>
                                   </td>
@@ -5155,6 +5258,30 @@ function HRDashboardContent() {
                                   </td>
                                   <td className="px-4 py-2 text-sm text-right font-semibold">${formatVendorMoney(rowTotal)}</td>
                                 </tr>
+                                {isHourlyEvent && dailyBreakdown.length > 1 && (
+                                  <tr className="bg-gray-50/60">
+                                    <td colSpan={vendorRowColSpan} className="px-4 py-2">
+                                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                                        <span className="font-medium text-gray-500 mr-1">Daily breakdown:</span>
+                                        {dailyBreakdown.map((day: any) => (
+                                          <span key={day.date} className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-200 bg-white">
+                                            <span className="text-gray-500">{day.date}</span>
+                                            <span className="font-medium text-gray-900">{formatHoursDecimal(day.hours)}h</span>
+                                            <span className="text-gray-400">/</span>
+                                            <span className="text-gray-900">${formatVendorMoney(day.regularPay)}</span>
+                                            {day.overtimeHours > 0 && (
+                                              <span className="text-orange-600">+{formatHoursDecimal(day.overtimeHours)}h OT (${formatVendorMoney(day.overtimePay)})</span>
+                                            )}
+                                            {day.doubletimeHours > 0 && (
+                                              <span className="text-rose-600">+{formatHoursDecimal(day.doubletimeHours)}h DT (${formatVendorMoney(day.doubletimePay)})</span>
+                                            )}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                                </Fragment>
                               );
                             })}
                             {showVendorCommissionColumns && (

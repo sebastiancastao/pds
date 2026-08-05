@@ -348,6 +348,8 @@ export async function PUT(
     const event_type = body.event_type === "special" ? "special" : "normal";
     // end_date only applies to multi-day Non Event Time Sheets; cleared for normal events
     const end_date = event_type === "special" && body.end_date ? body.end_date : null;
+    // work_details is a required description of the work performed on Non Event Time Sheets
+    const work_details = body.work_details?.trim() || null;
 
     // Money / numbers
     const ticket_sales =
@@ -428,6 +430,7 @@ export async function PUT(
       other_income,
       net_sales,
       linked_commission_event_id,
+      work_details,
     });
 
     // Required fields
@@ -435,6 +438,15 @@ export async function PUT(
       console.error("Event update: missing required fields");
       return NextResponse.json(
         { error: "Missing one or more required fields: event_name, venue, event_date, start_time, end_time" },
+        { status: 400 }
+      );
+    }
+
+    // Non Event Time Sheets must describe the work being performed
+    if (event_type === "special" && !work_details) {
+      console.error("Event update: missing work_details for Non Event Time Sheet");
+      return NextResponse.json(
+        { error: "Detail of Work is required for Non Event Time Sheets" },
         { status: 400 }
       );
     }
@@ -474,6 +486,7 @@ export async function PUT(
       confirmed_staff,
       is_active,
       event_type,
+      work_details,
       updated_at: new Date().toISOString(),
     };
 

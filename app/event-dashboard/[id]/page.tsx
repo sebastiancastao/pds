@@ -7,6 +7,7 @@ import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion, isNorCalRegio
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
+import { computeDailyBreakdownList, sumDailyBreakdown } from "@/lib/daily-overtime";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
@@ -24,6 +25,7 @@ type EventItem = {
   start_time: string;
   end_time: string;
   ends_next_day?: boolean;
+  work_details?: string | null;
   ticket_sales: number | null;
   ticket_count: number | null;
   artist_share_percent: number;
@@ -950,6 +952,7 @@ export default function EventDashboardPage() {
     start_time: "",
     end_time: "",
     ends_next_day: false,
+    work_details: "",
     ticket_sales: null,
     artist_share_percent: 0,
     venue_share_percent: 0,
@@ -1286,6 +1289,7 @@ export default function EventDashboardPage() {
           start_time: eventData.start_time || "",
           end_time: eventData.end_time || "",
           ends_next_day: Boolean(eventData.ends_next_day),
+          work_details: eventData.work_details || "",
           ticket_sales: eventData.ticket_sales || null,
           artist_share_percent: (eventData.artist_share_percent || 0) * 100,
           venue_share_percent: (eventData.venue_share_percent || 0) * 100,
@@ -3705,8 +3709,8 @@ export default function EventDashboardPage() {
     }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value, type, checked } = e.target as HTMLInputElement;
     setForm((prev) => ({
       ...prev,
       [name]:
@@ -3754,6 +3758,13 @@ export default function EventDashboardPage() {
       !form.end_time
     ) {
       setMessage("Please fill all required fields");
+      setSubmitting(false);
+      return;
+    }
+
+    // Non Event Time Sheets must describe the work being performed
+    if (form.event_type === "special" && !(form.work_details || "").trim()) {
+      setMessage("Detail of Work is required for Non Event Time Sheets.");
       setSubmitting(false);
       return;
     }
@@ -4818,10 +4829,21 @@ export default function EventDashboardPage() {
     }
 
     if (isNonEventTimesheet) {
-      // "Special" (non-event) payroll is pure hourly: no commission pool, no rest break.
-      // Matches HR Dashboard's isNonEventPayrollEvent -> isHourlyPayroll treatment.
+      // "Special" (non-event) payroll is pure hourly: straight hours * base rate, no
+      // commission pool, no rest break, and no commission wage-floor multiplier (the
+      // ext-amt-on-reg-rate 1.5x used below exists only to compare against commission
+      // share for ticketed events — non-event timesheets have no commission at all).
+      // California requires overtime/doubletime by calendar day, not off the weekly
+      // total, so when the period spans multiple days each day's actual hours are
+      // split through the 8h/12h thresholds before summing pay.
       const manualVariableIncentiveNE = Number(variableIncentives[uid] || 0);
-      const hourlyPay = extAmtOnRegRate + manualVariableIncentiveNE;
+      const memberDays = timesheetDays[uid];
+      const dayHours: Array<{ date: string; hours: number }> =
+        timesheetMultiDay && memberDays && memberDays.length > 0
+          ? memberDays.map((d) => ({ date: d.date, hours: d.totalMs / 3600000 }))
+          : [{ date: event?.event_date || "", hours: actualHours }];
+      const daySums = sumDailyBreakdown(computeDailyBreakdownList(dayHours, baseRate));
+      const hourlyPay = daySums.totalPay + manualVariableIncentiveNE;
       return {
         commissionAmount: 0,
         commissionOverride,
@@ -4831,14 +4853,14 @@ export default function EventDashboardPage() {
         variableIncentive: manualVariableIncentiveNE,
         manualVariableIncentive: manualVariableIncentiveNE,
         finalCommissionRate: actualHours > 0 ? hourlyPay / actualHours : baseRate,
-        extAmtOnRegRate,
+        extAmtOnRegRate: daySums.totalPay,
         isHourlySanDiego: true,
-        regularHours: actualHours,
-        overtimeHours: 0,
-        doubletimeHours: 0,
-        regularPay: extAmtOnRegRate,
-        overtimePay: 0,
-        doubletimePay: 0,
+        regularHours: daySums.regularHours,
+        overtimeHours: daySums.overtimeHours,
+        doubletimeHours: daySums.doubletimeHours,
+        regularPay: daySums.regularPay,
+        overtimePay: daySums.overtimePay,
+        doubletimePay: daySums.doubletimePay,
       };
     }
 
@@ -4921,7 +4943,7 @@ export default function EventDashboardPage() {
       overtimePay: 0,
       doubletimePay: 0,
     };
-  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, event?.event_type, eventId, isEventSanDiego, isNonEventTimesheet, payPeriodCommission, weeklyHoursByUser]);
+  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, event?.event_type, event?.event_date, eventId, isEventSanDiego, isNonEventTimesheet, payPeriodCommission, weeklyHoursByUser, timesheetDays, timesheetMultiDay]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -5594,6 +5616,20 @@ export default function EventDashboardPage() {
                     Non Event Time Sheet
                   </button>
                 </div>
+                {form.event_type === "special" && (
+                  <div className="mt-6">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Detail of Work *</label>
+                    <textarea
+                      name="work_details"
+                      value={form.work_details || ""}
+                      onChange={handleChange}
+                      required
+                      rows={3}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="Describe the work being performed on this Non Event Time Sheet"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">

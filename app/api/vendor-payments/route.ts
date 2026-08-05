@@ -432,10 +432,11 @@ export async function GET(req: NextRequest) {
       // 1) Load event for date/state
       const { data: eventRow } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, state, start_time, end_time, ends_next_day, tips_distribution_mode')
+        .select('id, event_date, state, start_time, end_time, ends_next_day, tips_distribution_mode, event_type')
         .eq('id', eventId)
         .maybeSingle();
       if (!eventRow) return [] as any[];
+      const isNonEventPayroll = (eventRow.event_type || '').toString().trim().toLowerCase() === 'special';
 
       // 2) Team (confirmed)
       // Try with any status first (some teams may not be confirmed yet)
@@ -560,8 +561,31 @@ export async function GET(req: NextRequest) {
         const hours = Number(totalsHours[uid] || 0);
         const memberDivision = divisionById[uid] || '';
         const isTrailers = memberDivision === 'trailers';
-        const commissionShare = isTrailers ? 0 : Number(commissionSharesByUser[uid] || 0);
 
+        if (isNonEventPayroll) {
+          // "Special" (non-event) timesheets are pure hourly: no commission pool,
+          // no wage-floor multiplier, no rest break. Matches event-dashboard's
+          // isNonEventTimesheet branch in getDisplayedPaymentBreakdown.
+          const straightHourlyPay = Math.round(hours * baseRate * 100) / 100;
+          rows.push({
+            event_id: eventId,
+            user_id: uid,
+            actual_hours: hours,
+            regular_hours: hours,
+            overtime_hours: 0,
+            doubletime_hours: 0,
+            regular_pay: straightHourlyPay,
+            overtime_pay: 0,
+            doubletime_pay: 0,
+            commission_share: 0,
+            commissions: 0,
+            tips: 0,
+            total_pay: straightHourlyPay,
+          });
+          continue;
+        }
+
+        const commissionShare = isTrailers ? 0 : Number(commissionSharesByUser[uid] || 0);
 
         // Ext Amt on Reg Rate: always baseRate * hours * 1.5 for all states
         const extAmtOnRegRate = hours * baseRate * 1.5;

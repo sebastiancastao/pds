@@ -39,6 +39,7 @@ function CreateEventPageInner() {
     start_time: "",
     end_time: "",
     ends_next_day: false,
+    work_details: "",
     artist_share_percent: "",
     venue_share_percent: "",
     pds_share_percent: "",
@@ -99,8 +100,8 @@ function CreateEventPageInner() {
     setForm(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value, type, checked } = e.target as HTMLInputElement;
     setForm(prev => ({
       ...prev,
       [name]: type === "checkbox" ? checked : value
@@ -138,6 +139,11 @@ function CreateEventPageInner() {
     }
     // Non Event Time Sheets may span several days: validate the optional end date
     const isSpecial = form.event_type === "special";
+    if (isSpecial && !form.work_details.trim()) {
+      setMessage("Detail of Work is required for Non Event Time Sheets.");
+      setSubmitting(false);
+      return;
+    }
     if (isSpecial && form.end_date && form.end_date < form.event_date) {
       setMessage("End Date must be on or after the Event Date");
       setSubmitting(false);
@@ -185,6 +191,7 @@ function CreateEventPageInner() {
           start_time: "",
           end_time: "",
           ends_next_day: false,
+          work_details: "",
           artist_share_percent: "",
           venue_share_percent: "",
           pds_share_percent: "",
@@ -307,6 +314,21 @@ function CreateEventPageInner() {
                   </div>
                 )}
               </div>
+
+              {form.event_type === "special" && (
+                <div>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">Detail of Work <span className="text-red-500">*</span></label>
+                  <textarea
+                    name="work_details"
+                    value={form.work_details}
+                    onChange={handleChange}
+                    required
+                    rows={3}
+                    className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                    placeholder="Describe the work being performed on this Non Event Time Sheet"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Venue Section */}

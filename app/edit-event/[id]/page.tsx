@@ -17,6 +17,7 @@ type EventItem = {
   end_date: string | null;
   start_time: string;
   end_time: string;
+  work_details: string | null;
   ticket_sales: number | null;
   artist_share_percent: number;
   venue_share_percent: number;
@@ -54,6 +55,7 @@ export default function EditEventPage() {
     end_date: "",
     start_time: "",
     end_time: "",
+    work_details: "",
     ticket_sales: null,
     artist_share_percent: 0,
     venue_share_percent: 0,
@@ -136,6 +138,7 @@ export default function EditEventPage() {
           end_date: event.end_date || "",
           start_time: event.start_time || "",
           end_time: event.end_time || "",
+          work_details: event.work_details || "",
           ticket_sales: event.ticket_sales || null,
           artist_share_percent: event.artist_share_percent || 0,
           venue_share_percent: event.venue_share_percent || 0,
@@ -161,8 +164,8 @@ export default function EditEventPage() {
     setForm(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value, type, checked } = e.target as HTMLInputElement;
     setForm(prev => ({
       ...prev,
       [name]: type === "checkbox" ? checked : (type === "number" ? (value === "" ? null : Number(value)) : value)
@@ -196,6 +199,12 @@ export default function EditEventPage() {
     // Validation: required fields
     if (!form.event_name || !form.venue || !form.city || !form.state || !form.event_date || !form.start_time || !form.end_time) {
       setMessage("Please fill all required fields: Event Name, Venue, City, State, Event Date, Start Time, End Time");
+      setSubmitting(false);
+      return;
+    }
+    // Non Event Time Sheets must describe the work being performed
+    if (form.event_type === "special" && !(form.work_details || "").trim()) {
+      setMessage("Detail of Work is required for Non Event Time Sheets.");
       setSubmitting(false);
       return;
     }
@@ -310,6 +319,20 @@ export default function EditEventPage() {
                 <option value="special">Non Event Time Sheet</option>
               </select>
             </div>
+            {isNonEvent && (
+              <div className="md:col-span-2">
+                <label className="font-semibold block mb-1">Detail of Work *</label>
+                <textarea
+                  name="work_details"
+                  value={form.work_details || ""}
+                  onChange={handleChange}
+                  required
+                  rows={3}
+                  className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                  placeholder="Describe the work being performed on this Non Event Time Sheet"
+                />
+              </div>
+            )}
             <div>
               <label className="font-semibold block mb-1">Venue *</label>
               <select

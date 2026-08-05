@@ -55,6 +55,8 @@ export async function POST(req: NextRequest) {
     const division = body.division === "trailers" ? "trailers" : "vendor";
     // end_date only applies to multi-day Non Event Time Sheets; ignore it for normal events
     const end_date = event_type === "special" && body.end_date ? body.end_date : null;
+    // work_details is a required description of the work performed on Non Event Time Sheets
+    const work_details = body.work_details?.trim() || null;
     const artist_share_percent = body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
     const venue_share_percent = body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
     const pds_share_percent = body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
@@ -91,6 +93,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing one or more required fields: event_name, venue, event_date, start_time, end_time" }, { status: 400 });
     }
 
+    // Non Event Time Sheets must describe the work being performed
+    if (event_type === "special" && !work_details) {
+      console.error('Event creation: missing work_details for Non Event Time Sheet');
+      return NextResponse.json({ error: "Detail of Work is required for Non Event Time Sheets" }, { status: 400 });
+    }
+
     // A multi-day Non Event Time Sheet's end date cannot precede its start date
     if (end_date && event_date && end_date < event_date) {
       console.error('Event creation: end_date before event_date');
@@ -124,6 +132,7 @@ export async function POST(req: NextRequest) {
       is_active,
       event_type,
       division,
+      work_details,
       tips_distribution_mode: "equal",
     };
     const { data, error } = await supabaseAdmin.from("events").insert([event]).select();
