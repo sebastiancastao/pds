@@ -2183,6 +2183,12 @@ function HRDashboardContent() {
       'Double Time Pay',
     ] as const;
 
+    // Non-event ("special") timesheets carry a per-day breakdown (payment.dailyBreakdown,
+    // one entry per calendar day with its own CA regular/OT/DT split). For those, this
+    // returns one row per day worked instead of one row for the whole period — same
+    // treatment as the dedicated Non-Event Payroll export. Every other event (San Diego
+    // hourly single-day events, commission events) still returns exactly one row, byte-
+    // identical to the pre-daily-breakdown output.
     const buildDetailRow = (
       vendor: any,
       event: any,
@@ -2190,15 +2196,12 @@ function HRDashboardContent() {
       city: string | null,
       state: string | null,
       payment: any
-    ) => {
+    ): any[] => {
       const isHourlyEvent = isHourlyPayrollEvent(event, payment);
       const hideRest = isHourlyEvent;
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
       const regRate = breakdown.regRate;
       const loadedRate = breakdown.rateInEffect;
-      const hours = breakdown.hours;
-      const hoursHHMM = formatHoursHHMM(hours);
-      const hoursInDecimal = roundHoursToTwoDecimals(hours);
       const displayedCommissionPay = breakdown.commissionPay;
       const variableIncentive = breakdown.variableIncentive;
       const reimbursementExport = Number(payment.reimbursementAmount ?? 0);
@@ -2213,57 +2216,92 @@ function HRDashboardContent() {
       const mileagePay = exportApproval.mileage ? rawMileagePay : 0;
       const travelHoursExport = 0;
       const travelPayExport = exportApproval.travel && diffMilesExport !== null ? computeTravelPay(diffMilesExport, state, loadedRate) : 0;
-      const totalGrossPay =
-        breakdown.commissionPaidTotal +
-        tips +
-        restBreak +
-        adjustmentAmt +
-        mileagePay +
-        travelPayExport;
       const category = isHourlyEvent
         ? 'Hourly'
         : travelPayExport > 0
           ? 'Commission - Travel Pay'
           : 'Commission - No Travel Pay';
-      const baseRow = {
-        'First Name': vendor.firstName || payment.firstName || '',
-        'Last Name': vendor.lastName || payment.lastName || '',
-        'Vendor Email': vendor.email || payment.email || '',
-        'Category': category,
-        'Venue': venue,
-        'City': city || '',
-        'State': state || '',
-        'Event Name': event.name,
-        'Event Date': event.date || '',
-        'Reg Rate': formatPayrollMoney(regRate),
-        'Rate in Effect': formatPayrollMoney(loadedRate),
-        'Hours': hoursHHMM,
-        'Hours in Decimal': hoursInDecimal,
-        'Commission Pay': isHourlyEvent ? 0 : Number(displayedCommissionPay.toFixed(2)),
-        'Variable Incentive': isHourlyEvent ? 0 : Number(variableIncentive.toFixed(2)),
-        'Tips': Number(tips.toFixed(2)),
-        'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
-        'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
-        'Mileage Pay': Number(formatExactMoney(mileagePay)),
-        'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
-        'Travel Hours': !exportApproval.travel ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
-        'Travel Pay': Number(formatExactMoney(travelPayExport)),
-        'Reimbursement': Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)),
-        'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
-        'Total Gross Pay': Number(formatExactMoney(totalGrossPay)),
-      };
 
-      if (!isHourlyEvent) return baseRow;
+      const dailyBreakdown: DailyPayBreakdown[] = Array.isArray(payment.dailyBreakdown) ? payment.dailyBreakdown : [];
+      const dayList = isHourlyEvent && dailyBreakdown.length > 0
+        ? dailyBreakdown
+        : [{
+            date: event.date || '',
+            hours: breakdown.hours,
+            regularHours: breakdown.regularHours,
+            regularPay: breakdown.regularPay,
+            overtimeHours: breakdown.overtimeHours,
+            overtimePay: breakdown.overtimePay,
+            doubletimeHours: breakdown.doubletimeHours,
+            doubletimePay: breakdown.doubletimePay,
+          }];
+      const isMultiDayRow = dayList.length > 1;
 
-      return {
-        ...baseRow,
-        'Regular Time Hours': Number(breakdown.regularHours.toFixed(2)),
-        'Regular Time Pay': Number(roundUpThousandsToNextHundred(breakdown.regularPay).toFixed(2)),
-        'Overtime Hours': Number(breakdown.overtimeHours.toFixed(2)),
-        'Overtime Pay': Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2)),
-        'Double Time Hours': Number(breakdown.doubletimeHours.toFixed(2)),
-        'Double Time Pay': Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2)),
-      };
+      return dayList.map((day, dayIdx) => {
+        const isLastDay = dayIdx === dayList.length - 1;
+        const dayHours = Number(day.hours || 0);
+        const dayRegularPay = Number(roundUpThousandsToNextHundred(day.regularPay || 0).toFixed(2));
+        const dayOvertimePay = Number(roundUpThousandsToNextHundred(day.overtimePay || 0).toFixed(2));
+        const dayDoubletimePay = Number(roundUpThousandsToNextHundred(day.doubletimePay || 0).toFixed(2));
+        const dayRateInEffect = isHourlyEvent && dayHours > 0
+          ? (Number(day.regularPay || 0) + Number(day.overtimePay || 0) + Number(day.doubletimePay || 0)) / dayHours
+          : loadedRate;
+
+        // One-off period-level amounts (commission, variable incentive, tips, rest
+        // break, mileage, travel, reimbursement, other) aren't tied to a single day,
+        // so they're carried only on the last day's row — totals still reconcile.
+        const dayCommissionPay = isHourlyEvent || !isLastDay ? 0 : Number(displayedCommissionPay.toFixed(2));
+        const dayVariableIncentive = isHourlyEvent || !isLastDay ? 0 : Number(variableIncentive.toFixed(2));
+        const dayTips = isLastDay ? Number(tips.toFixed(2)) : 0;
+        const dayRestBreak = hideRest ? 'N/A' : (isLastDay ? Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)) : 0);
+        const dayMileagePay = isLastDay ? Number(formatExactMoney(mileagePay)) : 0;
+        const dayTravelPay = isLastDay ? Number(formatExactMoney(travelPayExport)) : 0;
+        const dayReimbursement = isLastDay ? Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)) : 0;
+        const dayOther = isLastDay ? Number(roundUpThousandsToNextHundred(other).toFixed(2)) : 0;
+        const dayTotalGrossPay = isHourlyEvent
+          ? Number(formatExactMoney(dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + dayMileagePay + dayTravelPay + (isLastDay ? adjustmentAmt : 0)))
+          : Number(formatExactMoney(breakdown.commissionPaidTotal + tips + restBreak + adjustmentAmt + mileagePay + travelPayExport));
+
+        const baseRow: any = {
+          'First Name': vendor.firstName || payment.firstName || '',
+          'Last Name': vendor.lastName || payment.lastName || '',
+          'Vendor Email': vendor.email || payment.email || '',
+          'Category': category,
+          'Venue': venue,
+          'City': city || '',
+          'State': state || '',
+          'Event Name': isMultiDayRow && day.date ? `${event.name} - ${day.date}` : event.name,
+          'Event Date': isMultiDayRow ? (day.date || event.date || '') : (event.date || ''),
+          'Reg Rate': formatPayrollMoney(regRate),
+          'Rate in Effect': formatPayrollMoney(dayRateInEffect),
+          'Hours': formatHoursHHMM(dayHours),
+          'Hours in Decimal': roundHoursToTwoDecimals(dayHours),
+          'Commission Pay': dayCommissionPay,
+          'Variable Incentive': dayVariableIncentive,
+          'Tips': dayTips,
+          'Rest Break': dayRestBreak,
+          'Mileage Miles': !exportApproval.mileage || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+          'Mileage Pay': dayMileagePay,
+          'Travel Differential Miles': !exportApproval.travel || !isLastDay ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
+          'Travel Hours': !exportApproval.travel || !isLastDay ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
+          'Travel Pay': dayTravelPay,
+          'Reimbursement': dayReimbursement,
+          'Other': dayOther,
+          'Total Gross Pay': dayTotalGrossPay,
+        };
+
+        if (!isHourlyEvent) return baseRow;
+
+        return {
+          ...baseRow,
+          'Regular Time Hours': Number(Number(day.regularHours || 0).toFixed(2)),
+          'Regular Time Pay': dayRegularPay,
+          'Overtime Hours': Number(Number(day.overtimeHours || 0).toFixed(2)),
+          'Overtime Pay': dayOvertimePay,
+          'Double Time Hours': Number(Number(day.doubletimeHours || 0).toFixed(2)),
+          'Double Time Pay': dayDoubletimePay,
+        };
+      });
     };
 
     const appendTotalsRow = (targetRows: any[], sourceRows?: any[], label = 'TOTAL') => {
@@ -2321,7 +2359,7 @@ function HRDashboardContent() {
       { key: 'Venue', wch: 25 },
       { key: 'City', wch: 15 },
       { key: 'State', wch: 8 },
-      { key: 'Event Name', wch: 30 },
+      { key: 'Event Name', wch: 38 },
       { key: 'Event Date', wch: 12 },
       { key: 'Reg Rate', wch: 10 },
       { key: 'Rate in Effect', wch: 12 },
@@ -2427,7 +2465,7 @@ function HRDashboardContent() {
           if (aDate !== bDate) return aDate.localeCompare(bDate);
           return ((a?.event?.name || '').toString()).localeCompare((b?.event?.name || '').toString());
         })
-        .map(({ event, venue, city, state, payment }) =>
+        .flatMap(({ event, venue, city, state, payment }) =>
           buildDetailRow(vendor, event, venue, city, state, payment)
         );
 
@@ -2974,9 +3012,8 @@ function HRDashboardContent() {
               'Venue': venue.venue,
               'City': venue.city || '',
               'State': venue.state || '',
-              'Event Name': event.name,
-              'Event Date': event.date || '',
-              'Work Date': day.date || '',
+              'Event Name': day.date ? `${event.name} - ${day.date}` : event.name,
+              'Event Date': day.date || event.date || '',
               'First Name': p.firstName || '',
               'Last Name': p.lastName || '',
               'Email': p.email || '',
@@ -3012,7 +3049,7 @@ function HRDashboardContent() {
 
     const sumNum = (key: string) => rows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
     rows.push({
-      'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '', 'Work Date': '',
+      'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
       'First Name': '', 'Last Name': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '',
       'Hours': '', 'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
       'Regular Time Hours': Number(sumNum('Regular Time Hours').toFixed(2)),
@@ -3032,7 +3069,7 @@ function HRDashboardContent() {
 
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [
-      { wch: 25 }, { wch: 15 }, { wch: 8 }, { wch: 30 }, { wch: 12 }, { wch: 12 },
+      { wch: 25 }, { wch: 15 }, { wch: 8 }, { wch: 38 }, { wch: 12 },
       { wch: 18 }, { wch: 18 }, { wch: 30 }, { wch: 10 }, { wch: 12 },
       { wch: 8 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
       { wch: 13 }, { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 },
