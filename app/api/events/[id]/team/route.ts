@@ -6,6 +6,7 @@ import { sendTeamConfirmationEmail, sendTeamBuildingNotification, sendAddConfirm
 import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { findSameDayConflicts } from "@/lib/team-conflicts";
+import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import crypto from "crypto";
 
@@ -251,6 +252,7 @@ export async function POST(
       .select(`
         id,
         email,
+        role,
         profiles (
           first_name,
           last_name
@@ -263,6 +265,12 @@ export async function POST(
         error: 'Vendors not found'
       }, { status: 404 });
     }
+
+    // supervisor3 users (and workers linked to a supervisor3 via
+    // manager_team_members) oversee multiple venues/events at once, so they
+    // are exempt from the same-day double-booking guard below and can be
+    // added+confirmed onto two events that share a date.
+    const supervisor3VendorIds = await getSupervisor3BypassVendorIds(supabaseAdmin, vendors as any[]);
 
     // Get manager details for email context
     const { data: managerProfile } = await supabaseAdmin
@@ -311,12 +319,13 @@ export async function POST(
 
     // Server-side guard against same-day double booking. The invite pickers
     // hide these vendors, but stale modal data, races, and direct API calls
-    // used to get through.
+    // used to get through. supervisor3 vendors are excluded from the check
+    // entirely so they can be added+confirmed onto multiple same-day events.
     const sameDayConflicts = await findSameDayConflicts(supabaseAdmin, {
       eventId,
       eventDate: event.event_date,
       eventType: (event as any).event_type,
-      vendorIds: newVendorIds,
+      vendorIds: newVendorIds.filter(id => !supervisor3VendorIds.has(id)),
     });
 
     const conflictedVendorIds = newVendorIds.filter(id => sameDayConflicts.has(id));
@@ -733,6 +742,16 @@ export async function GET(
       .map((member: any) => (member?.vendor_id || member?.users?.id || '').toString())
       .filter((id: string) => id.length > 0);
 
+    // supervisor3 users (and workers linked to a supervisor3 via
+    // manager_team_members) bypass the out-of-venue restriction entirely.
+    const supervisor3TeamVendorIds = await getSupervisor3BypassVendorIds(
+      supabaseAdmin,
+      (teamMembers || []).map((member: any) => ({
+        id: (member?.vendor_id || member?.users?.id || '').toString(),
+        role: member?.users?.role,
+      }))
+    );
+
     const outOfVenueVendorIds = new Set<string>();
     if (eventData?.venue && teamUserIds.length > 0) {
       const { data: venueMatches, error: venueError } = await supabaseAdmin
@@ -770,7 +789,7 @@ export async function GET(
             );
 
             for (const vendorId of teamUserIds) {
-              if (!assignedToVenueIds.has(vendorId)) {
+              if (!assignedToVenueIds.has(vendorId) && !supervisor3TeamVendorIds.has(vendorId)) {
                 outOfVenueVendorIds.add(vendorId);
               }
             }

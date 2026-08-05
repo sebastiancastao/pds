@@ -6,6 +6,7 @@ import { canUserAccessLoadedEvent } from "@/lib/event-access";
 import { safeDecrypt } from "@/lib/encryption";
 import { geocodeAddress } from "@/lib/geocoding";
 import { findSameDayConflicts, type SameDayConflict } from "@/lib/team-conflicts";
+import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -329,6 +330,12 @@ export async function GET(
       return NextResponse.json({ vendors: [] }, { status: 200 });
     }
 
+    // supervisor3 users (and workers linked to a supervisor3 via
+    // manager_team_members) oversee multiple venues/events at once, so they
+    // are exempt from the same-day double-booking conflict check and the
+    // out-of-venue restriction below.
+    const supervisor3VendorIds = await getSupervisor3BypassVendorIds(supabaseAdmin, allVendors as any[]);
+
     // Non Event Time Sheets (event_type === 'special') don't go through the
     // invitation/availability flow — and are often dated in the past — so the
     // availability-on-date gate below would hide most users. For them, every
@@ -419,7 +426,7 @@ export async function GET(
           eventId,
           eventDate: eventDateKey,
           eventType: (event as any).event_type,
-          vendorIds: uniqueAvailableVendorIds,
+          vendorIds: uniqueAvailableVendorIds.filter((id) => !supervisor3VendorIds.has(id)),
         });
       } catch (conflictErr) {
         console.warn('[AVAILABLE-VENDORS] Could not check same-date bookings:', conflictErr);
@@ -548,7 +555,7 @@ export async function GET(
             );
 
             for (const v of vendorsWithDistance) {
-              if (!assignedToVenue.has(v.id)) {
+              if (!assignedToVenue.has(v.id) && !supervisor3VendorIds.has(v.id)) {
                 outOfVenueIds.add(v.id);
               }
             }
