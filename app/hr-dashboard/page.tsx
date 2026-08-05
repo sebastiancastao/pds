@@ -132,6 +132,19 @@ const isHourlyPayrollEvent = (eventLike?: any, paymentLike?: any): boolean =>
   paymentLike?.isSanDiegoHourly === true ||
   isSanDiegoRegion(eventLike);
 
+// Hard-coded straight-hourly rate overrides for specific vendors on non-event
+// ("special") timesheets, keyed by email (case-insensitive). Bypasses the
+// state/venue-configured base rate that would otherwise feed
+// computeDailyBreakdownList for these vendors' non-event pay.
+const NON_EVENT_BASE_RATE_OVERRIDES: Record<string, number> = {
+  "jaleesa@1pds.net": 28.85,
+};
+
+const getNonEventBaseRate = (email: string | null | undefined, fallbackRate: number): number => {
+  const key = (email || "").toString().trim().toLowerCase();
+  return NON_EVENT_BASE_RATE_OVERRIDES[key] ?? fallbackRate;
+};
+
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -1097,8 +1110,11 @@ function HRDashboardContent() {
                     const uid = (member.vendor_id || member.user_id || user?.id || '').toString();
 
                     const memberDayHours = isNonEventPayroll ? (nonEventDays[uid] || []) : [];
+                    const memberBaseRate = isNonEventPayroll
+                      ? getNonEventBaseRate(user?.email, fallbackBaseRate)
+                      : fallbackBaseRate;
                     const dailyBreakdown: DailyPayBreakdown[] = memberDayHours.length > 0
-                      ? computeDailyBreakdownList(memberDayHours, fallbackBaseRate)
+                      ? computeDailyBreakdownList(memberDayHours, memberBaseRate)
                       : [];
                     const daySums = dailyBreakdown.length > 0 ? sumDailyBreakdown(dailyBreakdown) : null;
 
@@ -1107,6 +1123,7 @@ function HRDashboardContent() {
                       firstName,
                       lastName,
                       email: user?.email || 'N/A',
+                      regRate: memberBaseRate,
                       actualHours: daySums ? daySums.hours : 0,
                       regularHours: daySums ? daySums.regularHours : 0,
                       regularPay: daySums ? daySums.regularPay : 0,
@@ -1291,6 +1308,7 @@ function HRDashboardContent() {
             let extAmtOnRegRate = extAmtOnRegRateNonAzNy;
             let totalFinalCommissionAmt = 0;
             let loadedRate = 0;
+            let effectiveRegRate = baseRate;
             let regularHours = roundedPayrollHours;
             let overtimeHours = 0;
             let overtimePay = 0;
@@ -1321,7 +1339,8 @@ function HRDashboardContent() {
               // above, not the flat 1.5x wage-floor multiplier used for commission events.
               const memberDayHours = nonEventDaysByEvent[eventId]?.[paymentUserId]
                 || (roundedPayrollHours > 0 ? [{ date: eventInfo.event_date || '', hours: roundedPayrollHours }] : []);
-              dailyBreakdown = computeDailyBreakdownList(memberDayHours, baseRate);
+              const nonEventBaseRate = getNonEventBaseRate(user?.email, baseRate);
+              dailyBreakdown = computeDailyBreakdownList(memberDayHours, nonEventBaseRate);
               const daySums = sumDailyBreakdown(dailyBreakdown);
               regularHours = daySums.regularHours;
               overtimeHours = daySums.overtimeHours;
@@ -1331,8 +1350,9 @@ function HRDashboardContent() {
               regularPay = daySums.regularPay;
               extAmtOnRegRate = daySums.totalPay;
               totalFinalCommissionAmt = daySums.totalPay;
-              loadedRate = roundedPayrollHours > 0 ? daySums.totalPay / roundedPayrollHours : baseRate;
+              loadedRate = roundedPayrollHours > 0 ? daySums.totalPay / roundedPayrollHours : nonEventBaseRate;
               commissionAmt = 0;
+              effectiveRegRate = nonEventBaseRate;
             } else if (isAZorNY) {
               // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
               const prelimCommission = (!isTrailers && roundedPayrollHours > 0 && commissionShare > 0)
@@ -1385,7 +1405,7 @@ function HRDashboardContent() {
                 : totalFinalCommissionAmt;
             const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
             loadedRate = isHourlyPayroll
-              ? (roundedPayrollHours > 0 ? totalFinalCommissionAmt / roundedPayrollHours : baseRate)
+              ? (roundedPayrollHours > 0 ? totalFinalCommissionAmt / roundedPayrollHours : effectiveRegRate)
               : roundedPayrollHours > 0
                 ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
                 : 0;
@@ -1435,7 +1455,7 @@ function HRDashboardContent() {
               reimbursementAmount: parsedAdj.reimbursementAmount,
               otherAmount: parsedAdj.otherAmount,
               finalPay,
-              regRate: baseRate,
+              regRate: effectiveRegRate,
               loadedRate,
               extAmtOnRegRate,
               commissionAmt,
