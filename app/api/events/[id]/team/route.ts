@@ -10,6 +10,9 @@ import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import crypto from "crypto";
 
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
 

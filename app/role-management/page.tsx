@@ -475,7 +475,7 @@ export default function RoleManagementPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to assign member");
-      setSup3TeamSuccess("Supervisor assigned to team");
+      setSup3TeamSuccess("Team member assigned");
       setTimeout(() => setSup3TeamSuccess(""), 4000);
       setAddSup3MemberId("");
       loadSup3TeamMembers(selectedSup3Id);
@@ -502,7 +502,7 @@ export default function RoleManagementPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to remove member");
       setSup3TeamMembers(prev => prev.filter(t => t.assignment_id !== assignmentId));
-      setSup3TeamSuccess("Supervisor removed from team");
+      setSup3TeamSuccess("Team member removed");
       setTimeout(() => setSup3TeamSuccess(""), 4000);
     } catch (err: any) {
       setSup3TeamError(err.message || "Failed to remove member");
@@ -668,10 +668,13 @@ export default function RoleManagementPage() {
   const assignedVenueIds = new Set(sup3VenueAssignments.map((a: any) => a.venue_id));
   const availableVenuesForSup3 = allVenues.filter(v => !assignedVenueIds.has(v.id));
 
-  // Supervisors not yet on the selected supervisor3's team
+  // Workers (any role) not yet on the selected supervisor3's team. Linking a
+  // worker here bypasses the same-day/out-of-venue add+confirm restrictions
+  // for that worker on the event dashboard (see lib/supervisor3-bypass.ts).
+  // Venue-scoped visibility (the "Venues" column below) only takes effect
+  // for members whose role is supervisor/supervisor2 — see app/api/venues-list/route.ts.
   const sup3CurrentMemberIds = new Set(sup3TeamMembers.map(t => t.member_id));
-  const availableSupervisorsForSup3 = users.filter(u =>
-    u.role === 'supervisor' &&
+  const availableMembersForSup3 = users.filter(u =>
     u.id !== selectedSup3Id &&
     !sup3CurrentMemberIds.has(u.id)
   );
@@ -1188,24 +1191,26 @@ export default function RoleManagementPage() {
               <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '2px solid #e5e7eb' }}>
                 <h3 style={{ fontSize: '1.125rem', fontWeight: '700', marginBottom: '0.25rem' }}>Team Members</h3>
                 <p style={{ fontSize: '0.875rem', color: '#6b7280', marginBottom: '1.25rem' }}>
-                  Supervisors on this team will only see venues assigned to this Supervisor 3.
+                  Any worker role can be added here. Members bypass the same-day and out-of-venue
+                  add+confirm restrictions on the event dashboard. Venue-scoped visibility below only
+                  applies to members with the Supervisor role.
                 </p>
 
                 {/* Add member row */}
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f9fafb', borderRadius: '0.5rem', border: '1px solid #e5e7eb' }}>
                   <div style={{ flex: 1 }}>
                     <label style={{ display: 'block', fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.875rem', color: '#374151' }}>
-                      Add Supervisor to Team
+                      Add Team Member
                     </label>
                     <select
                       value={addSup3MemberId}
                       onChange={(e) => setAddSup3MemberId(e.target.value)}
                       style={{ width: '100%', padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '1rem', cursor: 'pointer' }}
                     >
-                      <option value="">-- Select a supervisor --</option>
-                      {availableSupervisorsForSup3.map(u => (
+                      <option value="">-- Select a user --</option>
+                      {availableMembersForSup3.map(u => (
                         <option key={u.id} value={u.id}>
-                          {displayName(u)} — {u.email}
+                          {displayName(u)} — {u.email} ({u.role})
                         </option>
                       ))}
                     </select>
@@ -1259,7 +1264,7 @@ export default function RoleManagementPage() {
                         {sup3TeamMembers.length === 0 ? (
                           <tr>
                             <td colSpan={6} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
-                              No supervisors assigned to this team yet
+                              No team members assigned to this Supervisor 3 yet
                             </td>
                           </tr>
                         ) : (
@@ -1403,7 +1408,7 @@ export default function RoleManagementPage() {
 
                 {!sup3TeamLoading && sup3TeamMembers.length > 0 && (
                   <div style={{ marginTop: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
-                    {sup3TeamMembers.length} supervisor{sup3TeamMembers.length !== 1 ? 's' : ''} on this team
+                    {sup3TeamMembers.length} member{sup3TeamMembers.length !== 1 ? 's' : ''} on this team
                   </div>
                 )}
               </div>

@@ -8,6 +8,9 @@ import { geocodeAddress } from "@/lib/geocoding";
 import { findSameDayConflicts, type SameDayConflict } from "@/lib/team-conflicts";
 import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
