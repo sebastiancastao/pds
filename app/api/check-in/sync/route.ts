@@ -303,9 +303,9 @@ export async function POST(req: NextRequest) {
             if (eventData.ends_next_day || eventEndMs <= eventStartMs) {
               eventEndMs = parseEventMs(addDaysToDateString(dateStr, 1) || dateStr, String(eventData.end_time), tz);
             }
-            windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
+            windowCloseMs = eventEndMs + 5 * 60 * 60 * 1000;
           } else {
-            windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+            windowCloseMs = eventStartMs + 5 * 60 * 60 * 1000;
           }
 
           // Only enforce the window when it could actually be computed. If an event's

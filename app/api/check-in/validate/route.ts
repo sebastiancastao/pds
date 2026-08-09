@@ -191,7 +191,7 @@ export async function POST(req: NextRequest) {
 
         const windowOpenMs = eventStartMs - 3 * 60 * 60 * 1000;
 
-        // Close window: 4 hours after event end time (or start time if no end time).
+        // Close window: 5 hours after event end time (or start time if no end time).
         // Mirror computeEventWindow: treat as next-day if ends_next_day OR end <= start.
         let windowCloseMs: number;
         if (eventData.end_time) {
@@ -199,9 +199,9 @@ export async function POST(req: NextRequest) {
           if (eventData.ends_next_day || eventEndMs <= eventStartMs) {
             eventEndMs = parseEventMs(addDaysToDateString(dateStr, 1) || dateStr, String(eventData.end_time), tz);
           }
-          windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
+          windowCloseMs = eventEndMs + 5 * 60 * 60 * 1000;
         } else {
-          windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+          windowCloseMs = eventStartMs + 5 * 60 * 60 * 1000;
         }
 
         const now = Date.now();
