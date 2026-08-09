@@ -128,6 +128,8 @@ function formatDate(value?: string | null) {
   });
 }
 
+const EMPLOYEES_LIST_REFRESH_MS = 30000;
+
 export default function HREmployeesPage() {
   const router = useRouter();
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -185,6 +187,34 @@ export default function HREmployeesPage() {
     }
   }, [isAuthorized]);
 
+  // Keeps the employee list, tickets, and form-edit history current without
+  // requiring a manual page reload. Refreshes silently (no loading spinner)
+  // every 30s while the tab is visible, plus immediately on refocus.
+  useEffect(() => {
+    if (!isAuthorized) return;
+
+    const refreshVisiblePage = () => {
+      if (document.visibilityState !== "visible") return;
+      loadUsers({ silent: true });
+    };
+
+    const intervalId = window.setInterval(refreshVisiblePage, EMPLOYEES_LIST_REFRESH_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshVisiblePage();
+      }
+    };
+
+    window.addEventListener("focus", refreshVisiblePage);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshVisiblePage);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isAuthorized]);
+
   useEffect(() => {
     if (searchTerm.trim() === "") {
       setFilteredUsers(users);
@@ -200,8 +230,9 @@ export default function HREmployeesPage() {
     }
   }, [searchTerm, users]);
 
-  const loadUsers = async () => {
-    setLoading(true);
+  const loadUsers = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) setLoading(true);
     setError("");
     setAuditError("");
     setTicketsError("");
@@ -257,7 +288,7 @@ export default function HREmployeesPage() {
       setHelpdeskTickets([]);
       setError(err.message || 'Failed to load users');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 

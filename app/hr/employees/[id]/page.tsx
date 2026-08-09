@@ -146,6 +146,19 @@ type PDFForm = {
   form_date: string | null;
 };
 
+type EmailLogEntry = {
+  id: string;
+  subject: string;
+  html_body: string;
+  from_address: string;
+  recipient_email: string;
+  recipient_type: "to" | "cc";
+  status: "sent" | "failed";
+  error_message: string | null;
+  provider_message_id: string | null;
+  created_at: string;
+};
+
 const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
   isTempAgreementFormRecord(form);
 
@@ -412,6 +425,11 @@ export default function EmployeeProfilePage() {
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<AssignedVenue | null>(null);
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
 
+  const [emailInbox, setEmailInbox] = useState<EmailLogEntry[]>([]);
+  const [emailInboxLoading, setEmailInboxLoading] = useState(false);
+  const [emailInboxError, setEmailInboxError] = useState<string | null>(null);
+  const [selectedInboxEmail, setSelectedInboxEmail] = useState<EmailLogEntry | null>(null);
+
   const [helpdeskTickets, setHelpdeskTickets] = useState<{
     id: string;
     ticketNumber: string;
@@ -565,6 +583,35 @@ export default function EmployeeProfilePage() {
         .then((d) => setUploadedEmails(d.images ?? []));
     });
   }, [employee?.id, refreshTick]);
+
+  // Fetch the employee's email inbox (every app-generated email sent to them)
+  useEffect(() => {
+    if (!employeeId) return;
+    setEmailInboxLoading(true);
+    setEmailInboxError(null);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetch(`/api/employees/${employeeId}/emails`, {
+        headers: session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {},
+        cache: "no-store",
+      })
+        .then((r) => r.json())
+        .then((body) => {
+          if (body.error) {
+            setEmailInboxError(body.error);
+            setEmailInbox([]);
+          } else {
+            setEmailInbox((body.emails as EmailLogEntry[]) ?? []);
+          }
+          setEmailInboxLoading(false);
+        })
+        .catch((e) => {
+          setEmailInboxError(e.message ?? "Failed to load inbox");
+          setEmailInboxLoading(false);
+        });
+    });
+  }, [employeeId, refreshTick]);
 
   // Fetch I-9 documents after employee is loaded
   useEffect(() => {
@@ -3205,6 +3252,108 @@ export default function EmployeeProfilePage() {
                   )}
               </div>
             </section>
+
+          {/* Inbox: every app-generated email sent to this employee */}
+          <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+                <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <h2 className="text-base font-semibold text-gray-900">Inbox</h2>
+                {!emailInboxLoading && !emailInboxError && (
+                  <span className="ml-auto text-xs text-gray-400">{emailInbox.length} email{emailInbox.length !== 1 ? "s" : ""}</span>
+                )}
+              </div>
+              <div className="divide-y divide-gray-50">
+                {emailInboxLoading ? (
+                  <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+                ) : emailInboxError ? (
+                  <div className="px-6 py-4 text-sm text-red-600">
+                    Could not load inbox: {emailInboxError}
+                  </div>
+                ) : emailInbox.length === 0 ? (
+                  <div className="px-6 py-8 text-center text-sm text-gray-400">No emails sent to this employee yet.</div>
+                ) : (
+                  emailInbox.map((mail) => (
+                    <button
+                      key={mail.id}
+                      type="button"
+                      onClick={() => setSelectedInboxEmail(mail)}
+                      className="w-full text-left px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 hover:bg-gray-50 transition-colors"
+                    >
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 ${
+                        mail.status === "sent"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : "bg-red-50 text-red-700 border-red-200"
+                      }`}>
+                        {mail.status === "sent" ? "Delivered" : "Failed"}
+                      </span>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 truncate">{mail.subject}</p>
+                        <p className="text-xs text-gray-500 mt-0.5 truncate">
+                          From {mail.from_address}{mail.recipient_type === "cc" ? " · CC'd" : ""}
+                        </p>
+                        {mail.status === "failed" && mail.error_message && (
+                          <p className="text-xs text-red-600 mt-0.5">{mail.error_message}</p>
+                        )}
+                      </div>
+
+                      <span className="text-xs text-gray-400 shrink-0">
+                        {new Date(mail.created_at).toLocaleString(undefined, {
+                          month: "short", day: "numeric", year: "numeric",
+                          hour: "numeric", minute: "2-digit", hour12: true,
+                        })}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+
+          {selectedInboxEmail && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+              onClick={() => setSelectedInboxEmail(null)}
+            >
+              <div
+                className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-6 py-4">
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-semibold text-gray-900 truncate">{selectedInboxEmail.subject}</h3>
+                    <p className="mt-1 text-xs text-gray-500">
+                      From {selectedInboxEmail.from_address} · To {selectedInboxEmail.recipient_email}
+                    </p>
+                    <p className="mt-0.5 text-xs text-gray-400">
+                      {new Date(selectedInboxEmail.created_at).toLocaleString(undefined, {
+                        month: "short", day: "numeric", year: "numeric",
+                        hour: "numeric", minute: "2-digit", hour12: true,
+                      })}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedInboxEmail(null)}
+                    className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 shrink-0"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="flex-1 overflow-hidden bg-gray-50">
+                  <iframe
+                    title="Email preview"
+                    sandbox=""
+                    srcDoc={selectedInboxEmail.html_body}
+                    className="h-[65vh] w-full border-0 bg-white"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Uploaded Emails */}
           {uploadedEmails.length > 0 && (
