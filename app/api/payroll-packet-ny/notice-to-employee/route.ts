@@ -3,6 +3,11 @@ import { PDFDocument, PDFRef, PDFName } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+// Force fresh reads of the signature/template assets on every request so
+// asset changes (e.g. HR signature swaps) take effect immediately instead
+// of being served from a stale cached route response.
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   const isEmployee = request.nextUrl.searchParams.get('role') === 'employee';
   try {
