@@ -36,6 +36,11 @@ type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
 const KIOSK_EVENT_REFRESH_MS = 10_000;
 const KIOSK_SHIFT_SUMMARY_REFRESH_MS = 10_000;
+// How long the "last known active event" fallback stays trustworthy once the
+// live check (fetchRecentActivity) stops confirming it. Long enough to survive
+// a brief network hiccup mid-shift; short enough that a kiosk tab left open
+// across days can't silently stamp actions with a stale, unrelated event.
+const LAST_KNOWN_EVENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const BACKGROUND_REQUEST_TIMEOUT_MS = 8_000;
 const SLOW_CONNECTION_THRESHOLD_MS = 4_000;
 const VALIDATION_REQUEST_TIMEOUT_MS = 10_000;
@@ -222,6 +227,8 @@ export default function CheckInKioskPage() {
   );
   // Persists the last seen event ID so time-window checks still fire after the event ends
   const lastKnownEventIdRef = useRef<string | null>(null);
+  // When lastKnownEventIdRef was last confirmed by a successful fetchRecentActivity call
+  const lastKnownEventIdAtRef = useRef<number>(0);
 
   // Briefly show the current user's event check-in after they clock in.
   const [eventCheckInFlash, setEventCheckInFlash] = useState<{
@@ -232,7 +239,14 @@ export default function CheckInKioskPage() {
     eventEndIso?: string;
   } | null>(null);
   const eventCheckInFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentEventId = eventIdFromUrl || activeEvent?.id || lastKnownEventIdRef.current || undefined;
+  const lastKnownEventIdIsFresh =
+    lastKnownEventIdRef.current !== null &&
+    Date.now() - lastKnownEventIdAtRef.current < LAST_KNOWN_EVENT_MAX_AGE_MS;
+  const currentEventId =
+    eventIdFromUrl ||
+    activeEvent?.id ||
+    (lastKnownEventIdIsFresh ? lastKnownEventIdRef.current : undefined) ||
+    undefined;
 
   // ─── Auth & session keep-alive ──────────────────────────────────
   useEffect(() => {
@@ -462,6 +476,7 @@ export default function CheckInKioskPage() {
       const event = data?.event;
       if (event?.id && event?.startIso && event?.endIso) {
         lastKnownEventIdRef.current = String(event.id);
+        lastKnownEventIdAtRef.current = Date.now();
         setActiveEvent({
           id: String(event.id),
           name: typeof event.name === "string" ? event.name : null,

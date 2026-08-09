@@ -364,21 +364,32 @@ export async function GET(
         // but the meal was recorded via the kiosk (which does set event_id).
         let eventId = clockIn.event_id || entry.event_id || null;
 
-        // Find all meal entries whose timestamp falls within this shift window,
-        // regardless of their event_id (handles meals recorded via different app)
-        const mealsInShift = allEntries.filter(e => {
+        // Candidate meal entries: anything in the shift's time window. Kept
+        // event-agnostic here only so the "both clock entries have no event_id"
+        // fallback below still has something to borrow an event_id from.
+        const mealCandidates = allEntries.filter(e => {
           const t = new Date(e.timestamp).getTime();
           return t > shiftStart && t < shiftEnd &&
             ((e.action || "").toLowerCase() === "meal_start" ||
              (e.action || "").toLowerCase() === "meal_end");
         });
-        const mealStarts = mealsInShift.filter(e => (e.action || "").toLowerCase() === "meal_start");
-        const mealEnds   = mealsInShift.filter(e => (e.action || "").toLowerCase() === "meal_end");
 
         // Fall back to a meal entry's event_id when both clock entries have none
         if (!eventId) {
-          eventId = mealStarts[0]?.event_id || mealEnds[0]?.event_id || null;
+          const firstMeal = mealCandidates.find(e => (e.action || "").toLowerCase() === "meal_start")
+            || mealCandidates.find(e => (e.action || "").toLowerCase() === "meal_end");
+          eventId = firstMeal?.event_id || null;
         }
+
+        // Restrict to meals belonging to this shift's own event (or untagged —
+        // meals recorded via a different app may lack event_id). A meal entry
+        // stamped with a *different* event_id (e.g. stale kiosk state pointing
+        // at an earlier event) must not be pulled into this shift, since
+        // index-based pairing below would misalign every meal after it and can
+        // fabricate multi-hour "meal breaks" that never happened.
+        const mealsInShift = mealCandidates.filter(e => !e.event_id || e.event_id === eventId);
+        const mealStarts = mealsInShift.filter(e => (e.action || "").toLowerCase() === "meal_start");
+        const mealEnds   = mealsInShift.filter(e => (e.action || "").toLowerCase() === "meal_end");
 
         const mealBreaks: Array<{ start: number; end: number }> = [];
         const pairedMeals = Math.min(mealStarts.length, mealEnds.length);
