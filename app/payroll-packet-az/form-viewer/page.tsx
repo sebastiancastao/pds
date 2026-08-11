@@ -12,6 +12,7 @@ const AZ_FORMS: FormSpec[] = [
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
   { id: 'uniform-policy', display: 'Uniform Package / Dress Code Policy', requiresSignature: true },
   { id: 'az-state-supplements', formId: 'az-state-supplements', display: 'AZ State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-az/az-state-supplements' },
+  { id: 'attendance-scheduling-policy', display: 'Part-Time Employee Attendance & Scheduling Policy', requiresSignature: true, standalone: true },
   { id: 'health-insurance', formId: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', formId: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },

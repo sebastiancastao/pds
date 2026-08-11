@@ -23,7 +23,8 @@ type FormKey =
   | 'temp-employment-agreement'
   | 'handbook'
   | 'uniform-policy'
-  | 'home-venue-assignment';
+  | 'home-venue-assignment'
+  | 'attendance-scheduling-policy';
 
 const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>> = {
   'adp-deposit': { file: 'ADP-Employee-Direct-Deposit-Form (1).pdf', downloadName: 'ADP_Direct_Deposit.pdf' },
@@ -40,6 +41,7 @@ const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>>
   'notice-to-employee': { file: 'LC_2810.5_Notice to Employee.pdf', downloadName: 'LC_2810.5_Notice.pdf' },
   'uniform-policy': { file: 'uniform-package-policy.pdf', downloadName: 'Uniform_Package_Dress_Code_Policy.pdf' },
   'home-venue-assignment': { file: 'home-venue-assignment.pdf', downloadName: 'Home_Venue_Assignment.pdf' },
+  'attendance-scheduling-policy': { file: 'attendance-scheduling-policy.pdf', downloadName: 'PDS_Attendance_Scheduling_Policy.pdf' },
 };
 
 const CA_STATE_TAX_FILE = { file: 'de4_State Tax Form.pdf', downloadName: 'State_Tax.pdf' };
@@ -82,6 +84,7 @@ const PLACEHOLDER_TITLES: Record<FormKey, string> = {
   handbook: 'Employee Handbook Acknowledgment (Pending)',
   'uniform-policy': 'Uniform Package / Dress Code Policy',
   'home-venue-assignment': 'Home Venue Assignment',
+  'attendance-scheduling-policy': 'Part-Time Employee Attendance & Scheduling Policy',
 };
 
 const PLACEHOLDER_MESSAGE: Partial<Record<FormKey, string>> & { default: string } = {

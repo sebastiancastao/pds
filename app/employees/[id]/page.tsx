@@ -241,6 +241,30 @@ type SubmittedAvailabilityDay = {
   submitted_at?: string | null;
 };
 
+type InvitationCancellationStatus = "pending" | "approved" | "rejected";
+
+type InvitationCancellationRequest = {
+  id: string;
+  user_id: string;
+  event_id: string;
+  source: "team" | "location";
+  team_member_id: string | null;
+  location_assignment_id: string | null;
+  previous_status: string | null;
+  reason: string;
+  status: InvitationCancellationStatus;
+  requested_by: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  created_at: string;
+  updated_at: string;
+  events?:
+    | { event_name: string | null; event_date: string | null; venue: string | null; city: string | null; state: string | null }
+    | { event_name: string | null; event_date: string | null; venue: string | null; city: string | null; state: string | null }[]
+    | null;
+};
+
 type HelpdeskTicketUrgency = "low" | "medium" | "high" | "critical";
 
 type HelpdeskTicketStatus = "open" | "in_progress" | "resolved" | "closed";
@@ -419,6 +443,19 @@ export default function WorkerProfilePage() {
   // Per-invitation feedback shown inline after a confirm/decline attempt (keyed by invitation id).
   const [invitationFeedback, setInvitationFeedback] = useState<Record<string, { type: "error" | "success"; text: string }>>({});
 
+  // Cancellation requests for already-responded invitations: initiated here on the
+  // profile, then held pending until a privileged reviewer approves/rejects them.
+  const [cancellationRequests, setCancellationRequests] = useState<InvitationCancellationRequest[]>([]);
+  const [cancellationRequestsLoading, setCancellationRequestsLoading] = useState(false);
+  const [canReviewCancellationRequests, setCanReviewCancellationRequests] = useState(false);
+  const [cancelModalInvitation, setCancelModalInvitation] = useState<EventInvitation | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [submittingCancelRequest, setSubmittingCancelRequest] = useState(false);
+  const [cancelRequestError, setCancelRequestError] = useState("");
+  const [reviewingCancelRequestId, setReviewingCancelRequestId] = useState<string | null>(null);
+  const [cancelReviewNotes, setCancelReviewNotes] = useState<Record<string, string>>({});
+  const [cancelReviewError, setCancelReviewError] = useState<Record<string, string>>({});
+
   // ID of the currently logged-in user, used to detect when someone is viewing
   // their own profile (stand-leader check-in is only offered on your own profile).
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -525,6 +562,116 @@ export default function WorkerProfilePage() {
       }));
     } finally {
       setRespondingInvitationId(null);
+    }
+  };
+
+  // Opens the reason modal for an already-responded (confirmed/declined) invitation.
+  const openCancelModal = (inv: EventInvitation) => {
+    setCancelModalInvitation(inv);
+    setCancelReason("");
+    setCancelRequestError("");
+  };
+
+  const closeCancelModal = () => {
+    if (submittingCancelRequest) return;
+    setCancelModalInvitation(null);
+    setCancelReason("");
+    setCancelRequestError("");
+  };
+
+  // Files a pending cancellation request for the invitation open in the modal.
+  // It does not remove the invitation itself — that only happens once a
+  // privileged reviewer approves the request (see reviewCancelRequest below).
+  const submitCancelRequest = async () => {
+    if (!cancelModalInvitation || !employeeId) return;
+    const trimmedReason = cancelReason.trim();
+    if (!trimmedReason) {
+      setCancelRequestError("Please provide a reason for the cancellation.");
+      return;
+    }
+
+    setSubmittingCancelRequest(true);
+    setCancelRequestError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/invitation-cancellation-requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          userId: employeeId,
+          invitationId: cancelModalInvitation.id,
+          source: cancelModalInvitation.source,
+          reason: trimmedReason,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to submit cancellation request.");
+      }
+
+      if (data?.request) {
+        setCancellationRequests((prev) => [data.request, ...prev]);
+      }
+      setCancelModalInvitation(null);
+      setCancelReason("");
+    } catch (error: any) {
+      setCancelRequestError(error?.message || "Failed to submit cancellation request.");
+    } finally {
+      setSubmittingCancelRequest(false);
+    }
+  };
+
+  // Approves or rejects a pending cancellation request. Approving actually removes
+  // the underlying invitation server-side, so we also drop it from the visible list.
+  const reviewCancelRequest = async (requestId: string, status: "approved" | "rejected") => {
+    setReviewingCancelRequestId(requestId);
+    setCancelReviewError((prev) => {
+      const next = { ...prev };
+      delete next[requestId];
+      return next;
+    });
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/invitation-cancellation-requests", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          id: requestId,
+          status,
+          review_notes: cancelReviewNotes[requestId]?.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update the request.");
+      }
+
+      const updatedRequest = data.request as InvitationCancellationRequest | undefined;
+      if (updatedRequest) {
+        setCancellationRequests((prev) => prev.map((r) => (r.id === requestId ? updatedRequest : r)));
+        if (status === "approved") {
+          const invitationId =
+            updatedRequest.source === "team" ? updatedRequest.team_member_id : updatedRequest.location_assignment_id;
+          setEventInvitations((prev) =>
+            prev.filter((inv) => !(inv.source === updatedRequest.source && inv.id === invitationId))
+          );
+        }
+      }
+    } catch (error: any) {
+      setCancelReviewError((prev) => ({
+        ...prev,
+        [requestId]: error?.message || "Failed to update the request.",
+      }));
+    } finally {
+      setReviewingCancelRequestId(null);
     }
   };
 
@@ -945,6 +1092,36 @@ export default function WorkerProfilePage() {
     loadInvitations();
   }, [employeeId]);
 
+  // Fetch invitation cancellation requests (pending/approved/rejected) for this employee
+  useEffect(() => {
+    if (!employeeId) return;
+    const loadCancellationRequests = async () => {
+      setCancellationRequestsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/invitation-cancellation-requests?userId=${employeeId}`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCancellationRequests(data.requests || []);
+          setCanReviewCancellationRequests(Boolean(data.canReview));
+        } else {
+          setCancellationRequests([]);
+          setCanReviewCancellationRequests(false);
+        }
+      } catch (e) {
+        console.error("Error loading invitation cancellation requests:", e);
+        setCancellationRequests([]);
+        setCanReviewCancellationRequests(false);
+      } finally {
+        setCancellationRequestsLoading(false);
+      }
+    };
+    loadCancellationRequests();
+  }, [employeeId, refreshTick]);
+
   // Fetch all region events for this employee's assigned region
   useEffect(() => {
     if (!employeeId) return;
@@ -1111,6 +1288,22 @@ export default function WorkerProfilePage() {
     const total = entries.reduce((acc, e) => acc + (e.duration_hours ?? 0), 0);
     return { totalHoursLocal: total };
   }, [entries]);
+
+  // Latest cancellation request per invitation (keyed by "source-invitationId"), so
+  // the Events Recap row can show "Cancel" / "Pending" / "Rejected" appropriately.
+  const cancellationRequestByInvitation = useMemo(() => {
+    const map = new Map<string, InvitationCancellationRequest>();
+    for (const req of cancellationRequests) {
+      const invitationId = req.source === "team" ? req.team_member_id : req.location_assignment_id;
+      if (!invitationId) continue;
+      const key = `${req.source}-${invitationId}`;
+      const existing = map.get(key);
+      if (!existing || new Date(req.created_at).getTime() > new Date(existing.created_at).getTime()) {
+        map.set(key, req);
+      }
+    }
+    return map;
+  }, [cancellationRequests]);
 
   // Create event name lookup from per_event data
 
@@ -2702,6 +2895,74 @@ export default function WorkerProfilePage() {
               </div>
             )}
 
+            {cancelModalInvitation && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+                onClick={closeCancelModal}
+              >
+                <div
+                  className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900">Cancel Invitation</h2>
+                      <p className="mt-1 text-sm text-gray-500">
+                        {cancelModalInvitation.event_name || "This event"} — you previously{" "}
+                        {cancelModalInvitation.status === "confirmed" ? "confirmed" : "declined"} this invitation.
+                        Submitting this sends a cancellation request for approval; the invitation stays in place
+                        until it's approved.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeCancelModal}
+                      className="shrink-0 rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Reason <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={cancelReason}
+                    onChange={(e) => setCancelReason(e.target.value)}
+                    rows={4}
+                    placeholder="Why are you cancelling this invitation?"
+                    className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 resize-none"
+                  />
+
+                  {cancelRequestError && (
+                    <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {cancelRequestError}
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={closeCancelModal}
+                      className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                    >
+                      Never mind
+                    </button>
+                    <button
+                      type="button"
+                      disabled={submittingCancelRequest}
+                      onClick={submitCancelRequest}
+                      className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {submittingCancelRequest ? "Submitting..." : "Submit Cancellation Request"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <KnowYourRightsNoticeSection state={employee?.state ?? undefined} />
 
             {/* Personal Calendar */}
@@ -2960,6 +3221,43 @@ export default function WorkerProfilePage() {
                                 {isOwnProfile ? "You declined" : "Declined"}
                               </span>
                             )}
+                            {(inv.status === "confirmed" || inv.status === "declined") && (() => {
+                              const cancelReq = cancellationRequestByInvitation.get(`${inv.source}-${inv.id}`);
+                              if (cancelReq?.status === "pending") {
+                                return (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
+                                    Cancellation Pending
+                                  </span>
+                                );
+                              }
+                              if (cancelReq?.status === "rejected") {
+                                return (
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-gray-200 bg-gray-50 text-gray-500">
+                                      Cancellation Rejected
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => openCancelModal(inv)}
+                                      title="Submit a new cancellation request for approval"
+                                      className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-white text-red-600 hover:bg-red-50 transition-colors"
+                                    >
+                                      Request Again
+                                    </button>
+                                  </span>
+                                );
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => openCancelModal(inv)}
+                                  title="Request to cancel this already-responded invitation (requires approval)"
+                                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-white text-red-600 hover:bg-red-50 transition-colors"
+                                >
+                                  Cancel Invitation
+                                </button>
+                              );
+                            })()}
                             {!hasResponseButtons && renderTimeSheetAction(
                               inv.event_id,
                               agg?.timesheet_attestation_status,
@@ -3143,6 +3441,92 @@ export default function WorkerProfilePage() {
                 })()}
               </div>
             </section>
+
+            {/* Invitation Cancellation Requests — filed from the row above, held pending
+                until a privileged reviewer approves/rejects them here. */}
+            {(cancellationRequestsLoading || cancellationRequests.length > 0) && (
+              <section className="mb-8">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Invitation Cancellation Requests</h2>
+                  {!cancellationRequestsLoading && (
+                    <span className="text-sm text-gray-500">
+                      {cancellationRequests.length} request{cancellationRequests.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
+                <div className="apple-card divide-y divide-gray-100">
+                  {cancellationRequestsLoading ? (
+                    <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+                  ) : (
+                    cancellationRequests.map((req) => {
+                      const eventInfo = Array.isArray(req.events) ? req.events[0] : req.events;
+                      const statusStyles: Record<string, string> = {
+                        pending: "bg-yellow-50 text-yellow-700 border-yellow-200",
+                        approved: "bg-green-50 text-green-700 border-green-200",
+                        rejected: "bg-red-50 text-red-700 border-red-200",
+                      };
+                      return (
+                        <div key={req.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-start gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-gray-900">
+                              {eventInfo?.event_name || "Event"}
+                              {eventInfo?.event_date ? ` — ${formatEventDate(eventInfo.event_date)}` : ""}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-0.5 capitalize">
+                              Cancelling a {req.previous_status || "responded"} invitation
+                            </p>
+                            <p className="text-xs text-gray-600 mt-1 leading-relaxed">Reason: {req.reason}</p>
+                            {req.review_notes && (
+                              <p className="text-xs text-gray-500 mt-1 leading-relaxed">Reviewer notes: {req.review_notes}</p>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1.5 shrink-0">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${statusStyles[req.status] ?? "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                              {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
+                            </span>
+                            <p className="text-xs text-gray-400">{formatDate(req.created_at)}</p>
+                            {canReviewCancellationRequests && req.status === "pending" && (
+                              <div className="flex flex-col items-end gap-1.5 mt-1 w-48">
+                                <input
+                                  type="text"
+                                  placeholder="Review note (optional)"
+                                  value={cancelReviewNotes[req.id] ?? ""}
+                                  onChange={(e) =>
+                                    setCancelReviewNotes((prev) => ({ ...prev, [req.id]: e.target.value }))
+                                  }
+                                  className="w-full rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900 outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-200"
+                                />
+                                <div className="flex gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={reviewingCancelRequestId === req.id}
+                                    onClick={() => reviewCancelRequest(req.id, "approved")}
+                                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={reviewingCancelRequestId === req.id}
+                                    onClick={() => reviewCancelRequest(req.id, "rejected")}
+                                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                                {cancelReviewError[req.id] && (
+                                  <p className="text-xs text-red-600">{cancelReviewError[req.id]}</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            )}
 
             {/* Sick Leave Summary */}
             <section className="mb-8">

@@ -19,6 +19,10 @@ export type FormSpec = {
   requiresSignature?: boolean;
   apiOverride?: string;
   formId?: string;
+  // Standalone forms are only reachable via a direct/assigned link (e.g. the admin
+  // Packet tab). They're excluded from the sequential next/back chain and from
+  // formOrder so they never become a forced step in the regular onboarding flow.
+  standalone?: boolean;
 };
 
 const DEFAULT_FORMS: FormSpec[] = [
@@ -93,6 +97,46 @@ const isAttestationFormId = (formId?: string | null) =>
 
 const isUniformPolicyFormId = (formId?: string | null) =>
   Boolean(formId && (formId === 'uniform-policy' || formId.endsWith('-uniform-policy')));
+
+const isAttendanceSchedulingPolicyFormId = (formId?: string | null) =>
+  Boolean(
+    formId &&
+      (formId === 'attendance-scheduling-policy' || formId.endsWith('-attendance-scheduling-policy')),
+  );
+
+// Stamps the signed date into the blank that follows the printed "Date:" label
+// at the bottom of the Attendance & Scheduling Policy PDF (single page, 612x792pt).
+const stampAttendanceSchedulingPolicyDate = async (pdfBytes: Uint8Array, date: string) => {
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return pdfBytes;
+
+  const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const lastPage = pdfDoc.getPages().at(-1);
+  if (!lastPage) return pdfBytes;
+
+  const [, year, month, day] = match;
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const formatted = `${month}/${day}/${year}`;
+
+  lastPage.drawRectangle({
+    x: 332,
+    y: 46,
+    width: 94,
+    height: 20,
+    color: rgb(1, 1, 1),
+    borderWidth: 0,
+  });
+  lastPage.drawText(formatted, { x: 337, y: 54, size: 9, font, color: rgb(0, 0, 0) });
+  lastPage.drawLine({
+    start: { x: 334, y: 50.6 },
+    end: { x: 424, y: 50.6 },
+    thickness: 0.6,
+    color: rgb(0.4, 0.4, 0.4),
+  });
+
+  return new Uint8Array(await pdfDoc.save());
+};
 
 const stampFooterDateOnPdf = async (pdfBytes: Uint8Array, date: string) => {
   const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -197,22 +241,35 @@ const embedAttestationSignature = async (pdfBytes: Uint8Array, signatureData: st
 };
 
 function buildFormConfig(stateCode: string, forms?: FormSpec[]) {
-  const sequence = forms && forms.length > 0 ? forms : DEFAULT_FORMS;
+  const allForms = forms && forms.length > 0 ? forms : DEFAULT_FORMS;
+  const sequence = allForms.filter((f) => !f.standalone);
+  const standaloneForms = allForms.filter((f) => f.standalone);
   const formOrder = sequence.map((f) => f.id);
-  const config = sequence.reduce<Record<string, FormConfigEntry>>((acc, form, index) => {
+
+  const buildEntry = (form: FormSpec, next?: string): FormConfigEntry => {
     const apiOverride =
       form.apiOverride ||
       (stateCode === 'az' && form.id === 'state-tax' ? '/api/payroll-packet-az/fillable' : undefined) ||
       STATE_FORM_API_OVERRIDES[stateCode]?.[form.id];
-    acc[form.id] = {
+    return {
       display: form.display,
       api: apiOverride || `/api/payroll-packet-common/${form.id}?state=${stateCode}`,
       formId: form.formId || `${stateCode}-${form.id}`,
-      next: sequence[index + 1]?.id,
+      next,
       requiresSignature: form.requiresSignature,
     };
+  };
+
+  const config = sequence.reduce<Record<string, FormConfigEntry>>((acc, form, index) => {
+    acc[form.id] = buildEntry(form, sequence[index + 1]?.id);
     return acc;
   }, {});
+
+  // Standalone forms are looked up the same way, but never get a `next` and
+  // never appear in formOrder, so they can't be chained into by accident.
+  standaloneForms.forEach((form) => {
+    config[form.id] = buildEntry(form, undefined);
+  });
 
   return {
     config,
@@ -287,6 +344,7 @@ export default function StatePayrollFormViewer({
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [healthInsuranceAcknowledged, setHealthInsuranceAcknowledged] = useState(false);
   const [uniformPolicyDate, setUniformPolicyDate] = useState('');
+  const [attendanceSchedulingPolicyDate, setAttendanceSchedulingPolicyDate] = useState('');
   const [homeVenueDate, setHomeVenueDate] = useState('');
   const [homeVenuePrintName, setHomeVenuePrintName] = useState('');
   const [attestationPrintName, setAttestationPrintName] = useState('');
@@ -445,6 +503,7 @@ export default function StatePayrollFormViewer({
     lastSavedSignatureRef.current = null;
     setHealthInsuranceAcknowledged(false);
     setUniformPolicyDate('');
+    setAttendanceSchedulingPolicyDate('');
     setHomeVenueDate('');
     setHomeVenuePrintName('');
     setAttestationPrintName('');
@@ -517,6 +576,43 @@ export default function StatePayrollFormViewer({
     };
 
     void loadSavedUniformPolicyDate();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [asUser, currentForm?.formId, selectedForm]);
+
+  useEffect(() => {
+    if (selectedForm !== 'attendance-scheduling-policy' || !currentForm?.formId) return;
+
+    let isCancelled = false;
+
+    const loadSavedAttendanceSchedulingPolicyDate = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) return;
+
+        const params = new URLSearchParams({ formName: currentForm.formId });
+        if (asUser) {
+          params.set('targetUserId', asUser);
+        }
+
+        const response = await fetch(`/api/pdf-form-progress/retrieve?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          credentials: 'same-origin',
+        });
+        if (!response.ok) return;
+
+        const result = await response.json();
+        if (!isCancelled && typeof result?.formDate === 'string' && result.formDate) {
+          setAttendanceSchedulingPolicyDate((currentValue) => currentValue || result.formDate);
+        }
+      } catch (error) {
+        console.warn('[ATTENDANCE SCHEDULING POLICY] Failed to load saved date', error);
+      }
+    };
+
+    void loadSavedAttendanceSchedulingPolicyDate();
 
     return () => {
       isCancelled = true;
@@ -705,6 +801,12 @@ export default function StatePayrollFormViewer({
         pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
       }
 
+      if (isCurrentForm && isAttendanceSchedulingPolicyFormId(formId) && attendanceSchedulingPolicyDate) {
+        pdfBytesToSave = await stampAttendanceSchedulingPolicyDate(pdfBytesToSave, attendanceSchedulingPolicyDate);
+        pdfBytesRef.current = pdfBytesToSave;
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
       console.log('[SAVE] Session check:', {
@@ -733,6 +835,9 @@ export default function StatePayrollFormViewer({
       };
       if (isCurrentForm && isUniformPolicyFormId(formId) && uniformPolicyDate) {
         payload.formDate = uniformPolicyDate;
+      }
+      if (isCurrentForm && isAttendanceSchedulingPolicyFormId(formId) && attendanceSchedulingPolicyDate) {
+        payload.formDate = attendanceSchedulingPolicyDate;
       }
       // Only include i9 data if saving the i9 form
       if (formId.includes('i9') || (isCurrentForm && selectedForm === 'i9')) {
@@ -763,6 +868,9 @@ export default function StatePayrollFormViewer({
 
           if (isCurrentForm && isUniformPolicyFormId(formId) && uniformPolicyDate) {
             customFormPayload.formDate = uniformPolicyDate;
+          }
+          if (isCurrentForm && isAttendanceSchedulingPolicyFormId(formId) && attendanceSchedulingPolicyDate) {
+            customFormPayload.formDate = attendanceSchedulingPolicyDate;
           }
 
           const customFormResponse = await fetch('/api/pdf-form-progress/save', {
@@ -984,6 +1092,11 @@ export default function StatePayrollFormViewer({
     }
 
     if (!asUser && selectedForm === 'uniform-policy' && !uniformPolicyDate) {
+      alert('Please enter a date before continuing.');
+      return;
+    }
+
+    if (!asUser && selectedForm === 'attendance-scheduling-policy' && !attendanceSchedulingPolicyDate) {
       alert('Please enter a date before continuing.');
       return;
     }
@@ -3060,6 +3173,31 @@ export default function StatePayrollFormViewer({
                     padding: '10px 14px',
                     fontSize: '15px',
                     border: uniformPolicyDate ? '2px solid #4caf50' : '2px solid #ddd',
+                    borderRadius: '6px',
+                    outline: 'none',
+                    width: '220px',
+                  }}
+                />
+              </div>
+            )}
+
+            {selectedForm === 'attendance-scheduling-policy' && (
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                  Date <span style={{ color: '#d32f2f' }}>*</span>
+                </label>
+                <input
+                  type="date"
+                  value={attendanceSchedulingPolicyDate}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setAttendanceSchedulingPolicyDate(nextValue);
+                    handleFieldChange('attendance-scheduling-policy-date', 'attendance-scheduling-policy-date', nextValue);
+                  }}
+                  style={{
+                    padding: '10px 14px',
+                    fontSize: '15px',
+                    border: attendanceSchedulingPolicyDate ? '2px solid #4caf50' : '2px solid #ddd',
                     borderRadius: '6px',
                     outline: 'none',
                     width: '220px',

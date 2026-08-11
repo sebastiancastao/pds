@@ -15,6 +15,40 @@ const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor
 
 type I9Mode = 'A' | 'BC';
 
+// Stamps the signed date into the blank that follows the printed "Date:" label
+// at the bottom of the Attendance & Scheduling Policy PDF (single page, 612x792pt).
+const stampAttendanceSchedulingPolicyDate = async (pdfBytes: Uint8Array, date: string) => {
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return pdfBytes;
+
+  const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const lastPage = pdfDoc.getPages().at(-1);
+  if (!lastPage) return pdfBytes;
+
+  const [, year, month, day] = match;
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const formatted = `${month}/${day}/${year}`;
+
+  lastPage.drawRectangle({
+    x: 332,
+    y: 46,
+    width: 94,
+    height: 20,
+    color: rgb(1, 1, 1),
+    borderWidth: 0,
+  });
+  lastPage.drawText(formatted, { x: 337, y: 54, size: 9, font, color: rgb(0, 0, 0) });
+  lastPage.drawLine({
+    start: { x: 334, y: 50.6 },
+    end: { x: 424, y: 50.6 },
+    thickness: 0.6,
+    color: rgb(0.4, 0.4, 0.4),
+  });
+
+  return new Uint8Array(await pdfDoc.save());
+};
+
 const MEAL_WAIVER_ROUTE_MAP: Record<string, { path: string; label: string }> = {
   'meal-waiver-6hour': { path: '/payroll-packet-ca/meal-waiver-6hour', label: 'Meal Waiver 6-hour' },
   'meal-waiver-10-12': { path: '/payroll-packet-ca/meal-waiver-10-12', label: 'Meal Waiver 10/12 Hour' },
@@ -133,6 +167,7 @@ function FormViewerContent() {
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [hasReadForm, setHasReadForm] = useState(false);
   const [uniformPolicyDate, setUniformPolicyDate] = useState('');
+  const [attendanceSchedulingPolicyDate, setAttendanceSchedulingPolicyDate] = useState('');
   const [homeVenueDate, setHomeVenueDate] = useState('');
   const [homeVenuePrintName, setHomeVenuePrintName] = useState('');
 
@@ -162,6 +197,9 @@ function FormViewerContent() {
     'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'employee-handbook', requiresSignature: true },
     'employee-handbook': { display: 'PDS Employee Handbook 2026', api: '/api/payroll-packet-ca/employee-handbook', formId: 'employee-handbook', next: 'uniform-policy', requiresSignature: true },
     'uniform-policy': { display: 'Uniform Package / Dress Code Policy', api: '/api/payroll-packet-common/uniform-policy?state=ca', formId: 'ca-uniform-policy', next: 'ui-guide', requiresSignature: true },
+    // Standalone: no `next` on purpose — only reachable via a direct/assigned link
+    // (the admin Packet tab), never a forced step in the regular onboarding chain.
+    'attendance-scheduling-policy': { display: 'Part-Time Employee Attendance & Scheduling Policy', api: '/api/payroll-packet-common/attendance-scheduling-policy?state=ca', formId: 'ca-attendance-scheduling-policy', requiresSignature: true },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
     'paid-family-leave': { display: 'Paid Family Leave', api: '/api/payroll-packet-ca/paid-family-leave', formId: 'paid-family-leave', next: 'sexual-harassment' },
@@ -253,6 +291,7 @@ function FormViewerContent() {
     }
     setMissingRequiredFields([]);
     setUniformPolicyDate('');
+    setAttendanceSchedulingPolicyDate('');
     setHomeVenueDate('');
     setHomeVenuePrintName('');
     setVenueSaved(false);
@@ -412,6 +451,12 @@ function FormViewerContent() {
         }
       }
 
+      if (isCurrentForm && formId === 'attendance-scheduling-policy' && attendanceSchedulingPolicyDate) {
+        pdfBytesToSave = await stampAttendanceSchedulingPolicyDate(pdfBytesToSave, attendanceSchedulingPolicyDate);
+        pdfBytesRef.current = pdfBytesToSave;
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       // Get session for authentication
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       console.log('[SAVE] Session check:', {
@@ -458,6 +503,9 @@ function FormViewerContent() {
         payload.i9Mode = i9Mode;
         payload.i9Selections = i9Selections;
       }
+      if (isCurrentForm && formId === 'attendance-scheduling-policy' && attendanceSchedulingPolicyDate) {
+        payload.formDate = attendanceSchedulingPolicyDate;
+      }
 
       const response = await fetch('/api/pdf-form-progress/save', {
         method: 'POST',
@@ -485,6 +533,9 @@ function FormViewerContent() {
               formData: base64,
               ...(asUser ? { targetUserId: asUser } : {}),
               entryPoint: i9EntryPoint,
+              ...(formId === 'attendance-scheduling-policy' && attendanceSchedulingPolicyDate
+                ? { formDate: attendanceSchedulingPolicyDate }
+                : {}),
             }),
           });
 
@@ -638,6 +689,11 @@ function FormViewerContent() {
     }
 
     if (!asUser && formName === 'uniform-policy' && !uniformPolicyDate) {
+      alert('Please enter a date before continuing.');
+      return;
+    }
+
+    if (!asUser && formName === 'attendance-scheduling-policy' && !attendanceSchedulingPolicyDate) {
       alert('Please enter a date before continuing.');
       return;
     }
@@ -2234,6 +2290,20 @@ function FormViewerContent() {
                   value={uniformPolicyDate}
                   onChange={(e) => setUniformPolicyDate(e.target.value)}
                   style={{ padding: '10px 14px', fontSize: '15px', border: uniformPolicyDate ? '2px solid #4caf50' : '2px solid #ddd', borderRadius: '6px', outline: 'none', width: '220px' }}
+                />
+              </div>
+            )}
+
+            {formName === 'attendance-scheduling-policy' && (
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                  Date <span style={{ color: '#d32f2f' }}>*</span>
+                </label>
+                <input
+                  type="date"
+                  value={attendanceSchedulingPolicyDate}
+                  onChange={(e) => setAttendanceSchedulingPolicyDate(e.target.value)}
+                  style={{ padding: '10px 14px', fontSize: '15px', border: attendanceSchedulingPolicyDate ? '2px solid #4caf50' : '2px solid #ddd', borderRadius: '6px', outline: 'none', width: '220px' }}
                 />
               </div>
             )}
