@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { sendNonEventTimesheetLinkEmail } from "@/lib/email";
 import { safeDecrypt } from "@/lib/encryption";
 import { getUserRegion, type Region } from "@/lib/geocoding";
+import { getLockedAvailabilityDates } from "@/lib/availabilityLocks";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -368,6 +369,10 @@ export async function GET(
       });
     });
 
+    const lockedDates = invitation.vendor_id
+      ? await getLockedAvailabilityDates(supabaseAdmin, invitation.vendor_id)
+      : new Map();
+
     return NextResponse.json({
       invitation: {
         id: invitation.id,
@@ -386,6 +391,7 @@ export async function GET(
       availability: invitation.availability || null,
       notes: invitation.notes || '',
       regionEventsByDate,
+      lockedDates: Array.from(lockedDates.values()),
     }, { status: 200 });
 
   } catch (error: any) {
@@ -433,15 +439,52 @@ export async function POST(
       return NextResponse.json({ error: 'Invitation has expired' }, { status: 410 });
     }
 
+    // Dates the vendor already confirmed or declined an actual event for are
+    // locked — they can't silently flip that date's answer through a bulk
+    // availability resubmission. Any conflicting day is forced back to the
+    // locked value; the vendor has to request a cancellation of the
+    // underlying invitation (existing approval flow) to actually change it.
+    const lockedDates = invitation.vendor_id
+      ? await getLockedAvailabilityDates(supabaseAdmin, invitation.vendor_id)
+      : new Map();
+
+    const lockedConflicts: Array<{
+      date: string;
+      eventName: string | null;
+      status: string;
+      lockedAvailable: boolean;
+    }> = [];
+
+    const sanitizedAvailability = (availability as any[]).map((day: any) => {
+      const dateKey = typeof day?.date === 'string' ? day.date.slice(0, 10) : '';
+      const lock = dateKey ? lockedDates.get(dateKey) : undefined;
+      if (!lock || day.available === lock.available) return day;
+
+      lockedConflicts.push({
+        date: lock.date,
+        eventName: lock.eventName,
+        status: lock.status,
+        lockedAvailable: lock.available,
+      });
+
+      return {
+        ...day,
+        available: lock.available,
+        allDay: true,
+        startTime: undefined,
+        endTime: undefined,
+      };
+    });
+
     // Check if any days are marked as available
-    const hasAvailability = availability.some((day: any) => day.available === true);
+    const hasAvailability = sanitizedAvailability.some((day: any) => day.available === true);
     const newStatus = hasAvailability ? 'accepted' : 'declined';
 
     // Update invitation with availability and status
     const { error: updateError } = await supabaseAdmin
       .from('vendor_invitations')
       .update({
-        availability: availability,
+        availability: sanitizedAvailability,
         status: newStatus,
         responded_at: new Date().toISOString()
       })
@@ -454,7 +497,7 @@ export async function POST(
 
     // Also persist per-day availability into vendor_availability table (idempotent upsert)
     try {
-      const rows = (availability as any[])
+      const rows = (sanitizedAvailability as any[])
         .filter((d) => d && typeof d.date === 'string')
         .map((d) => ({
           vendor_id: invitation.vendor_id,
@@ -600,16 +643,21 @@ export async function POST(
       }
     }
 
+    const lockedConflictNote = lockedConflicts.length > 0
+      ? ` ${lockedConflicts.length} date${lockedConflicts.length !== 1 ? 's' : ''} couldn't be changed because you already responded to an event on ${lockedConflicts.length !== 1 ? 'those dates' : 'that date'} — request a cancellation of that invitation from your profile if you need it changed.`
+      : '';
+
     return NextResponse.json({
       success: true,
-      message: nonEventTimesheetConfirmed
+      message: (nonEventTimesheetConfirmed
         ? "Availability saved. You have been added to the non-event time sheet as confirmed."
-        : "Availability saved successfully",
+        : "Availability saved successfully") + lockedConflictNote,
       status: newStatus,
       nonEventTimesheetConfirmed,
       timesheetPath,
       timesheetUrl,
       timesheetEmailSent,
+      lockedConflicts,
     }, { status: 200 });
 
   } catch (error: any) {

@@ -1299,10 +1299,10 @@ export async function POST(req: NextRequest) {
       drawRL(20, y, 592);
       y -= 13;
       // Header row 1
-      drawR("Show Date /", C.date, y, { bold: true, size: 6 });
-      drawR("Event Name /", C.show, y, { bold: true, size: 6 });
-      drawR("Venue /", C.venue, y, { bold: true, size: 6 });
-      drawR("Commission pool", C.pool, y, { bold: true, size: 6 });
+      drawR("Event Date", C.date, y, { bold: true, size: 6 });
+      drawR("Event Name", C.show, y, { bold: true, size: 6 });
+      drawR("Venue", C.venue, y, { bold: true, size: 6 });
+      drawR("Commission Pool", C.pool, y, { bold: true, size: 6 });
       drawR("# of", C.numEmp, y, { bold: true, size: 6 });
       drawR("Commission", C.comm, y, { bold: true, size: 6 });
       drawR("Hours", C.hours, y, { bold: true, size: 6 });
@@ -1316,10 +1316,7 @@ export async function POST(req: NextRequest) {
       drawR("Final Gross", C.finalPay, y, { bold: true, size: 6 });
       y -= 7;
       // Header row 2
-      drawR("Event Date", C.date, y, { bold: true, size: 6 });
-      drawR("Show Name", C.show, y, { bold: true, size: 6 });
-      drawR("Stadium Name", C.venue, y, { bold: true, size: 6 });
-      drawR("Per agreement", C.pool, y, { bold: true, size: 6 });
+      drawR("Per Agreement", C.pool, y, { bold: true, size: 6 });
       drawR("Employees", C.numEmp, y, { bold: true, size: 6 });
       drawR("Paid", C.comm, y, { bold: true, size: 6 });
       drawR("Worked", C.hours, y, { bold: true, size: 6 });

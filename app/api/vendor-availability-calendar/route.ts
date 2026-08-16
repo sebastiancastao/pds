@@ -136,7 +136,7 @@ export async function GET(req: NextRequest) {
     // availability for each — we need to merge all of them.
     const { data: invitations, error: invError } = await supabaseAdmin
       .from('vendor_invitations')
-      .select('vendor_id, availability')
+      .select('vendor_id, availability, created_at')
       .in('vendor_id', onboardedIds)
       .not('availability', 'is', null);
 
@@ -144,25 +144,45 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: invError.message }, { status: 500 });
     }
 
-    // Accumulate every available date across ALL invitations per vendor
+    // For a given vendor+date, different submissions can disagree (a vendor
+    // marked a date available, then later re-submitted and marked it
+    // unavailable). The most recently submitted answer for that date wins —
+    // we must not let an older "available" submission override a newer
+    // "unavailable" one, so track the latest answer per vendor+date instead
+    // of unioning every "available: true" ever seen.
+    const latestAnswerByVendorDate = new Map<string, Map<string, { available: boolean; submittedAtMs: number }>>();
+    for (const inv of invitations || []) {
+      if (!inv.vendor_id) continue;
+      const submittedAtMs = Date.parse(String((inv as any).created_at || '')) || 0;
+      let dateAnswers = latestAnswerByVendorDate.get(inv.vendor_id);
+      if (!dateAnswers) {
+        dateAnswers = new Map();
+        latestAnswerByVendorDate.set(inv.vendor_id, dateAnswers);
+      }
+      for (const day of normalizeAvailability(inv.availability)) {
+        if (!day.date) continue;
+        const dateStr = day.date.slice(0, 10);
+        if (!dateStr) continue;
+        const existing = dateAnswers.get(dateStr);
+        if (!existing || submittedAtMs >= existing.submittedAtMs) {
+          dateAnswers.set(dateStr, { available: day.available === true, submittedAtMs });
+        }
+      }
+    }
+
+    // Accumulate the (latest-answer) available dates per vendor
     const allDatesByVendor = new Map<string, Set<string>>();
     let minAvailableDate: string | null = null;
     let maxAvailableDate: string | null = null;
-    for (const inv of invitations || []) {
-      if (!inv.vendor_id) continue;
-      if (!allDatesByVendor.has(inv.vendor_id)) {
-        allDatesByVendor.set(inv.vendor_id, new Set());
+    for (const [vendorId, dateAnswers] of latestAnswerByVendorDate.entries()) {
+      const dateSet = new Set<string>();
+      for (const [dateStr, answer] of dateAnswers.entries()) {
+        if (!answer.available) continue;
+        dateSet.add(dateStr);
+        if (!minAvailableDate || dateStr < minAvailableDate) minAvailableDate = dateStr;
+        if (!maxAvailableDate || dateStr > maxAvailableDate) maxAvailableDate = dateStr;
       }
-      const dateSet = allDatesByVendor.get(inv.vendor_id)!;
-      for (const day of normalizeAvailability(inv.availability)) {
-        if (day.available && day.date) {
-          const dateStr = day.date.slice(0, 10);
-          if (!dateStr) continue;
-          dateSet.add(dateStr);
-          if (!minAvailableDate || dateStr < minAvailableDate) minAvailableDate = dateStr;
-          if (!maxAvailableDate || dateStr > maxAvailableDate) maxAvailableDate = dateStr;
-        }
-      }
+      if (dateSet.size > 0) allDatesByVendor.set(vendorId, dateSet);
     }
 
     // Build vendor info map (decrypt names)

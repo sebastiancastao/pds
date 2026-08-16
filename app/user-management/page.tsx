@@ -544,6 +544,7 @@ export default function UserManagementPage() {
             { href: '/admin/check-in-monitor',  label: 'Check-In Monitor',  bg: '#0ea5e9' },
             { href: '/employee-id-codes',       label: 'Employee ID Codes', bg: '#14b8a6' },
             { href: '/timesheet-edits',         label: 'Timesheet Edits',   bg: '#334155' },
+            { href: '/cancellation-requests',   label: 'Cancellation Requests', bg: '#dc2626' },
             { href: '/global-calendar',         label: 'Calendar',          bg: '#3b82f6' },
             { href: '/vendor-venue-management', label: 'Venue & Vendor',    bg: '#f97316' },
             { href: '/reports',                 label: 'Reports',           bg: '#be123c' },

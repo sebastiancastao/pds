@@ -2337,6 +2337,28 @@ export default function EmployeeProfilePage() {
                 ) : (() => {
                   const perEventMap = new Map((summary?.per_event ?? []).map(r => [r.event_id, r]));
 
+                  const eventDateKey = (value?: string | null): string | null => {
+                    if (!value) return null;
+                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+                    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+                  };
+
+                  // Pending team invitations for a date the vendor has explicitly
+                  // marked themselves unavailable on shouldn't be shown as
+                  // actionable — they were sent before/around a stale or
+                  // conflicting availability answer. Already-responded
+                  // (confirmed/declined) invitations stay visible as history.
+                  const unavailableDateKeys = new Set(
+                    submittedAvailability.filter(d => d.available === false).map(d => d.date)
+                  );
+                  const isSelfDeclaredUnavailable = (inv: EventInvitation): boolean => {
+                    if (inv.source !== "team") return false;
+                    if (inv.status !== "pending_confirmation" && inv.status !== "pending") return false;
+                    const key = eventDateKey(inv.event_date);
+                    return !!key && unavailableDateKeys.has(key);
+                  };
+                  const visibleInvitations = eventInvitations.filter(inv => !isSelfDeclaredUnavailable(inv));
+
                   // Split invitations into upcoming vs. past based on the event date
                   // (end date if present, else start date). Undated invitations are
                   // treated as upcoming so their confirm/decline actions stay available.
@@ -2347,18 +2369,13 @@ export default function EmployeeProfilePage() {
                     const d = String(now.getDate()).padStart(2, "0");
                     return `${y}-${m}-${d}`;
                   })();
-                  const eventDateKey = (value?: string | null): string | null => {
-                    if (!value) return null;
-                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
-                    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
-                  };
                   const isUpcomingInvitation = (inv: EventInvitation): boolean => {
                     const key = eventDateKey(inv.end_date) ?? eventDateKey(inv.event_date);
                     if (!key) return true; // undated → keep it actionable
                     return key >= todayKey;
                   };
-                  const upcomingInvitations = eventInvitations.filter(isUpcomingInvitation);
-                  const pastInvitations = eventInvitations.filter((inv) => !isUpcomingInvitation(inv));
+                  const upcomingInvitations = visibleInvitations.filter(isUpcomingInvitation);
+                  const pastInvitations = visibleInvitations.filter((inv) => !isUpcomingInvitation(inv));
 
                   // Renders a single invitation row. Confirm/Decline only appear when
                   // `showResponseButtons` is true (upcoming events) — you can't confirm
@@ -2454,7 +2471,7 @@ export default function EmployeeProfilePage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {eventInvitations.length === 0 && (
+                          {visibleInvitations.length === 0 && (
                             <tr>
                               <td colSpan={7} className="p-6 text-center text-gray-500">No event invitations yet.</td>
                             </tr>

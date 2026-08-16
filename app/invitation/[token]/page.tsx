@@ -37,17 +37,27 @@ type InvitationDetails = {
   regionName?: string | null;
 };
 
+type LockedDate = {
+  date: string;
+  available: boolean;
+  status: "confirmed" | "declined";
+  eventId: string;
+  eventName: string | null;
+};
+
 type InvitationPayload = {
   invitation?: InvitationDetails;
   availability?: DayAvailability[] | null;
   notes?: string;
   regionEventsByDate?: Record<string, InvitationEvent[]>;
+  lockedDates?: LockedDate[];
 };
 
 type SaveAvailabilityResponse = {
   nonEventTimesheetConfirmed?: boolean;
   timesheetPath?: string | null;
   timesheetUrl?: string | null;
+  lockedConflicts?: Array<{ date: string; eventName: string | null; status: string; lockedAvailable: boolean }>;
 };
 
 const DEFAULT_DAY_COUNT = 42;
@@ -114,6 +124,7 @@ export default function InvitationPage() {
   const [days, setDays] = useState<DayAvailability[]>([]);
   const [invitation, setInvitation] = useState<InvitationDetails | null>(null);
   const [eventsByDate, setEventsByDate] = useState<Record<string, InvitationEvent[]>>({});
+  const [lockedDates, setLockedDates] = useState<Map<string, LockedDate>>(new Map());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>("");
@@ -149,18 +160,26 @@ export default function InvitationPage() {
         );
         const existing: DayAvailability[] = data.availability || [];
         const map = new Map(existing.map(e => [e.date, e]));
+        const lockedMap = new Map((data.lockedDates || []).map(l => [l.date, l]));
         const merged = nextDays.map(d => {
           const saved = map.get(d.date);
-          if (!saved) return d;
-          // Normalise: if available and allDay is undefined treat as allDay
-          return {
-            ...d,
-            ...saved,
-            allDay: saved.allDay !== false,
-          };
+          const base = !saved
+            ? d
+            : {
+                ...d,
+                ...saved,
+                // Normalise: if available and allDay is undefined treat as allDay
+                allDay: saved.allDay !== false,
+              };
+          // Locked dates always reflect the confirmed/declined event, even if
+          // a stale saved answer disagrees with it.
+          const lock = lockedMap.get(d.date);
+          if (!lock) return base;
+          return { ...base, available: lock.available, allDay: true, startTime: undefined, endTime: undefined };
         });
         setInvitation(invitationDetails);
         setEventsByDate(data.regionEventsByDate || {});
+        setLockedDates(lockedMap);
         setDays(merged);
       })
       .catch((error: any) => {
@@ -171,6 +190,7 @@ export default function InvitationPage() {
 
   const toggleDay = (idx: number) => {
     setDays(prev => {
+      if (lockedDates.has(prev[idx].date)) return prev;
       const copy = [...prev];
       const wasAvailable = copy[idx].available;
       copy[idx] = {
@@ -185,6 +205,7 @@ export default function InvitationPage() {
 
   const toggleAllDay = (idx: number) => {
     setDays(prev => {
+      if (lockedDates.has(prev[idx].date)) return prev;
       const copy = [...prev];
       const currentAllDay = copy[idx].allDay !== false;
       copy[idx] = {
@@ -200,6 +221,7 @@ export default function InvitationPage() {
 
   const setDayTime = (idx: number, field: "startTime" | "endTime", value: string) => {
     setDays(prev => {
+      if (lockedDates.has(prev[idx].date)) return prev;
       const copy = [...prev];
       copy[idx] = { ...copy[idx], [field]: value };
       return copy;
@@ -223,6 +245,20 @@ export default function InvitationPage() {
           ? data.timesheetPath || data.timesheetUrl || null
           : null
       );
+      if (data.lockedConflicts && data.lockedConflicts.length > 0) {
+        // Someone else (or another tab) confirmed/declined an event on one of
+        // these dates between page load and save — re-sync from the server
+        // so the locked cells reflect the true, current state.
+        const conflictDates = new Set(data.lockedConflicts.map(c => c.date));
+        setDays(prev => prev.map(d => {
+          const conflict = data.lockedConflicts!.find(c => c.date === d.date);
+          if (!conflict) return d;
+          return { ...d, available: conflict.lockedAvailable, allDay: true, startTime: undefined, endTime: undefined };
+        }));
+        setMessage(
+          `${data.lockedConflicts.length} date${data.lockedConflicts.length !== 1 ? 's' : ''} couldn't be saved as entered because you're already confirmed/declined for an event on ${conflictDates.size !== 1 ? 'those dates' : 'that date'}. They've been reset to your committed answer — request a cancellation from your profile if you need it changed.`
+        );
+      }
       setShowSuccessModal(true);
     } catch (err: any) {
       setMessage(err?.message || "Error saving availability.");
@@ -327,7 +363,7 @@ export default function InvitationPage() {
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-4 mb-8">
               <button
-                onClick={() => setDays(prev => prev.map(d => ({ ...d, available: true, allDay: true })))}
+                onClick={() => setDays(prev => prev.map(d => lockedDates.has(d.date) ? d : ({ ...d, available: true, allDay: true })))}
                 className="group relative inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold rounded-xl shadow-lg shadow-green-500/30 hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 transform hover:-translate-y-0.5 transition-all duration-200"
               >
                 <svg className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -337,7 +373,7 @@ export default function InvitationPage() {
               </button>
 
               <button
-                onClick={() => setDays(prev => prev.map(d => ({ ...d, available: false, allDay: true, startTime: undefined, endTime: undefined })))}
+                onClick={() => setDays(prev => prev.map(d => lockedDates.has(d.date) ? d : ({ ...d, available: false, allDay: true, startTime: undefined, endTime: undefined })))}
                 className="group relative inline-flex items-center px-6 py-3 bg-white text-gray-700 font-semibold rounded-xl border-2 border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-md transform hover:-translate-y-0.5 transition-all duration-200"
               >
                 <svg className="w-5 h-5 mr-2 text-gray-500 group-hover:text-red-500 group-hover:scale-110 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -356,11 +392,12 @@ export default function InvitationPage() {
                 const isToday = d.date === new Date().toISOString().slice(0, 10);
                 const isPartial = d.available && d.allDay === false;
                 const dayEvents = eventsByDate[d.date] || [];
+                const lock = lockedDates.get(d.date);
 
                 return (
                   <div
                     key={d.date}
-                    className={`invitation-day-card ${d.available ? (isPartial ? 'partial' : 'available') : ''} ${isToday ? 'today' : ''}`}
+                    className={`invitation-day-card ${d.available ? (isPartial ? 'partial' : 'available') : ''} ${isToday ? 'today' : ''} ${lock ? 'locked opacity-90' : ''}`}
                   >
                     {/* Day header row */}
                     <div className="flex items-center justify-between mb-2">
@@ -371,17 +408,33 @@ export default function InvitationPage() {
                           {isToday && <span className="ml-2 text-blue-600 font-medium">• Today</span>}
                         </div>
                       </div>
-                      <label className="invitation-checkbox-wrapper">
-                        <input
-                          type="checkbox"
-                          checked={d.available}
-                          onChange={() => toggleDay(i)}
-                          className="invitation-checkbox"
-                          aria-label={`Available on ${d.date}`}
-                        />
-                        <span className="checkmark"></span>
-                      </label>
+                      {lock ? (
+                        <span title="Locked — see note below" className="text-gray-400">
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                          </svg>
+                        </span>
+                      ) : (
+                        <label className="invitation-checkbox-wrapper">
+                          <input
+                            type="checkbox"
+                            checked={d.available}
+                            onChange={() => toggleDay(i)}
+                            className="invitation-checkbox"
+                            aria-label={`Available on ${d.date}`}
+                          />
+                          <span className="checkmark"></span>
+                        </label>
+                      )}
                     </div>
+
+                    {lock && (
+                      <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+                        Locked as <span className="font-semibold">{lock.available ? "Available" : "Unavailable"}</span> —
+                        {" "}you already {lock.status} <span className="font-medium">{lock.eventName || "an event"}</span> on this date.
+                        To change it, request a cancellation of that invitation from your profile page.
+                      </div>
+                    )}
 
                     {dayEvents.length > 0 && (
                       <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">

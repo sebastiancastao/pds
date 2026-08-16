@@ -357,7 +357,8 @@ export async function GET(
           .from('vendor_invitations')
           .select('vendor_id, availability')
           .in('vendor_id', batch)
-          .not('availability', 'is', null);
+          .not('availability', 'is', null)
+          .order('created_at', { ascending: false });
 
         if (invBatchError) {
           console.error('❌ Error fetching invitation batch:', invBatchError);
@@ -382,34 +383,44 @@ export async function GET(
     type VendorAvailMeta = { isPartial: boolean; startTime?: string; endTime?: string };
     const vendorMetaMap = new Map<string, VendorAvailMeta>();
 
+    // A vendor accumulates one vendor_invitations row per invite cycle, each
+    // carrying a full availability snapshot as of that submission. Rows are
+    // fetched most-recent-first, so the FIRST submission that says anything
+    // at all about eventDateKey is authoritative for that vendor — including
+    // an explicit "unavailable" — and older submissions must not override it.
+    const vendorDateResolved = new Set<string>();
+
     for (const inv of allInvitations) {
       if (!inv.availability) continue;
-      if (vendorMetaMap.has(inv.vendor_id)) continue;
+      if (vendorDateResolved.has(inv.vendor_id)) continue;
 
       const availability = normalizeAvailabilityPayload(inv.availability);
+      const dayMatch = availability.find(
+        (day: any) => typeof day?.date === "string" && day.date.slice(0, 10) === eventDateKey
+      );
 
-      for (const day of availability) {
-        const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
-        if (dayDate !== eventDateKey || day.available !== true) continue;
+      if (!dayMatch) continue; // this submission is silent on the date; check older ones
 
-        if (day.allDay !== false) {
-          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
-          break;
-        }
+      vendorDateResolved.add(inv.vendor_id);
 
-        const vendorStart: string | undefined = day.startTime;
-        const vendorEnd:   string | undefined = day.endTime;
+      if (dayMatch.available !== true) continue; // explicitly unavailable — do not mark available
 
-        if (!eventStart || !eventEnd || !vendorStart || !vendorEnd) {
-          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
-          break;
-        }
+      if (dayMatch.allDay !== false) {
+        vendorMetaMap.set(inv.vendor_id, { isPartial: false });
+        continue;
+      }
 
-        const mins = overlapMinutes(vendorStart, vendorEnd, eventStart, eventEnd);
-        if (mins >= MIN_OVERLAP_MINUTES) {
-          vendorMetaMap.set(inv.vendor_id, { isPartial: true, startTime: vendorStart, endTime: vendorEnd });
-        }
-        break;
+      const vendorStart: string | undefined = dayMatch.startTime;
+      const vendorEnd:   string | undefined = dayMatch.endTime;
+
+      if (!eventStart || !eventEnd || !vendorStart || !vendorEnd) {
+        vendorMetaMap.set(inv.vendor_id, { isPartial: false });
+        continue;
+      }
+
+      const mins = overlapMinutes(vendorStart, vendorEnd, eventStart, eventEnd);
+      if (mins >= MIN_OVERLAP_MINUTES) {
+        vendorMetaMap.set(inv.vendor_id, { isPartial: true, startTime: vendorStart, endTime: vendorEnd });
       }
     }
 

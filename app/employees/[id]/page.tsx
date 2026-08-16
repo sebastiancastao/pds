@@ -18,6 +18,7 @@ import { mergeSavedPdfFieldsOntoTemplate } from "@/app/lib/pdf-template-field-me
 import { stampHomeVenueAssignmentLayout } from "@/app/lib/home-venue-pdf-layout";
 import { renderCustomFormInputsOnDetectedLines } from "@/app/lib/custom-form-line-renderer";
 import { getKnownCustomFlatFormLayout } from "@/app/lib/custom-flat-form-layout";
+import { getTimezoneForState, toZonedIso } from "@/lib/timezones";
 
 type Employee = {
   id: string;
@@ -233,6 +234,21 @@ type EventInvitation = {
   confirmation_token?: string | null;
   stand_leader?: boolean;
 };
+
+// Mirrors the server-side gate in /api/invitation-cancellation-requests (POST):
+// requests are rejected once the event is this close.
+const MIN_HOURS_BEFORE_EVENT_CANCELLATION = 24;
+
+/** Hours until the invitation's event starts (in the event's own local/state time), or null if it can't be computed. */
+function getHoursUntilEventStart(inv: Pick<EventInvitation, "event_date" | "start_time" | "state">): number | null {
+  if (!inv.event_date || !inv.start_time) return null;
+  const dateStr = inv.event_date.split("T")[0];
+  const tz = getTimezoneForState(inv.state);
+  const iso = toZonedIso(dateStr, inv.start_time, tz);
+  const eventStartMs = iso ? new Date(iso).getTime() : NaN;
+  if (!Number.isFinite(eventStartMs)) return null;
+  return (eventStartMs - Date.now()) / (60 * 60 * 1000);
+}
 
 type SubmittedAvailabilityDay = {
   date: string;
@@ -587,6 +603,14 @@ export default function WorkerProfilePage() {
     const trimmedReason = cancelReason.trim();
     if (!trimmedReason) {
       setCancelRequestError("Please provide a reason for the cancellation.");
+      return;
+    }
+
+    const hoursUntilStart = getHoursUntilEventStart(cancelModalInvitation);
+    if (hoursUntilStart !== null && hoursUntilStart < MIN_HOURS_BEFORE_EVENT_CANCELLATION) {
+      setCancelRequestError(
+        `Cancellation requests must be submitted at least ${MIN_HOURS_BEFORE_EVENT_CANCELLATION} hours before the event starts.`
+      );
       return;
     }
 
@@ -3096,10 +3120,32 @@ export default function WorkerProfilePage() {
                     <span className="ml-3 text-gray-600">Loading…</span>
                   </div>
                 ) : (() => {
+                  const eventDateKey = (value?: string | null): string | null => {
+                    if (!value) return null;
+                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+                    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+                  };
+
+                  // Pending team invitations for a date the vendor has explicitly
+                  // marked themselves unavailable on shouldn't be shown as
+                  // actionable — they were sent before/around a stale or
+                  // conflicting availability answer. Already-responded
+                  // (confirmed/declined) invitations stay visible as history.
+                  const unavailableDateKeys = new Set(
+                    submittedAvailability.filter(d => d.available === false).map(d => d.date)
+                  );
+                  const isSelfDeclaredUnavailable = (inv: EventInvitation): boolean => {
+                    if (inv.source !== "team") return false;
+                    if (inv.status !== "pending_confirmation" && inv.status !== "pending") return false;
+                    const key = eventDateKey(inv.event_date);
+                    return !!key && unavailableDateKeys.has(key);
+                  };
+                  const visibleInvitations = eventInvitations.filter(inv => !isSelfDeclaredUnavailable(inv));
+
                   // Build lookup: event_id → per_event row
                   const perEventMap = new Map((summary?.per_event ?? []).map(r => [r.event_id, r]));
                   // Events with time entries but no team invitation (manually entered via self-timesheet)
-                  const invitedEventIds = new Set(eventInvitations.map(inv => inv.event_id));
+                  const invitedEventIds = new Set(visibleInvitations.map(inv => inv.event_id));
                   const orphanedPerEvents = (summary?.per_event ?? []).filter(r =>
                     r.event_id && r.event_id !== "unknown" && !invitedEventIds.has(r.event_id) && r.is_team_member === false
                   );
@@ -3121,18 +3167,13 @@ export default function WorkerProfilePage() {
                     const d = String(now.getDate()).padStart(2, "0");
                     return `${y}-${m}-${d}`;
                   })();
-                  const eventDateKey = (value?: string | null): string | null => {
-                    if (!value) return null;
-                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
-                    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
-                  };
                   const isUpcomingInvitation = (inv: EventInvitation): boolean => {
                     const key = eventDateKey(inv.end_date) ?? eventDateKey(inv.event_date);
                     if (!key) return true; // undated → keep it actionable
                     return key >= todayKey;
                   };
-                  const upcomingInvitations = eventInvitations.filter(isUpcomingInvitation);
-                  const pastInvitations = eventInvitations.filter((inv) => !isUpcomingInvitation(inv));
+                  const upcomingInvitations = visibleInvitations.filter(isUpcomingInvitation);
+                  const pastInvitations = visibleInvitations.filter((inv) => !isUpcomingInvitation(inv));
                   const nonEventCount = (entriesByEvent.get("__none__") ?? []).length;
                   const hasPastRows =
                     pastInvitations.length > 0 || orphanedPerEvents.length > 0 || nonEventCount > 0;
@@ -3230,6 +3271,11 @@ export default function WorkerProfilePage() {
                                   </span>
                                 );
                               }
+
+                              const hoursUntilStart = getHoursUntilEventStart(inv);
+                              const tooCloseToEvent = hoursUntilStart !== null && hoursUntilStart < MIN_HOURS_BEFORE_EVENT_CANCELLATION;
+                              const cancelDisabledTitle = `Cancellations must be requested at least ${MIN_HOURS_BEFORE_EVENT_CANCELLATION} hours before the event starts`;
+
                               if (cancelReq?.status === "rejected") {
                                 return (
                                   <span className="inline-flex items-center gap-1.5">
@@ -3238,9 +3284,10 @@ export default function WorkerProfilePage() {
                                     </span>
                                     <button
                                       type="button"
+                                      disabled={tooCloseToEvent}
                                       onClick={() => openCancelModal(inv)}
-                                      title="Submit a new cancellation request for approval"
-                                      className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-white text-red-600 hover:bg-red-50 transition-colors"
+                                      title={tooCloseToEvent ? cancelDisabledTitle : "Submit a new cancellation request for approval"}
+                                      className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white transition-colors"
                                     >
                                       Request Again
                                     </button>
@@ -3250,9 +3297,10 @@ export default function WorkerProfilePage() {
                               return (
                                 <button
                                   type="button"
+                                  disabled={tooCloseToEvent}
                                   onClick={() => openCancelModal(inv)}
-                                  title="Request to cancel this already-responded invitation (requires approval)"
-                                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-white text-red-600 hover:bg-red-50 transition-colors"
+                                  title={tooCloseToEvent ? cancelDisabledTitle : "Request to cancel this already-responded invitation (requires approval)"}
+                                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white transition-colors"
                                 >
                                   Cancel Invitation
                                 </button>
@@ -3312,7 +3360,7 @@ export default function WorkerProfilePage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {eventInvitations.length === 0 && orphanedPerEvents.length === 0 && (entriesByEvent.get("__none__") ?? []).length === 0 && (
+                          {visibleInvitations.length === 0 && orphanedPerEvents.length === 0 && (entriesByEvent.get("__none__") ?? []).length === 0 && (
                             <tr>
                               <td colSpan={7} className="p-6 text-center text-gray-500">No event invitations yet.</td>
                             </tr>

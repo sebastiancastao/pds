@@ -392,12 +392,6 @@ export default function EventDashboardPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [uninvitedTeamMembers, setUninvitedTeamMembers] = useState<UninvitedTeamMemberRecord[]>([]);
   const [cancellationRequests, setCancellationRequests] = useState<CancellationRequestRecord[]>([]);
-  const [showCancelRequestModal, setShowCancelRequestModal] = useState(false);
-  const [cancelRequestMember, setCancelRequestMember] = useState<any>(null);
-  const [cancelRequestDate, setCancelRequestDate] = useState<string>("");
-  const [cancelRequestReason, setCancelRequestReason] = useState<string>("");
-  const [submittingCancelRequest, setSubmittingCancelRequest] = useState(false);
-  const [cancelRequestError, setCancelRequestError] = useState<string>("");
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [teamSearch, setTeamSearch] = useState<string>("");
   const [showAddVendorModal, setShowAddVendorModal] = useState(false);
@@ -2072,73 +2066,6 @@ export default function EventDashboardPage() {
     const memberId = String(member?.id || "");
     if (!memberId) return undefined;
     return cancellationRequests.find((c) => c.team_member_id === memberId);
-  };
-
-  const openCancelRequestModal = (member: any) => {
-    setCancelRequestMember(member);
-    setCancelRequestDate(new Date().toISOString().slice(0, 10));
-    setCancelRequestReason("");
-    setCancelRequestError("");
-    setShowCancelRequestModal(true);
-  };
-
-  const closeCancelRequestModal = () => {
-    if (submittingCancelRequest) return;
-    setShowCancelRequestModal(false);
-    setCancelRequestMember(null);
-    setCancelRequestDate("");
-    setCancelRequestReason("");
-    setCancelRequestError("");
-  };
-
-  const handleSubmitCancelRequest = async () => {
-    if (!eventId || !cancelRequestMember?.id) return;
-
-    if (!cancelRequestDate) {
-      setCancelRequestError("Please select the cancellation date.");
-      return;
-    }
-    if (!cancelRequestReason.trim()) {
-      setCancelRequestError("Please provide a reason for the cancellation.");
-      return;
-    }
-
-    const memberName = getTeamMemberDisplayName(cancelRequestMember);
-    setSubmittingCancelRequest(true);
-    setCancelRequestError("");
-    try {
-      const token = await getSessionToken();
-      const res = await fetch(`/api/events/${eventId}/team/${cancelRequestMember.id}/cancel-request`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          cancellation_date: cancelRequestDate,
-          reason: cancelRequestReason.trim(),
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to record cancellation");
-      }
-
-      if (data?.record) {
-        setCancellationRequests((prev) => [data.record, ...prev]);
-      }
-
-      setMessage(data?.message || `Cancellation recorded for ${memberName}.`);
-      setShowCancelRequestModal(false);
-      setCancelRequestMember(null);
-      setCancelRequestDate("");
-      setCancelRequestReason("");
-    } catch (err: any) {
-      setCancelRequestError(err?.message || "Failed to record cancellation");
-    } finally {
-      setSubmittingCancelRequest(false);
-    }
   };
 
   const handleUpdateTeamEventRole = async (
@@ -6931,29 +6858,6 @@ export default function EventDashboardPage() {
                                   {canUninviteTeamMember && (
                                     <td className="px-3 py-3 whitespace-nowrap text-right">
                                       <div className="flex items-center justify-end gap-3">
-                                        {member.status === "confirmed" && (
-                                          existingCancellationRequest ? (
-                                            <span
-                                              className="px-2 py-1 rounded text-xs font-semibold bg-red-100 text-red-700 whitespace-nowrap"
-                                              title={`Cancelled for ${
-                                                existingCancellationRequest.cancellation_date
-                                                  ? new Date(`${existingCancellationRequest.cancellation_date}T00:00:00`).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
-                                                  : "N/A"
-                                              }: ${existingCancellationRequest.reason}`}
-                                            >
-                                              Cancellation Filed
-                                            </span>
-                                          ) : (
-                                            <button
-                                              type="button"
-                                              onClick={() => openCancelRequestModal(member)}
-                                              className="text-amber-700 hover:text-amber-800 font-medium text-sm transition-colors"
-                                              title="Record a cancellation and notify the room manager"
-                                            >
-                                              Cancel Request
-                                            </button>
-                                          )
-                                        )}
                                         <button
                                           onClick={() => {
                                             void handleUninviteTeamMember(member);
@@ -9778,99 +9682,6 @@ export default function EventDashboardPage() {
         </div>
       )}
 
-      {showCancelRequestModal && (
-        <div
-          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={closeCancelRequestModal}
-        >
-          <div
-            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">Cancel Request</h3>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Record a cancellation for{" "}
-                  <span className="font-medium text-gray-700">
-                    {cancelRequestMember ? getTeamMemberDisplayName(cancelRequestMember) : "this team member"}
-                  </span>
-                  . The venue's room manager will be emailed automatically.
-                </p>
-              </div>
-              <button
-                onClick={closeCancelRequestModal}
-                disabled={submittingCancelRequest}
-                className="text-gray-400 hover:text-gray-600 disabled:text-gray-300"
-                aria-label="Close"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="px-6 py-5 space-y-4">
-              {cancelRequestError && (
-                <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
-                  {cancelRequestError}
-                </div>
-              )}
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Cancellation Date <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={cancelRequestDate}
-                  onChange={(e) => setCancelRequestDate(e.target.value)}
-                  disabled={submittingCancelRequest}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Reason <span className="text-red-500">*</span>
-                </label>
-                <textarea
-                  value={cancelRequestReason}
-                  onChange={(e) => setCancelRequestReason(e.target.value)}
-                  placeholder="Explain why this team member is cancelling..."
-                  rows={3}
-                  disabled={submittingCancelRequest}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                />
-              </div>
-
-              <p className="text-xs text-gray-500">
-                This will be recorded on the event and an email will be sent to the room manager for this venue,
-                CC'ing management and HR.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200">
-              <button
-                onClick={closeCancelRequestModal}
-                disabled={submittingCancelRequest}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  void handleSubmitCancelRequest();
-                }}
-                disabled={submittingCancelRequest}
-                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-gray-400"
-              >
-                {submittingCancelRequest ? "Submitting..." : "Submit Cancellation"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

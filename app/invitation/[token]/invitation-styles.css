@@ -31,6 +31,25 @@
   border-width: 2px;
 }
 
+/* Locked card state — already confirmed/declined for a real event on this
+   date, so it's not interactive. Keeps the available/partial tint (locked
+   dates are still colored by their locked value) but drops the hover affordance. */
+.invitation-day-card.locked {
+  cursor: default;
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(0, 0, 0, 0.02),
+    rgba(0, 0, 0, 0.02) 10px,
+    transparent 10px,
+    transparent 20px
+  );
+}
+
+.invitation-day-card.locked:hover {
+  transform: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
 /* Custom Checkbox */
 .invitation-checkbox-wrapper {
   position: relative;

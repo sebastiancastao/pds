@@ -23,6 +23,33 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
 const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
 
+type AvailabilityDay = {
+  date: string;
+  available: boolean;
+  allDay?: boolean;
+  startTime?: string;
+  endTime?: string;
+};
+
+function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((day: any) => day && typeof day.date === "string");
+  }
+
+  // Backward compatibility for malformed legacy rows where availability
+  // was stored as an object map (e.g. { "2026-02-13": true }).
+  if (payload && typeof payload === "object") {
+    return Object.entries(payload as Record<string, unknown>)
+      .filter(([date]) => typeof date === "string")
+      .map(([date, available]) => ({
+        date,
+        available: available === true,
+      }));
+  }
+
+  return [];
+}
+
 function formatEventDate(value: string | null | undefined): string {
   if (!value) return "Date TBD";
   const normalized = String(value).trim();
@@ -143,6 +170,48 @@ export async function POST(
     const eventDate = formatEventDate(rawDate);
     const eventStartTime = formatEventStartTime(eventData.start_time);
 
+    // Skip vendors who explicitly marked themselves unavailable on the event
+    // date in their most recent availability submission. Mirrors the guard
+    // in /api/events/[id]/team — the invite picker (available-vendors)
+    // already filters these out, but stale modal data, races, and direct
+    // API calls can bypass it. Non Event Time Sheets don't go through the
+    // invitation/availability flow, so they're exempt.
+    const isNonEventTimesheet = String((eventData as any).event_type || '').toLowerCase() === 'special';
+    const selfDeclaredUnavailableIds = new Set<string>();
+
+    if (!isNonEventTimesheet && eventData.event_date) {
+      const eventDateKey = String(eventData.event_date).slice(0, 10);
+      const { data: availabilityRows, error: availabilityError } = await supabaseAdmin
+        .from('vendor_invitations')
+        .select('vendor_id, availability, created_at')
+        .in('vendor_id', vendorIds)
+        .not('availability', 'is', null)
+        .order('created_at', { ascending: false });
+
+      if (availabilityError) {
+        console.error('Error checking vendor self-declared availability:', availabilityError);
+      } else {
+        // Rows come back most-recent-first per vendor; the first submission
+        // that says anything about eventDateKey is authoritative, even if
+        // it's an explicit "unavailable" — older submissions must not
+        // override it.
+        const vendorDateResolved = new Set<string>();
+        for (const row of availabilityRows || []) {
+          const vendorId = String((row as any)?.vendor_id || '').trim();
+          if (!vendorId || vendorDateResolved.has(vendorId)) continue;
+
+          const days = normalizeAvailabilityPayload((row as any).availability);
+          const dayMatch = days.find((d) => d.date.slice(0, 10) === eventDateKey);
+          if (!dayMatch) continue; // silent on this date — check older submissions
+
+          vendorDateResolved.add(vendorId);
+          if (dayMatch.available !== true) {
+            selfDeclaredUnavailableIds.add(vendorId);
+          }
+        }
+      }
+    }
+
     // Resolve per-venue BCC recipients from venue_email_bcc settings
     const venueBccEmails = await getVenueBccEmails(eventData.venue, supabaseAdmin);
 
@@ -155,6 +224,11 @@ export async function POST(
 
       if (!isValidEmail(normalizedEmail)) {
         failedEmails.push(`Skipped ${vendor.id}: invalid email "${vendor.email || "missing"}"`);
+        continue;
+      }
+
+      if (selfDeclaredUnavailableIds.has(vendor.id)) {
+        failedEmails.push(`Skipped ${normalizedEmail}: marked themselves unavailable on ${eventDate}`);
         continue;
       }
 

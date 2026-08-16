@@ -124,6 +124,33 @@ function toFiniteNumber(value: unknown): number | null {
   return null;
 }
 
+type AvailabilityDay = {
+  date: string;
+  available: boolean;
+  allDay?: boolean;
+  startTime?: string;
+  endTime?: string;
+};
+
+function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((day: any) => day && typeof day.date === "string");
+  }
+
+  // Backward compatibility for malformed legacy rows where availability
+  // was stored as an object map (e.g. { "2026-02-13": true }).
+  if (payload && typeof payload === "object") {
+    return Object.entries(payload as Record<string, unknown>)
+      .filter(([date]) => typeof date === "string")
+      .map(([date, available]) => ({
+        date,
+        available: available === true,
+      }));
+  }
+
+  return [];
+}
+
 /**
  * POST /api/events/[id]/team
  * Create a team for an event by assigning vendors
@@ -332,7 +359,7 @@ export async function POST(
     });
 
     const conflictedVendorIds = newVendorIds.filter(id => sameDayConflicts.has(id));
-    const invitableVendorIds = newVendorIds.filter(id => !sameDayConflicts.has(id));
+    const conflictFreeVendorIds = newVendorIds.filter(id => !sameDayConflicts.has(id));
 
     const conflictNote = conflictedVendorIds.length > 0
       ? ` Skipped ${conflictedVendorIds.length} vendor${conflictedVendorIds.length !== 1 ? 's' : ''} already booked on another event that day: ${conflictedVendorIds.map(id => {
@@ -342,12 +369,66 @@ export async function POST(
         }).join(', ')}.`
       : '';
 
+    // Server-side guard against inviting vendors who explicitly marked
+    // themselves unavailable on the event date in their most recent
+    // availability submission. The invite picker (available-vendors)
+    // already filters these out, but stale modal data, races, and direct
+    // API calls can bypass it — same rationale as the same-day conflict
+    // guard above. Non Event Time Sheets don't go through the
+    // invitation/availability flow, so they're exempt.
+    const isNonEventTimesheet = String((event as any).event_type || '').toLowerCase() === 'special';
+    const selfDeclaredUnavailableIds = new Set<string>();
+
+    if (!isNonEventTimesheet && conflictFreeVendorIds.length > 0 && event.event_date) {
+      const eventDateKey = String(event.event_date).slice(0, 10);
+      const { data: availabilityRows, error: availabilityError } = await supabaseAdmin
+        .from('vendor_invitations')
+        .select('vendor_id, availability, created_at')
+        .in('vendor_id', conflictFreeVendorIds)
+        .not('availability', 'is', null)
+        .order('created_at', { ascending: false });
+
+      if (availabilityError) {
+        console.warn('[TEAM] Could not check vendor self-declared availability:', availabilityError);
+      } else {
+        // Rows come back most-recent-first per vendor; the first submission
+        // that says anything about eventDateKey is authoritative, even if
+        // it's an explicit "unavailable" — older submissions must not
+        // override it.
+        const vendorDateResolved = new Set<string>();
+        for (const row of availabilityRows || []) {
+          const vendorId = String((row as any)?.vendor_id || '').trim();
+          if (!vendorId || vendorDateResolved.has(vendorId)) continue;
+
+          const days = normalizeAvailabilityPayload((row as any).availability);
+          const dayMatch = days.find((d) => d.date.slice(0, 10) === eventDateKey);
+          if (!dayMatch) continue; // silent on this date — check older submissions
+
+          vendorDateResolved.add(vendorId);
+          if (dayMatch.available !== true) {
+            selfDeclaredUnavailableIds.add(vendorId);
+          }
+        }
+      }
+    }
+
+    const unavailableVendorIds = conflictFreeVendorIds.filter(id => selfDeclaredUnavailableIds.has(id));
+    const invitableVendorIds = conflictFreeVendorIds.filter(id => !selfDeclaredUnavailableIds.has(id));
+
+    const unavailableNote = unavailableVendorIds.length > 0
+      ? ` Skipped ${unavailableVendorIds.length} vendor${unavailableVendorIds.length !== 1 ? 's' : ''} who marked themselves unavailable that day: ${unavailableVendorIds.map(id => {
+          const vendor = (vendors as any[]).find(v => v.id === id);
+          return vendor?.email || id;
+        }).join(', ')}.`
+      : '';
+
     if (invitableVendorIds.length === 0) {
       return NextResponse.json({
         success: true,
-        message: `No new vendors were added.${conflictNote}`,
+        message: `No new vendors were added.${conflictNote}${unavailableNote}`,
         teamSize: existingVendorIds.size,
         skippedConflicts: conflictedVendorIds.length,
+        skippedUnavailable: unavailableVendorIds.length,
         emailStats: {
           sent: 0,
           failed: 0
@@ -463,11 +544,12 @@ export async function POST(
         success: true,
         message: (alreadyOnTeam > 0
           ? `Added ${invitableVendorIds.length} new vendor${invitableVendorIds.length !== 1 ? 's' : ''} as confirmed (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}.`
-          : `Added ${invitableVendorIds.length} vendor${invitableVendorIds.length !== 1 ? 's' : ''} to the team as confirmed. Total team size: ${totalTeamSize}.`) + conflictNote,
+          : `Added ${invitableVendorIds.length} vendor${invitableVendorIds.length !== 1 ? 's' : ''} to the team as confirmed. Total team size: ${totalTeamSize}.`) + conflictNote + unavailableNote,
         teamSize: totalTeamSize,
         newMembers: invitableVendorIds.length,
         alreadyOnTeam: alreadyOnTeam,
         skippedConflicts: conflictedVendorIds.length,
+        skippedUnavailable: unavailableVendorIds.length,
         autoConfirmed: true
       }, { status: 200 });
     }
@@ -576,11 +658,12 @@ export async function POST(
       success: true,
       message: (alreadyOnTeam > 0
         ? `Added ${invitableVendorIds.length} new vendor${invitableVendorIds.length !== 1 ? 's' : ''} to the team (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}. Awaiting confirmation.`
-        : `Team invitations sent to ${invitableVendorIds.length} vendor${invitableVendorIds.length !== 1 ? 's' : ''}. Total team size: ${totalTeamSize}. Awaiting confirmation.`) + conflictNote,
+        : `Team invitations sent to ${invitableVendorIds.length} vendor${invitableVendorIds.length !== 1 ? 's' : ''}. Total team size: ${totalTeamSize}. Awaiting confirmation.`) + conflictNote + unavailableNote,
       teamSize: totalTeamSize,
       newMembers: invitableVendorIds.length,
       alreadyOnTeam: alreadyOnTeam,
       skippedConflicts: conflictedVendorIds.length,
+      skippedUnavailable: unavailableVendorIds.length,
       emailStats: {
         sent: emailsSent,
         failed: emailsFailed
