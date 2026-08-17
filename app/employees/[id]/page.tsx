@@ -186,6 +186,8 @@ type EmailLogEntry = {
   error_message: string | null;
   provider_message_id: string | null;
   created_at: string;
+  read_at: string | null;
+  read_by: string | null;
 };
 
 const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
@@ -1059,6 +1061,31 @@ export default function WorkerProfilePage() {
         });
     });
   }, [employeeId, refreshTick]);
+
+  // Opens an inbox email and marks it read (first open wins) so the list
+  // can show a "Read" chip going forward.
+  const openInboxEmail = (mail: EmailLogEntry) => {
+    setSelectedInboxEmail(mail);
+    if (mail.read_at || !employeeId) return;
+
+    // Optimistic: show the chip immediately rather than waiting on the network.
+    const readAt = new Date().toISOString();
+    setEmailInbox((prev) => prev.map((m) => (m.id === mail.id ? { ...m, read_at: readAt } : m)));
+    setSelectedInboxEmail((prev) => (prev && prev.id === mail.id ? { ...prev, read_at: readAt } : prev));
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetch(`/api/employees/${employeeId}/emails`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ emailId: mail.id }),
+      }).catch(() => {
+        // Non-fatal: worst case the chip re-syncs on next inbox refresh.
+      });
+    });
+  };
 
   // Fetch I-9 documents after worker is loaded
   useEffect(() => {
@@ -4959,7 +4986,7 @@ export default function WorkerProfilePage() {
                     <button
                       key={mail.id}
                       type="button"
-                      onClick={() => setSelectedInboxEmail(mail)}
+                      onClick={() => openInboxEmail(mail)}
                       className="w-full text-left px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 hover:bg-gray-50 transition-colors"
                     >
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 ${
@@ -4969,6 +4996,12 @@ export default function WorkerProfilePage() {
                       }`}>
                         {mail.status === "sent" ? "Delivered" : "Failed"}
                       </span>
+
+                      {mail.read_at && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 bg-blue-50 text-blue-700 border-blue-200">
+                          Read
+                        </span>
+                      )}
 
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-gray-900 truncate">{mail.subject}</p>

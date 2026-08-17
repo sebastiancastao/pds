@@ -65,7 +65,7 @@ export async function GET(
     const { data, error } = await supabaseAdmin
       .from("email_logs")
       .select(
-        "id, subject, html_body, from_address, recipient_email, recipient_type, status, error_message, provider_message_id, created_at"
+        "id, subject, html_body, from_address, recipient_email, recipient_type, status, error_message, provider_message_id, created_at, read_at, read_by"
       )
       .eq("recipient_user_id", employeeId)
       .order("created_at", { ascending: false })
@@ -76,6 +76,77 @@ export async function GET(
     }
 
     return NextResponse.json({ emails: data ?? [] });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Unhandled server error" },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH /api/employees/[id]/emails
+// Marks a single email (by id) as read by the caller. Idempotent — the
+// first open wins, later opens don't overwrite read_at/read_by.
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const caller = await getAuthedUser(req);
+    if (!caller?.id) {
+      return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
+    }
+
+    const employeeId = params.id;
+
+    const isOwner = caller.id === employeeId;
+    if (!isOwner) {
+      const { data: callerRecord } = await supabaseAdmin
+        .from("users")
+        .select("role")
+        .eq("id", caller.id)
+        .maybeSingle();
+      const role = String(callerRecord?.role || "").toLowerCase();
+      if (!HR_ROLES.has(role)) {
+        return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+      }
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const emailId = body?.emailId;
+    if (!emailId || typeof emailId !== "string") {
+      return NextResponse.json({ error: "emailId is required." }, { status: 400 });
+    }
+
+    // Only set read_at/read_by if this email hasn't already been read, so the
+    // chip reflects the first open rather than the most recent viewer.
+    const { data, error } = await supabaseAdmin
+      .from("email_logs")
+      .update({ read_at: new Date().toISOString(), read_by: caller.id })
+      .eq("id", emailId)
+      .eq("recipient_user_id", employeeId)
+      .is("read_at", null)
+      .select("id, read_at, read_by")
+      .maybeSingle();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    if (data) {
+      return NextResponse.json({ email: data });
+    }
+
+    // Already read (or no matching row) — return current state so the UI can
+    // still reconcile without treating this as an error.
+    const { data: existing } = await supabaseAdmin
+      .from("email_logs")
+      .select("id, read_at, read_by")
+      .eq("id", emailId)
+      .eq("recipient_user_id", employeeId)
+      .maybeSingle();
+
+    return NextResponse.json({ email: existing ?? null });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Unhandled server error" },

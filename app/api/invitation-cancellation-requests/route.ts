@@ -538,7 +538,11 @@ export async function POST(req: NextRequest) {
         getDisplayNameAndEmail(user.id),
       ]);
 
-      const approvalUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app"}/cancellation-requests?requestId=${inserted.id}`;
+      const isTestingOrigin = req.nextUrl.origin === "https://pds-git-testing-sebastiancastaos-projects.vercel.app";
+      const appUrl = isTestingOrigin
+        ? "https://pds-git-testing-sebastiancastaos-projects.vercel.app"
+        : process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app";
+      const approvalUrl = `${appUrl}/cancellation-requests?requestId=${inserted.id}`;
 
       const emailResult = await sendEmailWithRetry({
         to: APPROVAL_NOTIFICATION_EMAILS,

@@ -378,7 +378,11 @@ export async function POST(req: NextRequest) {
       const requesterName = nameFromProfile(getSingleProfile((requesterRow as any)?.profiles), (requesterRow as any)?.email || callerEmail);
       const vendorName = nameFromProfile(getSingleProfile(inserted.vendor?.profiles), inserted.vendor?.email);
 
-      const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app"}/vendor-invite-requests`;
+      const isTestingOrigin = req.nextUrl.origin === "https://pds-git-testing-sebastiancastaos-projects.vercel.app";
+      const appUrl = isTestingOrigin
+        ? "https://pds-git-testing-sebastiancastaos-projects.vercel.app"
+        : process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app";
+      const reviewUrl = `${appUrl}/vendor-invite-requests`;
 
       const emailResult = await sendEmailWithRetry({
         to: APPROVAL_NOTIFICATION_EMAILS,
