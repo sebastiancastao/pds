@@ -10,8 +10,6 @@ import {
   geocodeAddress,
   delay
 } from "@/lib/geocoding";
-import { isVendorInviteApprovalExempt, isVendorInviteBlocked } from "@/lib/vendorInvites";
-
 export const dynamic = 'force-dynamic';
 
 const supabaseAdmin = createClient(
@@ -230,40 +228,6 @@ export async function GET(req: NextRequest) {
               scopeEnd
             });
           }
-        }
-      }
-    }
-
-    // Gather each vendor's single most recent invitation (regardless of
-    // whether they've responded yet) to compute the same "already submitted
-    // for their current period" block the send endpoints enforce — so the
-    // picker can show it up front instead of only after a send attempt.
-    const latestInvitationByVendor = new Map<
-      string,
-      { end_date: string | null; responded_at: string | null }
-    >();
-    if (vendorIds.length > 0) {
-      const invitationBatches = chunkArray(vendorIds, 200);
-
-      for (const batch of invitationBatches) {
-        const { data: invitationRows, error: invitationsErr } = await supabaseAdmin
-          .from('vendor_invitations')
-          .select('vendor_id, created_at, end_date, responded_at')
-          .in('vendor_id', batch)
-          .order('created_at', { ascending: false });
-
-        if (invitationsErr) {
-          console.error('[ALL-VENDORS] Error fetching latest invitations batch:', invitationsErr);
-          continue;
-        }
-
-        for (const row of invitationRows || []) {
-          const vendorId = (row as any)?.vendor_id;
-          if (!vendorId || latestInvitationByVendor.has(vendorId)) continue;
-          latestInvitationByVendor.set(vendorId, {
-            end_date: (row as any).end_date || null,
-            responded_at: (row as any).responded_at || null
-          });
         }
       }
     }
@@ -495,10 +459,6 @@ export async function GET(req: NextRequest) {
 
         // Explicitly construct the response object to avoid exposing sensitive/encrypted fields
         const latestAvailability = latestAvailabilityByVendor.get(vendor.id);
-        const normalizedVendorEmail = String(vendor.email || '').trim().toLowerCase();
-        const isExemptFromInviteApproval = isVendorInviteApprovalExempt(normalizedVendorEmail);
-        const latestInvitation = latestInvitationByVendor.get(vendor.id) || null;
-        const inviteBlocked = !isExemptFromInviteApproval && isVendorInviteBlocked(latestInvitation);
         return {
           id: vendor.id,
           email: vendor.email,
@@ -510,12 +470,6 @@ export async function GET(req: NextRequest) {
           availability_responded_at: latestAvailability?.respondedAt || null,
           availability_scope_start: latestAvailability?.scopeStart || null,
           availability_scope_end: latestAvailability?.scopeEnd || null,
-          // Whether a new calendar-availability invite to this vendor would
-          // currently be held for approval (see isVendorInviteBlocked in
-          // lib/vendorInvites.ts) — shown as a badge in the invite picker so
-          // it's visible before sending, not just in the send result.
-          invite_blocked: inviteBlocked,
-          invite_period_end: inviteBlocked ? latestInvitation?.end_date || null : null,
           profiles: {
             first_name: firstName,
             last_name: lastName,
