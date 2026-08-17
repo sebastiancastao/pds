@@ -6,6 +6,7 @@ export const fetchCache = 'force-no-store';
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
+import { getMergedVendorAvailability } from "@/lib/vendorAvailability";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,43 +16,6 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-type AvailabilityDay = {
-  date: string;
-  available: boolean;
-  notes: string | null;
-};
-
-const normalizeAvailabilityPayload = (payload: unknown): AvailabilityDay[] => {
-  if (Array.isArray(payload)) {
-    return payload
-      .filter(
-        (
-          day
-        ): day is { date: string; available?: unknown; notes?: unknown } =>
-          !!day &&
-          typeof day === "object" &&
-          typeof (day as { date?: unknown }).date === "string"
-      )
-      .map((day) => ({
-        date: day.date.slice(0, 10),
-        available: day.available === true,
-        notes: typeof day.notes === "string" ? day.notes : null,
-      }));
-  }
-
-  if (payload && typeof payload === "object") {
-    return Object.entries(payload as Record<string, unknown>).map(
-      ([date, available]) => ({
-        date: date.slice(0, 10),
-        available: available === true,
-        notes: null,
-      })
-    );
-  }
-
-  return [];
-};
 
 export async function GET(
   req: NextRequest,
@@ -83,7 +47,7 @@ export async function GET(
     const [
       { data: teamRows, error: teamErr },
       { data: locationRows, error: locationErr },
-      { data: availabilityRows, error: availabilityErr },
+      { days: availabilitySubmissions, lastSubmittedAt: latestSubmission },
     ] = await Promise.all([
       // Fetch team invitations from event_teams
       supabaseAdmin
@@ -132,14 +96,8 @@ export async function GET(
         .eq("vendor_id", userId)
         .order("created_at", { ascending: false }),
 
-      // Fetch submitted availability from vendor invitations
-      supabaseAdmin
-        .from("vendor_invitations")
-        .select("availability, responded_at, updated_at, created_at")
-        .eq("vendor_id", userId)
-        .not("availability", "is", null)
-        .order("responded_at", { ascending: false, nullsFirst: false })
-        .order("updated_at", { ascending: false }),
+      // Merged, latest-per-date availability (submissions + approved corrections)
+      getMergedVendorAvailability(supabaseAdmin, userId),
     ]);
 
     if (teamErr) {
@@ -151,53 +109,6 @@ export async function GET(
       console.error("event_location_assignments query error:", locationErr);
       return NextResponse.json({ error: locationErr.message }, { status: 500 });
     }
-
-    if (availabilityErr) {
-      console.error("vendor_invitations query error:", availabilityErr);
-      return NextResponse.json({ error: availabilityErr.message }, { status: 500 });
-    }
-
-    // Build a latest-per-date view of submitted availability.
-    const availabilityByDate = new Map<
-      string,
-      {
-        available: boolean;
-        notes: string | null;
-        submitted_at: string | null;
-      }
-    >();
-    const latestSubmission =
-      (availabilityRows || [])
-        .map(
-          (row: any) =>
-            row.responded_at || row.updated_at || row.created_at || null
-        )
-        .find((value: string | null): value is string => typeof value === "string") ||
-      null;
-
-    for (const row of availabilityRows || []) {
-      const submittedAt =
-        row.responded_at || row.updated_at || row.created_at || null;
-      const days = normalizeAvailabilityPayload(row.availability);
-
-      for (const day of days) {
-        if (!day.date || availabilityByDate.has(day.date)) continue;
-        availabilityByDate.set(day.date, {
-          available: day.available,
-          notes: day.notes,
-          submitted_at: submittedAt,
-        });
-      }
-    }
-
-    const availabilitySubmissions = Array.from(availabilityByDate.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, value]) => ({
-        date,
-        available: value.available,
-        notes: value.notes,
-        submitted_at: value.submitted_at,
-      }));
 
     // Normalize team rows
     const teamInvitations = (teamRows || []).map((row: any) => {

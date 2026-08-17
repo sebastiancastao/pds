@@ -53,6 +53,8 @@ type Vendor = {
   availability_responded_at?: string | null;
   availability_scope_start?: string | null;
   availability_scope_end?: string | null;
+  invite_blocked?: boolean;
+  invite_period_end?: string | null;
   profiles: {
     first_name: string;
     last_name: string;
@@ -181,6 +183,19 @@ export default function DashboardPage() {
   const [selectedVendorState, setSelectedVendorState] = useState<string>("all");
   const [selectedVendorCity, setSelectedVendorCity] = useState<string>("all");
   const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
+  // Vendors the bulk-invite endpoint held back because they already
+  // submitted availability for their current invitation period (see
+  // isVendorInviteBlocked in lib/vendorInvites.ts) — an approval request was
+  // auto-filed and the review team notified; no action needed here.
+  const [blockedVendors, setBlockedVendors] = useState<
+    Array<{
+      vendorId: string;
+      email: string;
+      name: string;
+      periodEnd: string;
+      requestStatus: "pending_review" | "already_pending_review";
+    }>
+  >([]);
 
   // Team creation for a given event
   const [showTeamModal, setShowTeamModal] = useState(false);
@@ -992,6 +1007,7 @@ export default function DashboardPage() {
     console.log('[DASHBOARD] ð Opening vendor modal with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name });
     setSelectedRegion(initialRegion);
     setMessage("");
+    setBlockedVendors([]);
     void loadRegions();
     void loadAllVendors(initialRegion);
   };
@@ -1003,6 +1019,7 @@ export default function DashboardPage() {
     setSelectedVendorState("all");
     setSelectedVendorCity("all");
     setMessage("");
+    setBlockedVendors([]);
   };
   const handleRegionChange = async (newRegion: string) => {
     console.log('[DASHBOARD] ð Region changed:', { from: selectedRegion, to: newRegion, userRole });
@@ -1035,6 +1052,7 @@ export default function DashboardPage() {
     if (selectedVendors.size === 0) return;
     setSubmitting(true);
     setMessage("");
+    setBlockedVendors([]);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch("/api/invitations/bulk-invite", {
@@ -1047,9 +1065,9 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage(`Successfully sent ${data.stats.sent} invitation(s)!`);
+        setMessage(data.message || `Successfully sent ${data.stats.sent} invitation(s)!`);
         setSelectedVendors(new Set());
-        if (data.stats.failed > 0) setMessage(`Sent ${data.stats.sent} invitations. ${data.stats.failed} failed.`);
+        if (Array.isArray(data.blocked) && data.blocked.length > 0) setBlockedVendors(data.blocked);
       } else {
         setMessage(data.error || "Failed to send invitations");
       }
@@ -2096,6 +2114,38 @@ export default function DashboardPage() {
                 </div>
               )}
 
+              {blockedVendors.length > 0 && (
+                <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="flex items-start gap-2 mb-3">
+                    <svg className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <div className="text-sm text-amber-900">
+                      <div className="font-semibold mb-1">
+                        {blockedVendors.length} vendor{blockedVendors.length !== 1 ? "s" : ""} held for approval — no invite sent yet
+                      </div>
+                      <div className="text-xs text-amber-800">
+                        These vendors already submitted availability for their current invitation period. An approval
+                        request was automatically filed and the review team (jenvillar@1pds.net,
+                        sebastiancastao379@gmail.com) was emailed a link to <strong>/vendor-invite-requests</strong>.
+                        The invite will be sent the moment they approve — or automatically once the vendor's current
+                        period ends.
+                      </div>
+                    </div>
+                  </div>
+                  <ul className="space-y-1">
+                    {blockedVendors.map((v) => (
+                      <li key={v.vendorId} className="text-xs text-amber-900 flex items-center justify-between">
+                        <span className="font-medium">{v.name}</span>
+                        <span className="text-amber-700">
+                          {v.requestStatus === "already_pending_review" ? "Already awaiting approval" : "Awaiting approval"} · Period ends {new Date(v.periodEnd).toLocaleDateString()}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {loadingVendors ? (
                 <div className="apple-empty-state">
                   <div className="apple-spinner mb-4" />
@@ -2286,6 +2336,14 @@ export default function DashboardPage() {
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
                             <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                              {v.invite_blocked && (
+                                <div
+                                  className="px-2 py-0.5 text-xs bg-amber-100 text-amber-800 rounded-md font-medium"
+                                  title="Already submitted for their current period — sending will be held for approval instead of going out immediately"
+                                >
+                                  Needs approval
+                                </div>
+                              )}
                               {v.recently_responded && (
                                 <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
                               )}
@@ -2313,6 +2371,11 @@ export default function DashboardPage() {
                               {v.availability_scope_start && v.availability_scope_end && (
                                 <> · Scope: {formatDateOnly(v.availability_scope_start)} to {formatDateOnly(v.availability_scope_end)}</>
                               )}
+                            </div>
+                          )}
+                          {v.invite_blocked && v.invite_period_end && (
+                            <div className="text-xs text-amber-700 mb-1">
+                              Needs approval to re-invite — current period ends {formatDateOnly(v.invite_period_end)}
                             </div>
                           )}
                           </div>

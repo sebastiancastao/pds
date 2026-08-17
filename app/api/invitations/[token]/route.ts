@@ -387,6 +387,8 @@ export async function GET(
         durationWeeks: invitation.duration_weeks ?? null,
         regionId: vendorRegionId,
         regionName,
+        respondedAt: invitation.responded_at ?? null,
+        alreadySubmitted: !!invitation.responded_at,
       },
       availability: invitation.availability || null,
       notes: invitation.notes || '',
@@ -437,6 +439,15 @@ export async function POST(
     // Check if invitation has expired
     if (new Date(invitation.expires_at) < new Date()) {
       return NextResponse.json({ error: 'Invitation has expired' }, { status: 410 });
+    }
+
+    // Availability can only be submitted once per invitation link — reject
+    // any resubmission attempt (double-click, replay, stale tab, etc.).
+    if (invitation.responded_at) {
+      return NextResponse.json(
+        { error: 'You have already submitted your availability for this invitation. It can only be submitted once.' },
+        { status: 409 }
+      );
     }
 
     // Dates the vendor already confirmed or declined an actual event for are

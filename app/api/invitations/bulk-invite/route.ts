@@ -2,9 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { sendVendorBulkInvitationEmail } from "@/lib/email";
-import { decrypt } from "@/lib/encryption";
-import crypto from "crypto";
+import { safeDecrypt } from "@/lib/encryption";
+import {
+  DEFAULT_AVAILABILITY_DURATION_MONTHS,
+  getInviterEmailContext,
+  getLatestVendorInvitation,
+  isVendorInviteApprovalExempt,
+  isVendorInviteBlocked,
+  sendSingleVendorInvite,
+} from "@/lib/vendorInvites";
+import { createVendorInviteOverrideRequests } from "@/lib/vendorInviteOverrides";
+
+const OVERRIDE_REQUEST_REASON =
+  "Requested via Send Invites — vendor already submitted availability for their current invitation period.";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -17,11 +27,9 @@ const supabaseAnon = createClient(
 );
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DEFAULT_AVAILABILITY_DURATION_MONTHS = 4;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
-const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
 
 /**
  * POST /api/invitations/bulk-invite
@@ -58,39 +66,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Vendor IDs are required' }, { status: 400 });
     }
 
-    // Get all active events created by this user
-    const { data: events, error: eventsError } = await supabaseAdmin
-      .from('events')
-      .select('id, event_name, venue, event_date')
-      .eq('created_by', user.id)
-      .eq('is_active', true)
-      .order('event_date', { ascending: true });
-
-    if (eventsError) {
-      console.error('Error fetching events:', eventsError);
-      return NextResponse.json({ error: 'Failed to fetch events' }, { status: 500 });
-    }
-
-    // Get manager profile for email context
-    const { data: managerProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('first_name, last_name, phone')
-      .eq('user_id', user.id)
-      .single();
-
-    // Decrypt manager profile names
-    let managerFirstName = 'Event';
-    let managerLastName = 'Manager';
-    let managerPhone = '';
-    if (managerProfile) {
-      try {
-        managerFirstName = managerProfile.first_name ? decrypt(managerProfile.first_name) : 'Event';
-        managerLastName = managerProfile.last_name ? decrypt(managerProfile.last_name) : 'Manager';
-        managerPhone = managerProfile.phone ? decrypt(managerProfile.phone) : '';
-      } catch (decryptError) {
-        console.error('Error decrypting manager profile:', decryptError);
-      }
-    }
+    const { managerName, managerPhone, eventCount } = await getInviterEmailContext(supabaseAdmin, user.id);
 
     // Get vendor details (only those selected)
     const { data: vendors, error: vendorsError } = await supabaseAdmin
@@ -109,18 +85,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No vendors found' }, { status: 404 });
     }
 
-    // Calculate invitation period
-    const startDate = new Date();
-    const endDate = new Date();
-    endDate.setMonth(endDate.getMonth() + durationMonths);
-    // duration_weeks column stores the window length in weeks
-    const durationWeeks = Math.round(
-      (endDate.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000)
-    );
-
     // Send invitations sequentially to avoid provider burst rate limiting (429)
     let successes = 0;
     const failedEmails: string[] = [];
+    const blockedInfo = new Map<string, { email: string; name: string; periodEnd: string }>();
 
     for (const vendor of vendors as any[]) {
       const normalizedEmail = (vendor.email || "").toString().trim().toLowerCase();
@@ -130,101 +98,105 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      try {
-        // Generate unique invitation token
-        const invitationToken = crypto.randomBytes(32).toString('hex');
-
-        // Store bulk invitation in database
-        const { error: inviteError } = await supabaseAdmin
-          .from('vendor_invitations')
-          .insert({
-            token: invitationToken,
-            event_id: null, // Null for bulk invitations across multiple events
-            vendor_id: vendor.id,
-            invited_by: user.id,
-            status: 'pending',
-            invitation_type: 'bulk',
-            start_date: startDate.toISOString(),
-            end_date: endDate.toISOString(),
-            duration_weeks: durationWeeks,
-            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days to respond
-          });
-
-        if (inviteError) {
-          console.error('Error storing invitation:', inviteError);
-          throw new Error(`Failed to store invitation for ${normalizedEmail}`);
-        }
-
-        // Decrypt vendor names
-        let firstName = 'Vendor';
-        let lastName = '';
-        try {
-          firstName = vendor.profiles.first_name ? decrypt(vendor.profiles.first_name) : 'Vendor';
-          lastName = vendor.profiles.last_name ? decrypt(vendor.profiles.last_name) : '';
-        } catch (decryptError) {
-          console.error('Error decrypting vendor name:', decryptError);
-          firstName = 'Vendor';
-          lastName = '';
-        }
-
-        // Retry on 429 responses from provider
-        let emailResult: Awaited<ReturnType<typeof sendVendorBulkInvitationEmail>> | null = null;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          emailResult = await sendVendorBulkInvitationEmail({
-            email: normalizedEmail,
-            firstName,
-            lastName,
-            durationMonths,
-            eventCount: events?.length || 0,
-            startDate: startDate.toLocaleDateString('en-US', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            }),
-            endDate: endDate.toLocaleDateString('en-US', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            }),
-            managerName: `${managerFirstName} ${managerLastName}`,
-            managerPhone,
-            invitationToken
-          });
-
-          if (emailResult.success) break;
-          const err = emailResult.error || "Unknown email error";
-          if (attempt < 3 && isRateLimitError(err)) {
-            await sleep(1200 * attempt);
-            continue;
+      // Block re-inviting a vendor who already submitted availability for
+      // their current invitation period (until that period ends) — unless
+      // exempt. Rather than silently skipping, an approval request is filed
+      // and the review team notified below; the invite goes out once
+      // approved via PATCH /api/vendor-invite-override-requests.
+      if (!isVendorInviteApprovalExempt(normalizedEmail)) {
+        const latest = await getLatestVendorInvitation(supabaseAdmin, vendor.id);
+        if (isVendorInviteBlocked(latest)) {
+          let name = normalizedEmail;
+          try {
+            const first = vendor.profiles?.first_name ? safeDecrypt(vendor.profiles.first_name) : "";
+            const last = vendor.profiles?.last_name ? safeDecrypt(vendor.profiles.last_name) : "";
+            name = `${first} ${last}`.trim() || normalizedEmail;
+          } catch {
+            name = normalizedEmail;
           }
-          throw new Error(`Failed to send email to ${normalizedEmail}: ${err}`);
+          blockedInfo.set(vendor.id, { email: normalizedEmail, name, periodEnd: latest!.end_date! });
+          continue;
         }
-
-        if (!emailResult?.success) {
-          throw new Error(`Failed to send email to ${normalizedEmail}`);
-        }
-
-        successes++;
-        // Light throttling between sends to reduce 429 likelihood
-        await sleep(125);
-      } catch (error: any) {
-        failedEmails.push(error?.message || `Failed to send email to ${normalizedEmail}`);
       }
+
+      const result = await sendSingleVendorInvite({
+        supabaseAdmin,
+        vendor,
+        invitedBy: user.id,
+        managerName,
+        managerPhone,
+        eventCount,
+        durationMonths,
+      });
+
+      if (result.success) {
+        successes++;
+      } else {
+        failedEmails.push(result.error);
+      }
+
+      // Light throttling between sends to reduce 429 likelihood
+      await sleep(125);
+    }
+
+    // File (or reuse) a pending override request for every blocked vendor and
+    // notify the review team (jenvillar@1pds.net, sebastiancastao379@gmail.com)
+    // in one batched email — nothing is emailed to these vendors until a
+    // reviewer approves at /vendor-invite-requests.
+    let blocked: Array<{
+      vendorId: string;
+      email: string;
+      name: string;
+      periodEnd: string;
+      requestStatus: "pending_review" | "already_pending_review";
+    }> = [];
+    let overrideNotificationSent = false;
+
+    if (blockedInfo.size > 0) {
+      const blockedVendorIds = Array.from(blockedInfo.keys());
+      const overrideOutcome = await createVendorInviteOverrideRequests(supabaseAdmin, {
+        vendorIds: blockedVendorIds,
+        reason: OVERRIDE_REQUEST_REASON,
+        requestedBy: user.id,
+      });
+
+      const newlyCreatedIds = new Set(overrideOutcome.created.map((c) => c.vendorId));
+      overrideNotificationSent = overrideOutcome.notificationSent;
+      blocked = blockedVendorIds.map((vendorId) => {
+        const info = blockedInfo.get(vendorId)!;
+        return {
+          vendorId,
+          email: info.email,
+          name: info.name,
+          periodEnd: info.periodEnd,
+          requestStatus: newlyCreatedIds.has(vendorId) ? "pending_review" : "already_pending_review",
+        };
+      });
     }
 
     const failures = failedEmails.length;
 
     return NextResponse.json({
       success: true,
-      message: `Sent ${successes} invitation(s) successfully`,
+      message: `Sent ${successes} invitation(s) successfully${
+        blocked.length > 0
+          ? `, ${blocked.length} held for approval (already submitted for their current period)${
+              blocked.some((b) => b.requestStatus === "pending_review")
+                ? overrideNotificationSent
+                  ? " — review team notified"
+                  : " — review team notification failed, but the request is visible at /vendor-invite-requests"
+                : ""
+            }`
+          : ''
+      }`,
       stats: {
         total: vendorIds.length,
         sent: successes,
-        failed: failures
+        failed: failures,
+        blocked: blocked.length
       },
-      failures: failedEmails.length > 0 ? failedEmails : undefined
+      failures: failedEmails.length > 0 ? failedEmails : undefined,
+      blocked: blocked.length > 0 ? blocked : undefined
     }, { status: 200 });
 
   } catch (error: any) {

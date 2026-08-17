@@ -378,9 +378,9 @@ export async function POST(
     // invitation/availability flow, so they're exempt.
     const isNonEventTimesheet = String((event as any).event_type || '').toLowerCase() === 'special';
     const selfDeclaredUnavailableIds = new Set<string>();
+    const eventDateKey = event.event_date ? String(event.event_date).slice(0, 10) : null;
 
-    if (!isNonEventTimesheet && conflictFreeVendorIds.length > 0 && event.event_date) {
-      const eventDateKey = String(event.event_date).slice(0, 10);
+    if (!isNonEventTimesheet && conflictFreeVendorIds.length > 0 && eventDateKey) {
       const { data: availabilityRows, error: availabilityError } = await supabaseAdmin
         .from('vendor_invitations')
         .select('vendor_id, availability, created_at')
@@ -406,6 +406,29 @@ export async function POST(
 
           vendorDateResolved.add(vendorId);
           if (dayMatch.available !== true) {
+            selfDeclaredUnavailableIds.add(vendorId);
+          }
+        }
+      }
+
+      // Approved availability corrections always win over the raw
+      // vendor_invitations submission, regardless of recency — same rule as
+      // lib/vendorAvailability.ts's getMergedVendorAvailability.
+      const { data: corrections, error: correctionsError } = await supabaseAdmin
+        .from('vendor_availability_corrections')
+        .select('vendor_id, available')
+        .eq('date', eventDateKey)
+        .in('vendor_id', conflictFreeVendorIds);
+
+      if (correctionsError) {
+        console.warn('[TEAM] Could not check vendor availability corrections:', correctionsError);
+      } else {
+        for (const correction of corrections || []) {
+          const vendorId = String((correction as any)?.vendor_id || '').trim();
+          if (!vendorId) continue;
+          if ((correction as any).available === true) {
+            selfDeclaredUnavailableIds.delete(vendorId);
+          } else {
             selfDeclaredUnavailableIds.add(vendorId);
           }
         }

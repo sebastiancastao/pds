@@ -1,7 +1,7 @@
 // app/employees/[id]/page.tsx
 "use client";
 
-import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
@@ -257,6 +257,22 @@ type SubmittedAvailabilityDay = {
   submitted_at?: string | null;
 };
 
+type AvailabilityDateChange = { date: string; current_available: boolean | null; requested_available: boolean };
+
+type AvailabilityChangeRequest = {
+  id: string;
+  vendor_id: string;
+  date_changes: AvailabilityDateChange[];
+  reason: string;
+  status: "pending" | "approved" | "rejected";
+  requested_by: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type InvitationCancellationStatus = "pending" | "approved" | "rejected";
 
 type InvitationCancellationRequest = {
@@ -471,6 +487,21 @@ export default function WorkerProfilePage() {
   const [reviewingCancelRequestId, setReviewingCancelRequestId] = useState<string | null>(null);
   const [cancelReviewNotes, setCancelReviewNotes] = useState<Record<string, string>>({});
   const [cancelReviewError, setCancelReviewError] = useState<Record<string, string>>({});
+
+  // Availability change requests: the vendor (or an admin on their behalf)
+  // selects specific dates directly on the Personal Calendar and requests a
+  // correction; held pending until a privileged reviewer approves/rejects here.
+  const [availabilityChangeRequests, setAvailabilityChangeRequests] = useState<AvailabilityChangeRequest[]>([]);
+  const [availabilityChangeRequestsLoading, setAvailabilityChangeRequestsLoading] = useState(false);
+  const [canReviewAvailabilityChangeRequests, setCanReviewAvailabilityChangeRequests] = useState(false);
+  const [selectingAvailabilityDates, setSelectingAvailabilityDates] = useState(false);
+  const [selectedAvailabilityChanges, setSelectedAvailabilityChanges] = useState<Map<string, boolean>>(new Map());
+  const [availabilityChangeReason, setAvailabilityChangeReason] = useState("");
+  const [submittingAvailabilityChange, setSubmittingAvailabilityChange] = useState(false);
+  const [availabilityChangeError, setAvailabilityChangeError] = useState("");
+  const [reviewingAvailabilityChangeId, setReviewingAvailabilityChangeId] = useState<string | null>(null);
+  const [availabilityChangeReviewNotes, setAvailabilityChangeReviewNotes] = useState<Record<string, string>>({});
+  const [availabilityChangeReviewError, setAvailabilityChangeReviewError] = useState<Record<string, string>>({});
 
   // ID of the currently logged-in user, used to detect when someone is viewing
   // their own profile (stand-leader check-in is only offered on your own profile).
@@ -699,6 +730,130 @@ export default function WorkerProfilePage() {
       }));
     } finally {
       setReviewingCancelRequestId(null);
+    }
+  };
+
+  // Toggles a calendar date in/out of the pending availability-change
+  // selection. When first added, the requested value defaults to the
+  // opposite of whatever's currently on record (or "available" if there's
+  // no answer for that date yet) — the reviewer panel below still lets the
+  // requester flip it before submitting.
+  const toggleAvailabilityChangeDate = (date: string, currentAvailable: boolean | null) => {
+    setSelectedAvailabilityChanges((prev) => {
+      const next = new Map(prev);
+      if (next.has(date)) {
+        next.delete(date);
+      } else {
+        next.set(date, currentAvailable === null ? true : !currentAvailable);
+      }
+      return next;
+    });
+  };
+
+  const setAvailabilityChangeRequestedValue = (date: string, value: boolean) => {
+    setSelectedAvailabilityChanges((prev) => {
+      const next = new Map(prev);
+      next.set(date, value);
+      return next;
+    });
+  };
+
+  const cancelAvailabilityChangeSelection = () => {
+    setSelectingAvailabilityDates(false);
+    setSelectedAvailabilityChanges(new Map());
+    setAvailabilityChangeReason("");
+    setAvailabilityChangeError("");
+  };
+
+  const submitAvailabilityChangeRequest = async () => {
+    if (!employeeId || selectedAvailabilityChanges.size === 0) return;
+    const trimmedReason = availabilityChangeReason.trim();
+    if (!trimmedReason) {
+      setAvailabilityChangeError("Please provide a reason for the change.");
+      return;
+    }
+
+    setSubmittingAvailabilityChange(true);
+    setAvailabilityChangeError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/vendor-availability-change-requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          userId: employeeId,
+          dates: Array.from(selectedAvailabilityChanges.entries()).map(([date, requestedAvailable]) => ({
+            date,
+            requestedAvailable,
+          })),
+          reason: trimmedReason,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to submit availability change request.");
+      }
+
+      if (data?.request) {
+        setAvailabilityChangeRequests((prev) => [data.request, ...prev]);
+      }
+      cancelAvailabilityChangeSelection();
+      if (data?.notificationSent === false) {
+        alert(data?.message || "Request submitted, but the notification email to the review team failed to send.");
+      }
+    } catch (error: any) {
+      setAvailabilityChangeError(error?.message || "Failed to submit availability change request.");
+    } finally {
+      setSubmittingAvailabilityChange(false);
+    }
+  };
+
+  // Approves or rejects a pending availability change request. Approving
+  // actually writes the corrected values server-side, so refetch the
+  // calendar to pick them up.
+  const reviewAvailabilityChangeRequest = async (requestId: string, status: "approved" | "rejected") => {
+    setReviewingAvailabilityChangeId(requestId);
+    setAvailabilityChangeReviewError((prev) => {
+      const next = { ...prev };
+      delete next[requestId];
+      return next;
+    });
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/vendor-availability-change-requests", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          id: requestId,
+          status,
+          review_notes: availabilityChangeReviewNotes[requestId]?.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update the request.");
+      }
+
+      const updatedRequest = data.request as AvailabilityChangeRequest | undefined;
+      if (updatedRequest) {
+        setAvailabilityChangeRequests((prev) => prev.map((r) => (r.id === requestId ? updatedRequest : r)));
+        if (status === "approved") void loadInvitations();
+      }
+    } catch (error: any) {
+      setAvailabilityChangeReviewError((prev) => ({
+        ...prev,
+        [requestId]: error?.message || "Failed to update the request.",
+      }));
+    } finally {
+      setReviewingAvailabilityChangeId(null);
     }
   };
 
@@ -1086,38 +1241,61 @@ export default function WorkerProfilePage() {
     loadDocs();
   }, [customFormsList, pdfForms, employeeId]);
 
-  // Fetch event invitations (team + location assignments) for this employee
-  useEffect(() => {
+  // Fetch event invitations (team + location assignments) and the merged,
+  // latest-per-date availability for this employee. Exposed as a stable
+  // callback (not just an effect body) so it can also be triggered by the
+  // manual Refresh button and by refocusing the tab — the vendor's own
+  // submission almost always happens in a different tab/session, so without
+  // this the calendar can sit on stale data indefinitely if the page was
+  // left open.
+  const loadInvitations = useCallback(async () => {
     if (!employeeId) return;
-    const loadInvitations = async () => {
-      setInvitationsLoading(true);
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch(`/api/employees/${employeeId}/invitations`, {
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-          cache: 'no-store',
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setEventInvitations(data.invitations || []);
-          setSubmittedAvailability(data.availability_submissions || []);
-          setAvailabilityLastSubmittedAt(data.availability_last_submitted_at || null);
-        } else {
-          setEventInvitations([]);
-          setSubmittedAvailability([]);
-          setAvailabilityLastSubmittedAt(null);
-        }
-      } catch (e) {
-        console.error("Error loading event invitations:", e);
+    setInvitationsLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/employees/${employeeId}/invitations`, {
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEventInvitations(data.invitations || []);
+        setSubmittedAvailability(data.availability_submissions || []);
+        setAvailabilityLastSubmittedAt(data.availability_last_submitted_at || null);
+      } else {
         setEventInvitations([]);
         setSubmittedAvailability([]);
         setAvailabilityLastSubmittedAt(null);
-      } finally {
-        setInvitationsLoading(false);
       }
-    };
-    loadInvitations();
+    } catch (e) {
+      console.error("Error loading event invitations:", e);
+      setEventInvitations([]);
+      setSubmittedAvailability([]);
+      setAvailabilityLastSubmittedAt(null);
+    } finally {
+      setInvitationsLoading(false);
+    }
   }, [employeeId]);
+
+  useEffect(() => {
+    void loadInvitations();
+  }, [loadInvitations]);
+
+  // Refetch whenever this tab regains focus/visibility, so a calendar left
+  // open updates once the vendor submits elsewhere instead of only on the
+  // next full navigation to this page.
+  useEffect(() => {
+    const handleFocus = () => { void loadInvitations(); };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void loadInvitations();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [loadInvitations]);
 
   // Fetch invitation cancellation requests (pending/approved/rejected) for this employee
   useEffect(() => {
@@ -1147,6 +1325,36 @@ export default function WorkerProfilePage() {
       }
     };
     loadCancellationRequests();
+  }, [employeeId, refreshTick]);
+
+  // Fetch availability change requests (pending/approved/rejected) for this employee
+  useEffect(() => {
+    if (!employeeId) return;
+    const loadAvailabilityChangeRequests = async () => {
+      setAvailabilityChangeRequestsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/vendor-availability-change-requests?userId=${employeeId}`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setAvailabilityChangeRequests(data.requests || []);
+          setCanReviewAvailabilityChangeRequests(Boolean(data.canReview));
+        } else {
+          setAvailabilityChangeRequests([]);
+          setCanReviewAvailabilityChangeRequests(false);
+        }
+      } catch (e) {
+        console.error("Error loading availability change requests:", e);
+        setAvailabilityChangeRequests([]);
+        setCanReviewAvailabilityChangeRequests(false);
+      } finally {
+        setAvailabilityChangeRequestsLoading(false);
+      }
+    };
+    loadAvailabilityChangeRequests();
   }, [employeeId, refreshTick]);
 
   // Fetch all region events for this employee's assigned region
@@ -3007,7 +3215,43 @@ export default function WorkerProfilePage() {
                 <section className="mb-8">
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Calendar</h2>
+                    <div className="flex items-center gap-2">
+                      {(isOwnProfile || canReviewCancellationRequests) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectingAvailabilityDates) cancelAvailabilityChangeSelection();
+                            else setSelectingAvailabilityDates(true);
+                          }}
+                          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                            selectingAvailabilityDates
+                              ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                              : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                          }`}
+                          title="Select one or more dates to request an availability correction"
+                        >
+                          {selectingAvailabilityDates ? "Cancel Selection" : "Request Availability Change"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void loadInvitations()}
+                        disabled={invitationsLoading}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        title="Reload the latest submitted availability"
+                      >
+                        <svg className={`w-3.5 h-3.5 ${invitationsLoading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        {invitationsLoading ? "Refreshing…" : "Refresh"}
+                      </button>
+                    </div>
                   </div>
+                  {selectingAvailabilityDates && (
+                    <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      Click any date below to add or remove it from your correction request.
+                    </div>
+                  )}
                   <div className="apple-card p-4">
                     {/* Header */}
                     <div className="flex items-center justify-between mb-4">
@@ -3041,8 +3285,21 @@ export default function WorkerProfilePage() {
                           : hasUnavailableSubmission
                             ? "Unavailable"
                             : null;
+                        const currentAvailable: boolean | null = hasAvailableSubmission
+                          ? true
+                          : hasUnavailableSubmission
+                            ? false
+                            : null;
+                        const isSelectedForChange = selectedAvailabilityChanges.has(dateStr);
+                        const requestedValue = selectedAvailabilityChanges.get(dateStr);
                         return (
-                          <div key={i} className="flex flex-col items-center py-1 px-0.5 min-h-[3.5rem]">
+                          <div
+                            key={i}
+                            onClick={selectingAvailabilityDates ? () => toggleAvailabilityChangeDate(dateStr, currentAvailable) : undefined}
+                            className={`flex flex-col items-center py-1 px-0.5 min-h-[3.5rem] rounded-lg transition-colors ${
+                              selectingAvailabilityDates ? "cursor-pointer hover:bg-amber-50" : ""
+                            } ${isSelectedForChange ? "ring-2 ring-amber-400 bg-amber-50" : ""}`}
+                          >
                             <div className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-medium shrink-0
                               ${isToday ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"}`}>
                               {day}
@@ -3056,6 +3313,11 @@ export default function WorkerProfilePage() {
                                 }`}
                               >
                                 {availabilityLabel}
+                              </div>
+                            )}
+                            {isSelectedForChange && (
+                              <div className="mt-0.5 px-1 rounded text-[9px] font-semibold leading-tight bg-amber-200 text-amber-900">
+                                → {requestedValue ? "Available" : "Unavailable"}
                               </div>
                             )}
                             {evs.map((ev, ei) => (
@@ -3107,9 +3369,179 @@ export default function WorkerProfilePage() {
                       </div>
                     )}
                   </div>
+
+                  {selectingAvailabilityDates && selectedAvailabilityChanges.size > 0 && (
+                    <div className="apple-card p-4 mt-3 border border-amber-200 bg-amber-50/40">
+                      <p className="text-sm font-semibold text-gray-800 mb-2">
+                        {selectedAvailabilityChanges.size} date{selectedAvailabilityChanges.size !== 1 ? "s" : ""} selected
+                      </p>
+                      <div className="space-y-1.5 mb-3">
+                        {Array.from(selectedAvailabilityChanges.entries())
+                          .sort(([a], [b]) => a.localeCompare(b))
+                          .map(([date, requested]) => (
+                            <div key={date} className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5">
+                              <span className="text-xs font-medium text-gray-700">{formatEventDate(date)}</span>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setAvailabilityChangeRequestedValue(date, true)}
+                                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                                    requested ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                  }`}
+                                >
+                                  Available
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setAvailabilityChangeRequestedValue(date, false)}
+                                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                                    !requested ? "bg-rose-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                  }`}
+                                >
+                                  Unavailable
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleAvailabilityChangeDate(date, null)}
+                                  className="text-gray-400 hover:text-gray-600 p-0.5"
+                                  title="Remove this date"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                      <textarea
+                        value={availabilityChangeReason}
+                        onChange={(e) => setAvailabilityChangeReason(e.target.value)}
+                        placeholder="Reason for this correction (required)..."
+                        rows={2}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent transition-all mb-2"
+                      />
+                      {availabilityChangeError && (
+                        <p className="text-xs text-red-600 mb-2">{availabilityChangeError}</p>
+                      )}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void submitAvailabilityChangeRequest()}
+                          disabled={submittingAvailabilityChange || !availabilityChangeReason.trim()}
+                          className="inline-flex items-center rounded-lg bg-amber-600 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {submittingAvailabilityChange ? "Submitting..." : "Submit Request"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelAvailabilityChangeSelection}
+                          disabled={submittingAvailabilityChange}
+                          className="inline-flex items-center rounded-lg border border-gray-300 px-3.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </section>
               );
             })()}
+
+            {/* Availability Change Requests — filed from the calendar above, held
+                pending until a privileged reviewer approves/rejects them here. */}
+            {(availabilityChangeRequestsLoading || availabilityChangeRequests.length > 0) && (
+              <section className="mb-8">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Availability Change Requests</h2>
+                  {!availabilityChangeRequestsLoading && (
+                    <span className="text-sm text-gray-500">
+                      {availabilityChangeRequests.length} request{availabilityChangeRequests.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
+                <div className="apple-card divide-y divide-gray-100">
+                  {availabilityChangeRequestsLoading ? (
+                    <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+                  ) : (
+                    availabilityChangeRequests.map((req) => {
+                      const statusStyles: Record<string, string> = {
+                        pending: "bg-yellow-50 text-yellow-700 border-yellow-200",
+                        approved: "bg-green-50 text-green-700 border-green-200",
+                        rejected: "bg-red-50 text-red-700 border-red-200",
+                      };
+                      return (
+                        <div key={req.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-start gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-gray-900">
+                              {req.date_changes.length} date{req.date_changes.length !== 1 ? "s" : ""} requested
+                            </p>
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              {req.date_changes.map((c) => (
+                                <span
+                                  key={c.date}
+                                  className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] text-gray-600"
+                                >
+                                  {formatEventDate(c.date)}: {c.current_available === null ? "no answer" : c.current_available ? "available" : "unavailable"}
+                                  {" → "}
+                                  <span className={c.requested_available ? "text-emerald-700 font-semibold" : "text-rose-700 font-semibold"}>
+                                    {c.requested_available ? "available" : "unavailable"}
+                                  </span>
+                                </span>
+                              ))}
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">Reason: {req.reason}</p>
+                            {req.review_notes && (
+                              <p className="text-xs text-gray-500 mt-1 leading-relaxed">Reviewer notes: {req.review_notes}</p>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1.5 shrink-0">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${statusStyles[req.status] ?? "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                              {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
+                            </span>
+                            <p className="text-xs text-gray-400">{formatDate(req.created_at)}</p>
+                            {canReviewAvailabilityChangeRequests && req.status === "pending" && (
+                              <div className="flex flex-col items-end gap-1.5 mt-1 w-48">
+                                <input
+                                  type="text"
+                                  placeholder="Review note (optional)"
+                                  value={availabilityChangeReviewNotes[req.id] ?? ""}
+                                  onChange={(e) =>
+                                    setAvailabilityChangeReviewNotes((prev) => ({ ...prev, [req.id]: e.target.value }))
+                                  }
+                                  className="w-full rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900 outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-200"
+                                />
+                                <div className="flex gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={reviewingAvailabilityChangeId === req.id}
+                                    onClick={() => reviewAvailabilityChangeRequest(req.id, "approved")}
+                                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={reviewingAvailabilityChangeId === req.id}
+                                    onClick={() => reviewAvailabilityChangeRequest(req.id, "rejected")}
+                                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                                {availabilityChangeReviewError[req.id] && (
+                                  <p className="text-xs text-red-600">{availabilityChangeReviewError[req.id]}</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            )}
 
             {/* Events & Time — combined */}
             <section className="mb-10">
@@ -3536,40 +3968,6 @@ export default function WorkerProfilePage() {
                               {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
                             </span>
                             <p className="text-xs text-gray-400">{formatDate(req.created_at)}</p>
-                            {canReviewCancellationRequests && req.status === "pending" && (
-                              <div className="flex flex-col items-end gap-1.5 mt-1 w-48">
-                                <input
-                                  type="text"
-                                  placeholder="Review note (optional)"
-                                  value={cancelReviewNotes[req.id] ?? ""}
-                                  onChange={(e) =>
-                                    setCancelReviewNotes((prev) => ({ ...prev, [req.id]: e.target.value }))
-                                  }
-                                  className="w-full rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900 outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-200"
-                                />
-                                <div className="flex gap-1.5">
-                                  <button
-                                    type="button"
-                                    disabled={reviewingCancelRequestId === req.id}
-                                    onClick={() => reviewCancelRequest(req.id, "approved")}
-                                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={reviewingCancelRequestId === req.id}
-                                    onClick={() => reviewCancelRequest(req.id, "rejected")}
-                                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                                  >
-                                    Reject
-                                  </button>
-                                </div>
-                                {cancelReviewError[req.id] && (
-                                  <p className="text-xs text-red-600">{cancelReviewError[req.id]}</p>
-                                )}
-                              </div>
-                            )}
                           </div>
                         </div>
                       );

@@ -35,6 +35,8 @@ type InvitationDetails = {
   durationWeeks?: number | null;
   regionId?: string | null;
   regionName?: string | null;
+  respondedAt?: string | null;
+  alreadySubmitted?: boolean;
 };
 
 type LockedDate = {
@@ -128,6 +130,7 @@ export default function InvitationPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>("");
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successTimesheetLink, setSuccessTimesheetLink] = useState<string | null>(null);
 
@@ -139,6 +142,7 @@ export default function InvitationPage() {
     setInvitation(null);
     setEventsByDate({});
     setSuccessTimesheetLink(null);
+    setAlreadySubmitted(false);
 
     fetch(`/api/invitations/${encodeURIComponent(token)}`)
       .then(async (res) => {
@@ -181,6 +185,7 @@ export default function InvitationPage() {
         setEventsByDate(data.regionEventsByDate || {});
         setLockedDates(lockedMap);
         setDays(merged);
+        setAlreadySubmitted(!!invitationDetails?.alreadySubmitted);
       })
       .catch((error: any) => {
         setMessage(error?.message || "Unable to load invitation details.");
@@ -189,6 +194,7 @@ export default function InvitationPage() {
   }, [token]);
 
   const toggleDay = (idx: number) => {
+    if (alreadySubmitted) return;
     setDays(prev => {
       if (lockedDates.has(prev[idx].date)) return prev;
       const copy = [...prev];
@@ -204,6 +210,7 @@ export default function InvitationPage() {
   };
 
   const toggleAllDay = (idx: number) => {
+    if (alreadySubmitted) return;
     setDays(prev => {
       if (lockedDates.has(prev[idx].date)) return prev;
       const copy = [...prev];
@@ -220,6 +227,7 @@ export default function InvitationPage() {
   };
 
   const setDayTime = (idx: number, field: "startTime" | "endTime", value: string) => {
+    if (alreadySubmitted) return;
     setDays(prev => {
       if (lockedDates.has(prev[idx].date)) return prev;
       const copy = [...prev];
@@ -230,6 +238,7 @@ export default function InvitationPage() {
 
   const handleSave = async () => {
     if (!token) return setMessage("Invalid invitation link.");
+    if (alreadySubmitted || saving) return;
     setSaving(true);
     setMessage("");
     try {
@@ -239,7 +248,14 @@ export default function InvitationPage() {
         body: JSON.stringify({ availability: days })
       });
       const data: SaveAvailabilityResponse & { error?: string } = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Save failed");
+      if (!res.ok) {
+        // 409 = the server already has a response on file for this invitation
+        // (e.g. a duplicate/replayed request) — treat it as already submitted
+        // rather than a generic failure.
+        if (res.status === 409) setAlreadySubmitted(true);
+        throw new Error(data?.error || "Save failed");
+      }
+      setAlreadySubmitted(true);
       setSuccessTimesheetLink(
         data?.nonEventTimesheetConfirmed
           ? data.timesheetPath || data.timesheetUrl || null
@@ -360,11 +376,25 @@ export default function InvitationPage() {
               </div>
             )}
 
+            {/* Already-submitted banner */}
+            {alreadySubmitted && (
+              <div className="apple-alert mb-8 flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-800">
+                <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div className="text-sm">
+                  <span className="font-semibold">Availability already submitted.</span>{" "}
+                  This invitation can only be submitted once, so your response below is final. If something needs to change, please contact the person who invited you.
+                </div>
+              </div>
+            )}
+
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-4 mb-8">
               <button
-                onClick={() => setDays(prev => prev.map(d => lockedDates.has(d.date) ? d : ({ ...d, available: true, allDay: true })))}
-                className="group relative inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold rounded-xl shadow-lg shadow-green-500/30 hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 transform hover:-translate-y-0.5 transition-all duration-200"
+                onClick={() => { if (!alreadySubmitted) setDays(prev => prev.map(d => lockedDates.has(d.date) ? d : ({ ...d, available: true, allDay: true }))); }}
+                disabled={alreadySubmitted}
+                className={`group relative inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold rounded-xl shadow-lg shadow-green-500/30 transform transition-all duration-200 ${alreadySubmitted ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 hover:-translate-y-0.5'}`}
               >
                 <svg className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -373,8 +403,9 @@ export default function InvitationPage() {
               </button>
 
               <button
-                onClick={() => setDays(prev => prev.map(d => lockedDates.has(d.date) ? d : ({ ...d, available: false, allDay: true, startTime: undefined, endTime: undefined })))}
-                className="group relative inline-flex items-center px-6 py-3 bg-white text-gray-700 font-semibold rounded-xl border-2 border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-md transform hover:-translate-y-0.5 transition-all duration-200"
+                onClick={() => { if (!alreadySubmitted) setDays(prev => prev.map(d => lockedDates.has(d.date) ? d : ({ ...d, available: false, allDay: true, startTime: undefined, endTime: undefined }))); }}
+                disabled={alreadySubmitted}
+                className={`group relative inline-flex items-center px-6 py-3 bg-white text-gray-700 font-semibold rounded-xl border-2 border-gray-200 shadow-sm transform transition-all duration-200 ${alreadySubmitted ? 'opacity-50 cursor-not-allowed' : 'hover:border-gray-300 hover:shadow-md hover:-translate-y-0.5'}`}
               >
                 <svg className="w-5 h-5 mr-2 text-gray-500 group-hover:text-red-500 group-hover:scale-110 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -415,11 +446,12 @@ export default function InvitationPage() {
                           </svg>
                         </span>
                       ) : (
-                        <label className="invitation-checkbox-wrapper">
+                        <label className={`invitation-checkbox-wrapper ${alreadySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}>
                           <input
                             type="checkbox"
                             checked={d.available}
                             onChange={() => toggleDay(i)}
+                            disabled={alreadySubmitted}
                             className="invitation-checkbox"
                             aria-label={`Available on ${d.date}`}
                           />
@@ -484,8 +516,9 @@ export default function InvitationPage() {
                           <button
                             type="button"
                             onClick={() => toggleAllDay(i)}
+                            disabled={alreadySubmitted}
                             aria-pressed={d.allDay !== false}
-                            className="flex items-center gap-2 focus:outline-none"
+                            className={`flex items-center gap-2 focus:outline-none ${alreadySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
                           >
                             {/* Track */}
                             <span
@@ -530,6 +563,7 @@ export default function InvitationPage() {
                                 type="time"
                                 value={d.startTime || "09:00"}
                                 onChange={e => setDayTime(i, "startTime", e.target.value)}
+                                disabled={alreadySubmitted}
                                 className="invitation-time-input"
                               />
                             </div>
@@ -540,6 +574,7 @@ export default function InvitationPage() {
                                 type="time"
                                 value={d.endTime || "17:00"}
                                 onChange={e => setDayTime(i, "endTime", e.target.value)}
+                                disabled={alreadySubmitted}
                                 className="invitation-time-input"
                               />
                             </div>
@@ -576,9 +611,9 @@ export default function InvitationPage() {
             <div className="flex justify-center">
               <button
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || alreadySubmitted}
                 className={`group relative inline-flex items-center px-12 py-4 text-lg font-bold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl shadow-xl shadow-blue-500/40 transform transition-all duration-200 ${
-                  saving
+                  saving || alreadySubmitted
                     ? 'opacity-60 cursor-not-allowed'
                     : 'hover:shadow-2xl hover:shadow-blue-500/50 hover:from-blue-700 hover:to-blue-800 hover:scale-105'
                 }`}
@@ -587,6 +622,13 @@ export default function InvitationPage() {
                   <>
                     <div className="apple-spinner-small mr-2"></div>
                     Saving...
+                  </>
+                ) : alreadySubmitted ? (
+                  <>
+                    <svg className="w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Already Submitted
                   </>
                 ) : (
                   <>

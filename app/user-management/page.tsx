@@ -545,6 +545,7 @@ export default function UserManagementPage() {
             { href: '/employee-id-codes',       label: 'Employee ID Codes', bg: '#14b8a6' },
             { href: '/timesheet-edits',         label: 'Timesheet Edits',   bg: '#334155' },
             { href: '/cancellation-requests',   label: 'Cancellation Requests', bg: '#dc2626' },
+            { href: '/vendor-invite-requests',  label: 'Vendor Invite Requests', bg: '#b45309' },
             { href: '/global-calendar',         label: 'Calendar',          bg: '#3b82f6' },
             { href: '/vendor-venue-management', label: 'Venue & Vendor',    bg: '#f97316' },
             { href: '/reports',                 label: 'Reports',           bg: '#be123c' },

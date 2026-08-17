@@ -424,6 +424,37 @@ export async function GET(
       }
     }
 
+    // Overlay any approved availability corrections for this date — they always
+    // win over the raw vendor_invitations submission, regardless of recency,
+    // matching lib/vendorAvailability.ts's getMergedVendorAvailability contract.
+    if (!isNonEventTimesheet) {
+      for (let i = 0; i < vendorIds.length; i += BATCH_SIZE) {
+        const batch = vendorIds.slice(i, i + BATCH_SIZE);
+        const { data: correctionsBatch, error: correctionsError } = await supabaseAdmin
+          .from('vendor_availability_corrections')
+          .select('vendor_id, available')
+          .eq('date', eventDateKey)
+          .in('vendor_id', batch);
+
+        if (correctionsError) {
+          console.warn('[AVAILABLE-VENDORS] Could not check availability corrections:', correctionsError);
+          continue;
+        }
+
+        for (const correction of correctionsBatch || []) {
+          const vendorId = String((correction as any)?.vendor_id || '').trim();
+          if (!vendorId) continue;
+          if ((correction as any).available === true) {
+            if (!vendorMetaMap.has(vendorId)) {
+              vendorMetaMap.set(vendorId, { isPartial: false });
+            }
+          } else {
+            vendorMetaMap.delete(vendorId);
+          }
+        }
+      }
+    }
+
     console.log('🔍 DEBUG - Vendors available on date:', vendorMetaMap.size);
 
     const uniqueAvailableVendorIds = isNonEventTimesheet

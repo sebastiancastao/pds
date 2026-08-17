@@ -6,6 +6,11 @@ import { sendVendorEventInvitationEmail } from "@/lib/email";
 import { decrypt } from "@/lib/encryption";
 import { getVenueBccEmails } from "@/lib/venue-bcc";
 import crypto from "crypto";
+import {
+  getLatestVendorInvitation,
+  isVendorInviteApprovalExempt,
+  isVendorInviteBlocked,
+} from "@/lib/vendorInvites";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -230,6 +235,20 @@ export async function POST(
       if (selfDeclaredUnavailableIds.has(vendor.id)) {
         failedEmails.push(`Skipped ${normalizedEmail}: marked themselves unavailable on ${eventDate}`);
         continue;
+      }
+
+      // Same rule as /api/invitations/bulk-invite: a vendor who already
+      // submitted availability for their current invitation period can't be
+      // sent another invite (of any kind) until that period ends. This
+      // endpoint has no reachable UI and no approval-request integration —
+      // it just holds off rather than sending, so a future caller doesn't
+      // silently bypass the rule enforced everywhere else.
+      if (!isVendorInviteApprovalExempt(normalizedEmail)) {
+        const latest = await getLatestVendorInvitation(supabaseAdmin, vendor.id);
+        if (isVendorInviteBlocked(latest)) {
+          failedEmails.push(`Skipped ${normalizedEmail}: already submitted availability for their current invitation period`);
+          continue;
+        }
       }
 
       try {
