@@ -642,6 +642,9 @@ export default function WorkerProfilePage() {
       }
       setCancelModalInvitation(null);
       setCancelReason("");
+      if (data?.notificationSent === false) {
+        alert(data?.message || "Cancellation request submitted, but the notification email to the review team failed to send.");
+      }
     } catch (error: any) {
       setCancelRequestError(error?.message || "Failed to submit cancellation request.");
     } finally {

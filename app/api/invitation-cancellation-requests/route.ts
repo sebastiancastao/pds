@@ -60,6 +60,7 @@ const ALREADY_RESPONDED_STATUSES = new Set(["confirmed", "declined"]);
 // embed is disambiguated by its specific FK constraint name.
 const REQUEST_COLUMNS =
   "id, user_id, event_id, source, team_member_id, location_assignment_id, previous_status, reason, status, requested_by, reviewed_by, reviewed_at, review_notes, created_at, updated_at, " +
+  "approval_notification_sent, approval_notification_error, outcome_notification_sent, outcome_notification_error, " +
   "events (event_name, event_date, start_time, venue, city, state), " +
   "employee:users!invitation_cancellation_requests_user_id_fkey (email, profiles (first_name, last_name)), " +
   "requested_by_user:users!invitation_cancellation_requests_requested_by_fkey (email, profiles (first_name, last_name))";
@@ -131,6 +132,27 @@ function msUntilEventStart(eventDate: string | null | undefined, startTime: stri
   const eventStartMs = iso ? new Date(iso).getTime() : NaN;
   if (!Number.isFinite(eventStartMs)) return null;
   return eventStartMs - Date.now();
+}
+
+/**
+ * Resend calls occasionally fail transiently (network blip, rate limit) — a
+ * bare `sendEmail` call was observed silently returning success:false with
+ * no queryable trace, so retry once before giving up rather than leaving the
+ * reviewers/employee with no notification at all.
+ */
+async function sendEmailWithRetry(
+  payload: Parameters<typeof sendEmail>[0],
+  attempts = 2
+): Promise<Awaited<ReturnType<typeof sendEmail>>> {
+  let lastResult: Awaited<ReturnType<typeof sendEmail>> = { success: false, error: "Email not attempted" };
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    lastResult = await sendEmail(payload);
+    if (lastResult.success) return lastResult;
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
+  return lastResult;
 }
 
 async function getDisplayNameAndEmail(userId: string): Promise<{ name: string; email: string }> {
@@ -509,6 +531,7 @@ export async function POST(req: NextRequest) {
     const inserted = insertedRaw as any;
 
     let notificationSent = false;
+    let notificationError: string | null = null;
     try {
       const [employeeInfo, requesterInfo] = await Promise.all([
         getDisplayNameAndEmail(targetUserId),
@@ -517,7 +540,7 @@ export async function POST(req: NextRequest) {
 
       const approvalUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app"}/cancellation-requests?requestId=${inserted.id}`;
 
-      const emailResult = await sendEmail({
+      const emailResult = await sendEmailWithRetry({
         to: APPROVAL_NOTIFICATION_EMAILS,
         subject: `Cancellation Request Awaiting Approval - ${employeeInfo.name}`,
         html: buildApprovalNotificationEmailHtml({
@@ -535,15 +558,32 @@ export async function POST(req: NextRequest) {
 
       notificationSent = Boolean(emailResult.success);
       if (!emailResult.success) {
+        notificationError = emailResult.error || "Unknown email error";
         console.error("[INVITATION CANCELLATION REQUESTS][POST] approval email failed:", emailResult.error);
       }
     } catch (notifyError: any) {
       // The cancellation request is already recorded — a notification failure
       // shouldn't roll that back or fail the request.
+      notificationError = notifyError?.message || "Unknown email error";
       console.error("[INVITATION CANCELLATION REQUESTS][POST] approval email error:", notifyError);
     }
 
-    return NextResponse.json({ success: true, request: decorateRequestRow(inserted), notificationSent }, { status: 201 });
+    await supabaseAdmin
+      .from("invitation_cancellation_requests")
+      .update({ approval_notification_sent: notificationSent, approval_notification_error: notificationError })
+      .eq("id", inserted.id);
+
+    return NextResponse.json(
+      {
+        success: true,
+        request: decorateRequestRow(inserted),
+        notificationSent,
+        message: notificationSent
+          ? "Cancellation request submitted and the review team was notified."
+          : `Cancellation request submitted, but the notification email to the review team failed to send: ${notificationError}. They can still see it at /cancellation-requests.`,
+      },
+      { status: 201 }
+    );
   } catch (err: any) {
     console.error("[INVITATION CANCELLATION REQUESTS][POST] error:", err);
     return NextResponse.json({ error: err.message || "Internal error" }, { status: 500 });
@@ -690,6 +730,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     let notificationSent = false;
+    let notificationError: string | null = null;
     try {
       const employeeProfile = Array.isArray(cancellationRequest.employee?.profiles)
         ? cancellationRequest.employee.profiles[0]
@@ -702,7 +743,7 @@ export async function PATCH(req: NextRequest) {
       const eventInfo = Array.isArray(cancellationRequest.events) ? cancellationRequest.events[0] : cancellationRequest.events;
 
       if (employeeEmail) {
-        const emailResult = await sendEmail({
+        const emailResult = await sendEmailWithRetry({
           to: employeeEmail,
           subject: `Cancellation Request ${action === "approved" ? "Approved" : "Denied"} - ${eventInfo?.event_name || "Event"}`,
           html: buildOutcomeNotificationEmailHtml({
@@ -718,13 +759,20 @@ export async function PATCH(req: NextRequest) {
 
         notificationSent = Boolean(emailResult.success);
         if (!emailResult.success) {
+          notificationError = emailResult.error || "Unknown email error";
           console.error("[INVITATION CANCELLATION REQUESTS][PATCH] outcome email failed:", emailResult.error);
         }
       }
     } catch (notifyError: any) {
       // The review is already recorded — a notification failure shouldn't roll that back.
+      notificationError = notifyError?.message || "Unknown email error";
       console.error("[INVITATION CANCELLATION REQUESTS][PATCH] outcome email error:", notifyError);
     }
+
+    await supabaseAdmin
+      .from("invitation_cancellation_requests")
+      .update({ outcome_notification_sent: notificationSent, outcome_notification_error: notificationError })
+      .eq("id", requestId);
 
     return NextResponse.json({ success: true, request: decorateRequestRow(updated), notificationSent });
   } catch (err: any) {

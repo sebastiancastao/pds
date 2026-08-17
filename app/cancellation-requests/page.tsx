@@ -28,6 +28,10 @@ type CancellationRequestRow = {
   review_notes: string | null;
   created_at: string;
   updated_at: string;
+  approval_notification_sent: boolean | null;
+  approval_notification_error: string | null;
+  outcome_notification_sent: boolean | null;
+  outcome_notification_error: string | null;
   events: EventInfo | EventInfo[] | null;
   employee_name: string;
   employee_email: string | null;
@@ -369,6 +373,22 @@ function CancellationRequestsPageInner() {
                           {isHighlighted && (
                             <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-blue-700">
                               Email Link
+                            </span>
+                          )}
+                          {request.approval_notification_sent === false && (
+                            <span
+                              className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-700"
+                              title={request.approval_notification_error || "The awaiting-approval email failed to send"}
+                            >
+                              Notification Failed
+                            </span>
+                          )}
+                          {request.status !== "pending" && request.outcome_notification_sent === false && (
+                            <span
+                              className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-700"
+                              title={request.outcome_notification_error || "The outcome email to the employee failed to send"}
+                            >
+                              Outcome Email Failed
                             </span>
                           )}
                         </div>

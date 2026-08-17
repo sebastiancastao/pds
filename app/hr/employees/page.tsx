@@ -128,7 +128,7 @@ function formatDate(value?: string | null) {
   });
 }
 
-const EMPLOYEES_LIST_REFRESH_MS = 30000;
+const EMPLOYEES_LIST_REFRESH_MS = 90000;
 
 export default function HREmployeesPage() {
   const router = useRouter();
@@ -189,7 +189,7 @@ export default function HREmployeesPage() {
 
   // Keeps the employee list, tickets, and form-edit history current without
   // requiring a manual page reload. Refreshes silently (no loading spinner)
-  // every 30s while the tab is visible, plus immediately on refocus.
+  // every 1.5 minutes while the tab is visible, plus immediately on refocus.
   useEffect(() => {
     if (!isAuthorized) return;
 
