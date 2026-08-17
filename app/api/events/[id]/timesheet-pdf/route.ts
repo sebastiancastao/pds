@@ -52,6 +52,7 @@ type TimesheetSpan = {
 
 type TimesheetDayRow = {
   date: string;
+  gate?: string;
   clockIn: string;
   meal1Start: string;
   meal1End: string;
@@ -398,7 +399,7 @@ async function buildTimesheetPdf(
         ];
         let dayIdx = 2;
         if (applyGateOffset) {
-          dayCells.push({ text: "", width: scaledCols[dayIdx].width });
+          dayCells.push({ text: day.gate || "", width: scaledCols[dayIdx].width });
           dayIdx += 1;
         }
         dayCells.push({ text: day.clockIn, width: scaledCols[dayIdx].width });
@@ -927,9 +928,12 @@ export async function GET(
               }
             }
 
+            const dayClockIn = dayClockIns[0] ? formatIsoToHHMM(dayClockIns[0].timestamp, tz) : "";
+
             return {
               date: dayKey,
-              clockIn: dayClockIns[0] ? formatIsoToHHMM(dayClockIns[0].timestamp, tz) : "",
+              gate: applyGateOffset ? subtractMinutesFromHHMM(dayClockIn, GATE_PHONE_OFFSET_MINUTES) : dayClockIn,
+              clockIn: dayClockIn,
               meal1Start: dayMealStarts[0] ? formatIsoToHHMM(dayMealStarts[0].timestamp, tz) : "",
               meal1End: dayMealEnds[0] ? formatIsoToHHMM(dayMealEnds[0].timestamp, tz) : "",
               meal2Start: dayMealStarts[1] ? formatIsoToHHMM(dayMealStarts[1].timestamp, tz) : "",

@@ -213,6 +213,9 @@ export async function GET(req: NextRequest) {
 
     const userRole = userData?.role || '';
 
+    // admin and exec can see every event, matching the single-event GET in [id]/route.ts
+    const isAdminOrExec = userRole === 'admin' || userRole === 'exec';
+
     // Collect all user IDs whose events this user can see
     const creatorIds: string[] = [user.id];
 
@@ -286,7 +289,20 @@ export async function GET(req: NextRequest) {
     let data: any[] | null = null;
     let error: any = null;
 
-    if (assignedVenueNames.length > 0) {
+    if (isAdminOrExec) {
+      // No creator/venue restriction - admin and exec see every event
+      let query = supabaseAdmin
+        .from('events')
+        .select('*')
+        .order('event_date', { ascending: false })
+        .order('start_time', { ascending: false });
+
+      if (isActiveParam !== null) {
+        query = query.eq('is_active', isActiveParam === 'true');
+      }
+
+      ({ data, error } = await query);
+    } else if (assignedVenueNames.length > 0) {
       // User sees events they created OR events at their assigned venues
       // Use two queries and merge to avoid PostgREST string escaping issues with venue names
       const [byCreator, byVenue] = await Promise.all([

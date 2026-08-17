@@ -94,6 +94,19 @@ export async function deleteEventAssociations(
   }
 }
 
+// Keeps each `.in()` filter's URL well under server/proxy length limits -
+// large event-id lists (e.g. every event in the system) would otherwise
+// produce a single oversized request that fails outright.
+const ASSOCIATION_LOOKUP_CHUNK_SIZE = 200;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 function createEmptySummary(eventId: string): EventAssociationSummary {
   return {
     eventId,
@@ -119,30 +132,37 @@ export async function getEventAssociationMap(
     return summaryByEventId;
   }
 
+  const eventIdChunks = chunk(normalizedEventIds, ASSOCIATION_LOOKUP_CHUNK_SIZE);
+
   const associationResults = await Promise.all(
     EVENT_ASSOCIATION_SOURCES.map(async (source) => {
-      const { data, error } = await supabaseAdmin
-        .from(source.table)
-        .select("event_id")
-        .in("event_id", normalizedEventIds);
+      const rows: Array<{ event_id: string | null }> = [];
 
-      if (error) {
-        if (source.optional && isMissingSchemaObjectError(error)) {
-          console.warn(
-            `[EVENT-ASSOCIATIONS] Skipping optional source "${source.table}" because it is missing from the current schema`
+      for (const idChunk of eventIdChunks) {
+        const { data, error } = await supabaseAdmin
+          .from(source.table)
+          .select("event_id")
+          .in("event_id", idChunk);
+
+        if (error) {
+          if (source.optional && isMissingSchemaObjectError(error)) {
+            console.warn(
+              `[EVENT-ASSOCIATIONS] Skipping optional source "${source.table}" because it is missing from the current schema`
+            );
+            return { source, rows: [] as Array<{ event_id: string | null }> };
+          }
+
+          throw new Error(
+            `Failed to load ${source.label} for event deletion checks: ${error.message || "Unknown error"}`
           );
-          return { source, rows: [] as Array<{ event_id: string | null }> };
         }
 
-        throw new Error(
-          `Failed to load ${source.label} for event deletion checks: ${error.message || "Unknown error"}`
-        );
+        if (Array.isArray(data)) {
+          rows.push(...(data as Array<{ event_id: string | null }>));
+        }
       }
 
-      return {
-        source,
-        rows: Array.isArray(data) ? (data as Array<{ event_id: string | null }>) : [],
-      };
+      return { source, rows };
     })
   );
 

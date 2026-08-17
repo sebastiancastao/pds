@@ -5809,6 +5809,15 @@ export default function EventDashboardPage() {
                       </option>
                       {commissionLinkCandidates
                         .filter((candidate) => candidate.is_active !== false || candidate.id === selectedLinkedCommissionEventId)
+                        .slice()
+                        .sort((a, b) => {
+                          // Same-venue events float to the top; stable sort preserves the
+                          // existing date-desc ordering within each group.
+                          const currentVenue = (event?.venue || "").trim().toLowerCase();
+                          const aSameVenue = currentVenue && (a.venue || "").trim().toLowerCase() === currentVenue ? 0 : 1;
+                          const bSameVenue = currentVenue && (b.venue || "").trim().toLowerCase() === currentVenue ? 0 : 1;
+                          return aSameVenue - bSameVenue;
+                        })
                         .map((candidate) => {
                           const eventDateLabel = (candidate.event_date || "").toString().split("T")[0];
                           const linkedElsewhere =
@@ -7774,7 +7783,7 @@ export default function EventDashboardPage() {
                         </div>
                       </td>
                       {applyGateOffset && (
-                        <td className="px-1 py-1.5 text-xs text-gray-400 text-center">—</td>
+                        <td className="px-1 py-1.5 text-xs text-gray-400 text-center">see below</td>
                       )}
                       <td colSpan={midColSpan} className="px-2 py-1.5 text-xs text-gray-500 italic">
                         {memberDays.length} day{memberDays.length === 1 ? "" : "s"} — daily breakdown below
@@ -7799,7 +7808,9 @@ export default function EventDashboardPage() {
                           {formatTimesheetDayLabel(day.date)}
                         </td>
                         {applyGateOffset && (
-                          <td className="px-1 py-1 text-xs text-gray-300 text-center">—</td>
+                          <td className={dayCellCls}>
+                            {subtractMinutesFromHHMM(day.firstInDisplay, GATE_PHONE_OFFSET_MINUTES) || "—"}
+                          </td>
                         )}
                         <td className={dayCellCls}>{day.firstInDisplay || "—"}</td>
                         <td className={dayCellCls}>{day.meals[0]?.startDisplay || "—"}</td>
