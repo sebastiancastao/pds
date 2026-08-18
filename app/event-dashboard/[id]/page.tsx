@@ -571,6 +571,13 @@ export default function EventDashboardPage() {
   const [savingTimesheetUserId, setSavingTimesheetUserId] = useState<string | null>(null);
   const [showTimesheetEditModal, setShowTimesheetEditModal] = useState(false);
   const [pendingTimesheetEditUid, setPendingTimesheetEditUid] = useState<string | null>(null);
+  // Multi-day non-event (special) timesheets record one isolated timesheet per day,
+  // so edits are scoped to a single day rather than the whole worker. Keyed by
+  // `${uid}::${date}` so each day-row can be edited independently.
+  const [pendingTimesheetEditDay, setPendingTimesheetEditDay] = useState<string | null>(null);
+  const [editingTimesheetDayKey, setEditingTimesheetDayKey] = useState<string | null>(null);
+  const [timesheetDayDrafts, setTimesheetDayDrafts] = useState<Record<string, TimesheetEditDraft>>({});
+  const [savingTimesheetDayKey, setSavingTimesheetDayKey] = useState<string | null>(null);
   const [timesheetEditNote, setTimesheetEditNote] = useState("");
   const [timesheetEditSignature, setTimesheetEditSignature] = useState("");
   const [exportingTimesheetPdf, setExportingTimesheetPdf] = useState(false);
@@ -4117,8 +4124,9 @@ export default function EventDashboardPage() {
     setMessage("");
   };
 
-  const openTimesheetEditModal = (uid: string) => {
+  const openTimesheetEditModal = (uid: string, day?: string) => {
     setPendingTimesheetEditUid(uid);
+    setPendingTimesheetEditDay(day || null);
     setTimesheetEditNote("");
     setTimesheetEditSignature("");
     setSignatureIsEmpty(true);
@@ -4279,6 +4287,125 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Network error while saving timesheet.");
     } finally {
       setSavingTimesheetUserId(null);
+    }
+  };
+
+  // Multi-day non-event (special) timesheets: same edit flow as saveTimesheetEdit,
+  // but scoped to a single day since each day is stored as an isolated timesheet.
+  const startTimesheetDayEdit = (
+    uid: string,
+    day: {
+      date: string;
+      firstInDisplay: string;
+      lastOutDisplay: string;
+      meals: Array<{ startDisplay: string; endDisplay: string }>;
+    }
+  ) => {
+    if (!canEditTimesheets) return;
+    const key = `${uid}::${day.date}`;
+    setTimesheetDayDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        firstIn: day.firstInDisplay || "",
+        lastOut: day.lastOutDisplay || "",
+        firstMealStart: day.meals[0]?.startDisplay || "",
+        lastMealEnd: day.meals[0]?.endDisplay || "",
+        secondMealStart: day.meals[1]?.startDisplay || "",
+        secondMealEnd: day.meals[1]?.endDisplay || "",
+        thirdMealStart: day.meals[2]?.startDisplay || "",
+        thirdMealEnd: day.meals[2]?.endDisplay || "",
+      },
+    }));
+    setEditingTimesheetDayKey(key);
+    setMessage("");
+  };
+
+  const updateTimesheetDayDraft = (
+    uid: string,
+    date: string,
+    field: keyof TimesheetEditDraft,
+    value: string
+  ) => {
+    const key = `${uid}::${date}`;
+    setTimesheetDayDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {
+          firstIn: "",
+          lastOut: "",
+          firstMealStart: "",
+          lastMealEnd: "",
+          secondMealStart: "",
+          secondMealEnd: "",
+          thirdMealStart: "",
+          thirdMealEnd: "",
+        }),
+        [field]: value,
+      },
+    }));
+  };
+
+  const cancelTimesheetDayEdit = () => {
+    setEditingTimesheetDayKey(null);
+    setMessage("");
+  };
+
+  const saveTimesheetDayEdit = async (uid: string, date: string, editNote: string, editSignature: string) => {
+    if (!eventId || !canEditTimesheets) return;
+    const key = `${uid}::${date}`;
+    const draft = timesheetDayDrafts[key];
+    if (!draft) return;
+
+    // Only execs may delete time entries (clear a field that had a value)
+    if (userRole !== "exec") {
+      const originalDay = (timesheetDays[uid] || []).find((d) => d.date === date);
+      if (originalDay) {
+        const wouldDelete =
+          (originalDay.firstInDisplay && !draft.firstIn) ||
+          (originalDay.lastOutDisplay && !draft.lastOut) ||
+          (originalDay.meals[0]?.startDisplay && !draft.firstMealStart) ||
+          (originalDay.meals[0]?.endDisplay && !draft.lastMealEnd) ||
+          (originalDay.meals[1]?.startDisplay && !draft.secondMealStart) ||
+          (originalDay.meals[1]?.endDisplay && !draft.secondMealEnd) ||
+          (originalDay.meals[2]?.startDisplay && !draft.thirdMealStart) ||
+          (originalDay.meals[2]?.endDisplay && !draft.thirdMealEnd);
+        if (wouldDelete) {
+          setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
+          return;
+        }
+      }
+    }
+
+    setShowTimesheetEditModal(false);
+    setSavingTimesheetDayKey(key);
+    setMessage("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${eventId}/timesheet`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ userId: uid, day: date, spans: draft, editNote, editSignature }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage(data?.error || "Failed to save timesheet edits.");
+        return;
+      }
+
+      setEditingTimesheetDayKey(null);
+      setPendingTimesheetEditUid(null);
+      setPendingTimesheetEditDay(null);
+      await loadTimesheetTotals();
+      setMessage("Timesheet updated successfully.");
+      setTimeout(() => setMessage(""), 3000);
+    } catch (err: any) {
+      setMessage(err?.message || "Network error while saving timesheet.");
+    } finally {
+      setSavingTimesheetDayKey(null);
     }
   };
 
@@ -7772,10 +7899,14 @@ export default function EventDashboardPage() {
               const thirdMealStart   = span.thirdMealStartDisplay || isoToEventHHMM(span.thirdMealStart);
               const thirdMealEnd     = span.thirdMealEndDisplay || isoToEventHHMM(span.thirdMealEnd);
 
+              const inputCls = (editable: boolean) =>
+                `border rounded px-1 py-0.5 text-xs w-[68px] ${editable ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`;
+
               // Multi-day non-events (special timesheets spanning several days) record one
               // isolated timesheet per day. The collapsed firstIn/lastOut span would hide the
-              // individual days, so render a read-only per-day breakdown instead of a single
-              // editable row. (Editing multi-day timesheets is done from the worker's page.)
+              // individual days, so render one editable row per day instead of a single row
+              // for the whole span — each day is saved independently via the `day` param on
+              // the timesheet PUT endpoint.
               const memberDays = timesheetDays[uid];
               if (timesheetMultiDay && memberDays && memberDays.length > 0) {
                 const midColSpan = 6 + (showThirdMeal ? 2 : 0);
@@ -7833,36 +7964,118 @@ export default function EventDashboardPage() {
                         </Link>
                       </td>
                     </tr>
-                    {/* One read-only row per day */}
-                    {memberDays.map((day) => (
-                      <tr key={`${uid}-${day.date}`} className="bg-gray-50/60 hover:bg-gray-100/60">
-                        <td className="px-3 py-1 pl-8 whitespace-nowrap text-xs text-gray-600">
-                          <span className="text-gray-400 mr-1">↳</span>
-                          {formatTimesheetDayLabel(day.date)}
-                        </td>
-                        {applyGateOffset && (
-                          <td className={dayCellCls}>
-                            {subtractMinutesFromHHMM(day.firstInDisplay, GATE_PHONE_OFFSET_MINUTES) || "—"}
+                    {/* One row per day — editable for exec/manager on non-event (special) timesheets */}
+                    {memberDays.map((day) => {
+                      const dayKey = `${uid}::${day.date}`;
+                      const isDayEditing = canEditTimesheets && editingTimesheetDayKey === dayKey;
+                      const dayDraft = timesheetDayDrafts[dayKey] || {
+                        firstIn: day.firstInDisplay || "",
+                        lastOut: day.lastOutDisplay || "",
+                        firstMealStart: day.meals[0]?.startDisplay || "",
+                        lastMealEnd: day.meals[0]?.endDisplay || "",
+                        secondMealStart: day.meals[1]?.startDisplay || "",
+                        secondMealEnd: day.meals[1]?.endDisplay || "",
+                        thirdMealStart: day.meals[2]?.startDisplay || "",
+                        thirdMealEnd: day.meals[2]?.endDisplay || "",
+                      };
+                      const dayGateTime = applyGateOffset
+                        ? subtractMinutesFromHHMM(
+                            isDayEditing ? dayDraft.firstIn : day.firstInDisplay,
+                            GATE_PHONE_OFFSET_MINUTES
+                          )
+                        : (isDayEditing ? dayDraft.firstIn : day.firstInDisplay);
+
+                      return (
+                        <tr key={dayKey} className="bg-gray-50/60 hover:bg-gray-100/60">
+                          <td className="px-3 py-1 pl-8 whitespace-nowrap text-xs text-gray-600">
+                            <span className="text-gray-400 mr-1">↳</span>
+                            {formatTimesheetDayLabel(day.date)}
                           </td>
-                        )}
-                        <td className={dayCellCls}>{day.firstInDisplay || "—"}</td>
-                        <td className={dayCellCls}>{day.meals[0]?.startDisplay || "—"}</td>
-                        <td className={dayCellCls}>{day.meals[0]?.endDisplay || "—"}</td>
-                        <td className={dayCellCls}>{day.meals[1]?.startDisplay || "—"}</td>
-                        <td className={dayCellCls}>{day.meals[1]?.endDisplay || "—"}</td>
-                        {showThirdMeal && (
-                          <td className={dayCellCls}>{day.meals[2]?.startDisplay || "—"}</td>
-                        )}
-                        {showThirdMeal && (
-                          <td className={dayCellCls}>{day.meals[2]?.endDisplay || "—"}</td>
-                        )}
-                        <td className={dayCellCls}>{day.lastOutDisplay || "—"}</td>
-                        <td className="px-1 py-1 text-xs font-medium whitespace-nowrap">
-                          {formatHoursFromMs(day.totalMs)}
-                        </td>
-                        <td className="px-2 py-1"></td>
-                      </tr>
-                    ))}
+                          {applyGateOffset && (
+                            <td className={dayCellCls}>
+                              <input type="time" value={dayGateTime || ""} placeholder="--:--" readOnly
+                                className={inputCls(false)} />
+                            </td>
+                          )}
+                          <td className={dayCellCls}>
+                            <input type="time" value={isDayEditing ? dayDraft.firstIn : day.firstInDisplay}
+                              onChange={(e) => updateTimesheetDayDraft(uid, day.date, "firstIn", e.target.value)}
+                              readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                          </td>
+                          <td className={dayCellCls}>
+                            <input type="time" value={isDayEditing ? dayDraft.firstMealStart : (day.meals[0]?.startDisplay || "")}
+                              onChange={(e) => updateTimesheetDayDraft(uid, day.date, "firstMealStart", e.target.value)}
+                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                          </td>
+                          <td className={dayCellCls}>
+                            <input type="time" value={isDayEditing ? dayDraft.lastMealEnd : (day.meals[0]?.endDisplay || "")}
+                              onChange={(e) => updateTimesheetDayDraft(uid, day.date, "lastMealEnd", e.target.value)}
+                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                          </td>
+                          <td className={dayCellCls}>
+                            <input type="time" value={isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || "")}
+                              onChange={(e) => updateTimesheetDayDraft(uid, day.date, "secondMealStart", e.target.value)}
+                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                          </td>
+                          <td className={dayCellCls}>
+                            <input type="time" value={isDayEditing ? dayDraft.secondMealEnd : (day.meals[1]?.endDisplay || "")}
+                              onChange={(e) => updateTimesheetDayDraft(uid, day.date, "secondMealEnd", e.target.value)}
+                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                          </td>
+                          {showThirdMeal && (
+                            <td className={dayCellCls}>
+                              <input type="time" value={isDayEditing ? dayDraft.thirdMealStart : (day.meals[2]?.startDisplay || "")}
+                                onChange={(e) => updateTimesheetDayDraft(uid, day.date, "thirdMealStart", e.target.value)}
+                                placeholder="--:--" readOnly={!isDayEditing} className={`${inputCls(isDayEditing)} border-amber-300`} />
+                            </td>
+                          )}
+                          {showThirdMeal && (
+                            <td className={dayCellCls}>
+                              <input type="time" value={isDayEditing ? dayDraft.thirdMealEnd : (day.meals[2]?.endDisplay || "")}
+                                onChange={(e) => updateTimesheetDayDraft(uid, day.date, "thirdMealEnd", e.target.value)}
+                                placeholder="--:--" readOnly={!isDayEditing} className={`${inputCls(isDayEditing)} border-amber-300`} />
+                            </td>
+                          )}
+                          <td className={dayCellCls}>
+                            <input type="time" value={isDayEditing ? dayDraft.lastOut : day.lastOutDisplay}
+                              onChange={(e) => updateTimesheetDayDraft(uid, day.date, "lastOut", e.target.value)}
+                              readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                          </td>
+                          <td className="px-1 py-1 text-xs font-medium whitespace-nowrap">
+                            {formatHoursFromMs(day.totalMs)}
+                          </td>
+                          <td className="px-2 py-1 text-right whitespace-nowrap">
+                            {canEditTimesheets && (
+                              isDayEditing ? (
+                                <>
+                                  <button
+                                    onClick={() => openTimesheetEditModal(uid, day.date)}
+                                    disabled={savingTimesheetDayKey === dayKey}
+                                    className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {savingTimesheetDayKey === dayKey ? "Saving…" : "Save"}
+                                  </button>
+                                  <button
+                                    onClick={cancelTimesheetDayEdit}
+                                    disabled={savingTimesheetDayKey === dayKey}
+                                    className="text-gray-500 hover:text-gray-700 font-medium text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={() => startTimesheetDayEdit(uid, day)}
+                                  className="text-blue-600 hover:text-blue-700 font-medium text-xs"
+                                >
+                                  Edit
+                                </button>
+                              )
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </React.Fragment>
                 );
               }
@@ -7883,9 +8096,6 @@ export default function EventDashboardPage() {
                 ? subtractMinutesFromHHMM(isEditing ? draft.firstIn : firstClockIn, GATE_PHONE_OFFSET_MINUTES)
                 : (isEditing ? draft.firstIn : firstClockIn);
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
-
-              const inputCls = (editable: boolean) =>
-                `border rounded px-1 py-0.5 text-xs w-[68px] ${editable ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`;
 
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
@@ -9529,7 +9739,11 @@ export default function EventDashboardPage() {
                     return;
                   }
                   const sigDataUrl = signatureCanvasRef.current?.toDataURL("image/png") ?? "";
-                  saveTimesheetEdit(pendingTimesheetEditUid!, timesheetEditNote.trim(), sigDataUrl);
+                  if (pendingTimesheetEditDay) {
+                    saveTimesheetDayEdit(pendingTimesheetEditUid!, pendingTimesheetEditDay, timesheetEditNote.trim(), sigDataUrl);
+                  } else {
+                    saveTimesheetEdit(pendingTimesheetEditUid!, timesheetEditNote.trim(), sigDataUrl);
+                  }
                 }}
                 className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
               >

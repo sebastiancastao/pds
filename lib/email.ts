@@ -312,6 +312,84 @@ export async function sendInboxReplyEmail(data: {
 }
 
 /**
+ * Sends a human-composed Inbox message directly to the employee's own email
+ * address — unlike sendInboxReplyEmail above, which always routes to
+ * INBOX_MESSAGE_TO/BCC. Reserved for the one caller (jenvillar@1pds.net) who's
+ * allowed to respond straight to the employee instead of through that review
+ * layer, since routing their own reply back to themselves would be circular.
+ */
+export async function sendInboxDirectReplyEmail(data: {
+  to: string;
+  subject: string;
+  message: string;
+  senderUserId: string;
+  inReplyToId?: string;
+}): Promise<EmailResult & { emailLogId?: string }> {
+  const normalizedEmail = (data.to || '').toString().trim().toLowerCase();
+  const subject = (data.subject || '').toString().trim();
+  const message = (data.message || '').toString().trim();
+
+  if (!isValidEmail(normalizedEmail)) {
+    return { success: false, error: `Invalid recipient email: ${data.to || 'missing'}` };
+  }
+  if (!subject) {
+    return { success: false, error: 'Subject is required.' };
+  }
+  if (!message) {
+    return { success: false, error: 'Message is required.' };
+  }
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>${escapeHtml(subject)}</title></head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr><td align="center">
+      <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+        <tr>
+          <td style="padding:32px 30px;">
+            <div style="color:#1f2937;font-size:15px;line-height:1.6;white-space:pre-wrap;">${escapeHtml(message)}</div>
+            <p style="color:#6b7280;font-size:13px;margin:24px 0 0 0;">— PDS HR Team</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;border-top:1px solid #e0e0e0;">
+            <p style="color:#999999;font-size:11px;margin:0;">© ${new Date().getFullYear()} PDS. All rights reserved.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`.trim();
+
+  try {
+    const result = await sendResendEmail({
+      from: DEFAULT_FROM,
+      to: normalizedEmail,
+      subject,
+      html,
+      senderUserId: data.senderUserId,
+      inReplyToId: data.inReplyToId,
+    });
+
+    if (result.error) {
+      return { success: false, error: formatResendError(result.error) };
+    }
+
+    const loggedRow = (result.loggedRows || []).find(
+      (row) => row.recipient_email === normalizedEmail && row.recipient_type === 'to'
+    );
+
+    return { success: true, messageId: result.data?.id, emailLogId: loggedRow?.id };
+  } catch (error: any) {
+    console.error('❌ Inbox direct reply email failed:', error);
+    return { success: false, error: error?.message || 'Failed to send message' };
+  }
+}
+
+/**
  * Send temporary password email to new user
  * 
  * Security Features:

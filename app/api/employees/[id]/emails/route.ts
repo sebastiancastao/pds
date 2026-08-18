@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
-import { sendInboxReplyEmail } from "@/lib/email";
+import { sendInboxReplyEmail, sendInboxDirectReplyEmail } from "@/lib/email";
 import { safeDecrypt } from "@/lib/encryption";
 
 const supabaseAdmin = createClient(
@@ -20,6 +20,11 @@ const supabaseAnon = createClient(
 const HR_ROLES = new Set([
   "admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4",
 ]);
+
+// The one HR account allowed to respond straight to an employee's real email
+// instead of through the jenvillar/sebastian review inbox (see lib/email.ts) —
+// routing their own reply back to themselves would be circular.
+const DIRECT_REPLY_EMAIL = "jenvillar@1pds.net";
 
 function decryptValue(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "";
@@ -121,13 +126,15 @@ export async function POST(
 
     const { data: callerRecord } = await supabaseAdmin
       .from("users")
-      .select("role")
+      .select("role, email")
       .eq("id", caller.id)
       .maybeSingle();
     const callerRole = String(callerRecord?.role || "").toLowerCase();
     if (!HR_ROLES.has(callerRole)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
+    const callerEmail = String(callerRecord?.email || caller.email || "").trim().toLowerCase();
+    const isDirectReplySender = callerEmail === DIRECT_REPLY_EMAIL;
 
     const { data: employeeRecord, error: employeeError } = await supabaseAdmin
       .from("users")
@@ -172,25 +179,39 @@ export async function POST(
       }
     }
 
-    const { data: employeeProfile } = await supabaseAdmin
-      .from("profiles")
-      .select("first_name, last_name")
-      .eq("user_id", employeeId)
-      .maybeSingle();
+    let sendResult: Awaited<ReturnType<typeof sendInboxReplyEmail>>;
+    if (isDirectReplySender) {
+      if (!employeeRecord.email) {
+        return NextResponse.json({ error: "Employee has no email on file." }, { status: 400 });
+      }
+      sendResult = await sendInboxDirectReplyEmail({
+        to: employeeRecord.email,
+        subject,
+        message,
+        senderUserId: caller.id,
+        inReplyToId,
+      });
+    } else {
+      const { data: employeeProfile } = await supabaseAdmin
+        .from("profiles")
+        .select("first_name, last_name")
+        .eq("user_id", employeeId)
+        .maybeSingle();
 
-    const employeeName = decryptProfileName(employeeProfile);
-    const employeeLabel = employeeRecord.email
-      ? `${employeeName || "Unnamed"} <${employeeRecord.email}>`
-      : employeeName || employeeId;
+      const employeeName = decryptProfileName(employeeProfile);
+      const employeeLabel = employeeRecord.email
+        ? `${employeeName || "Unnamed"} <${employeeRecord.email}>`
+        : employeeName || employeeId;
 
-    const sendResult = await sendInboxReplyEmail({
-      subject,
-      message,
-      senderUserId: caller.id,
-      inReplyToId,
-      employeeUserId: employeeId,
-      employeeLabel,
-    });
+      sendResult = await sendInboxReplyEmail({
+        subject,
+        message,
+        senderUserId: caller.id,
+        inReplyToId,
+        employeeUserId: employeeId,
+        employeeLabel,
+      });
+    }
 
     if (!sendResult.success) {
       return NextResponse.json({ error: sendResult.error || "Failed to send message." }, { status: 502 });

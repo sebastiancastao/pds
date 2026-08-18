@@ -771,16 +771,35 @@ export async function PUT(
       return NextResponse.json({ error: "Event date is missing" }, { status: 400 });
     }
     const eventEndDate = normalizeEventDate((event as any)?.end_date);
-    if (eventEndDate && eventEndDate > eventDate) {
-      // This editor rebuilds a single day's timeline from all event-bound entries,
-      // which would collapse a multi-day event into one day.
-      return NextResponse.json(
-        { error: "This event spans multiple days. Edit each day from the worker's time sheet page instead." },
-        { status: 400 }
-      );
+    const isMultiDayEvent = Boolean(eventEndDate && eventEndDate > eventDate);
+    const requestedDay = normalizeEventDate(body?.day);
+    // Multi-day non-event (special) timesheets record one isolated timesheet per
+    // local day. This editor rebuilds a single day's timeline from event-bound
+    // entries, so a multi-day edit must say which day it's rebuilding — otherwise
+    // every day's entries would collapse into one.
+    let targetDate = eventDate;
+    if (isMultiDayEvent) {
+      if (!requestedDay) {
+        return NextResponse.json(
+          { error: "This event spans multiple days. Select which day you are editing." },
+          { status: 400 }
+        );
+      }
+      if (requestedDay < eventDate || requestedDay > eventEndDate!) {
+        return NextResponse.json(
+          { error: `Day must be between ${eventDate} and ${eventEndDate}.` },
+          { status: 400 }
+        );
+      }
+      targetDate = requestedDay;
     }
     const eventTimezone = getTimezoneForState(event?.state);
-    const allowOvernight = eventAllowsOvernight(event || {});
+    // A day before the event's last day may legitimately spill past midnight into
+    // the next calendar day (still within the event's span); the final day only
+    // spills over if the event itself is flagged/scheduled as overnight.
+    const allowOvernight = isMultiDayEvent
+      ? targetDate < eventEndDate! || eventAllowsOvernight(event || {})
+      : eventAllowsOvernight(event || {});
 
     const { data: targetUser, error: targetUserError } = await supabaseAdmin
       .from("users")
@@ -804,26 +823,26 @@ export async function PUT(
     const useMeal3 = !!(meal3Start && meal3End);
 
     const timeline: TimelineEntry[] = [
-      { action: "clock_in", timestamp: toZonedIso(eventDate, spans.firstIn, eventTimezone) },
+      { action: "clock_in", timestamp: toZonedIso(targetDate, spans.firstIn, eventTimezone) },
       ...(useMeal1
         ? [
-            { action: "meal_start", timestamp: toZonedIso(eventDate, meal1Start, eventTimezone) },
-            { action: "meal_end", timestamp: toZonedIso(eventDate, meal1End, eventTimezone) },
+            { action: "meal_start", timestamp: toZonedIso(targetDate, meal1Start, eventTimezone) },
+            { action: "meal_end", timestamp: toZonedIso(targetDate, meal1End, eventTimezone) },
           ]
         : []),
       ...(useMeal2
         ? [
-            { action: "meal_start", timestamp: toZonedIso(eventDate, meal2Start, eventTimezone) },
-            { action: "meal_end", timestamp: toZonedIso(eventDate, meal2End, eventTimezone) },
+            { action: "meal_start", timestamp: toZonedIso(targetDate, meal2Start, eventTimezone) },
+            { action: "meal_end", timestamp: toZonedIso(targetDate, meal2End, eventTimezone) },
           ]
         : []),
       ...(useMeal3
         ? [
-            { action: "meal_start", timestamp: toZonedIso(eventDate, meal3Start, eventTimezone) },
-            { action: "meal_end", timestamp: toZonedIso(eventDate, meal3End, eventTimezone) },
+            { action: "meal_start", timestamp: toZonedIso(targetDate, meal3Start, eventTimezone) },
+            { action: "meal_end", timestamp: toZonedIso(targetDate, meal3End, eventTimezone) },
           ]
         : []),
-      { action: "clock_out", timestamp: toZonedIso(eventDate, spans.lastOut, eventTimezone) },
+      { action: "clock_out", timestamp: toZonedIso(targetDate, spans.lastOut, eventTimezone) },
     ].filter((entry) => !!entry.timestamp);
 
     // Handle overnight shifts: if a timestamp is earlier than the previous one,
@@ -860,12 +879,12 @@ export async function PUT(
       }
     }
 
-    const windowError = validateTimelineWithinEventWindow(timeline, event || {}, eventDate, eventTimezone);
+    const windowError = validateTimelineWithinEventWindow(timeline, event || {}, targetDate, eventTimezone);
     if (windowError) {
       return NextResponse.json({ error: windowError }, { status: 400 });
     }
 
-    const dayRange = getLocalDateRange(eventDate, eventTimezone, allowOvernight ? 2 : 1);
+    const dayRange = getLocalDateRange(targetDate, eventTimezone, allowOvernight ? 2 : 1);
     if (!dayRange) {
       return NextResponse.json({ error: "Invalid event date/timezone" }, { status: 400 });
     }
@@ -873,13 +892,22 @@ export async function PUT(
 
     // Replace all rows already bound to this event for this worker, plus any
     // untagged rows inside the local 2-day window that the editor is taking over.
+    // For a multi-day (special) event, entries tagged with this event_id span every
+    // day of the event, so the event-bound query must also be scoped to the target
+    // day's window — otherwise every day's entries would be pulled in and collapsed
+    // into the single day's timeline being rebuilt here.
+    let eventBoundQuery = supabaseAdmin
+      .from("time_entries")
+      .select("id, action, timestamp, notes, event_id")
+      .eq("user_id", targetUserId)
+      .eq("event_id", eventId)
+      .order("timestamp", { ascending: true });
+    if (isMultiDayEvent) {
+      eventBoundQuery = eventBoundQuery.gte("timestamp", dayStart).lt("timestamp", dayEndExclusive);
+    }
+
     const [eventBoundResult, nullWindowResult] = await Promise.all([
-      supabaseAdmin
-        .from("time_entries")
-        .select("id, action, timestamp, notes, event_id")
-        .eq("user_id", targetUserId)
-        .eq("event_id", eventId)
-        .order("timestamp", { ascending: true }),
+      eventBoundQuery,
       supabaseAdmin
         .from("time_entries")
         .select("id, action, timestamp, notes, event_id")
@@ -1048,6 +1076,7 @@ export async function PUT(
     return NextResponse.json({
       ok: true,
       totalMs,
+      day: isMultiDayEvent ? targetDate : undefined,
       span: {
         firstIn: clockInTs,
         lastOut: clockOutTs,
