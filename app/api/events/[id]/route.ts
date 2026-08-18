@@ -62,6 +62,7 @@ export async function GET(
 
     // For supervisors/supervisor2/supervisor3, look up their lead manager(s) and group members to grant access
     let allowedCreatorIds: string[] = [user.id];
+    let supervisorManagerIds: string[] = [];
     if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3") {
       const { data: teamLinks } = await supabaseAdmin
         .from("manager_team_members")
@@ -69,19 +70,18 @@ export async function GET(
         .eq("member_id", user.id)
         .eq("is_active", true);
       if (teamLinks) {
-        const managerIds: string[] = [];
         for (const link of teamLinks) {
           if (!allowedCreatorIds.includes(link.manager_id)) {
             allowedCreatorIds.push(link.manager_id);
-            managerIds.push(link.manager_id);
+            supervisorManagerIds.push(link.manager_id);
           }
         }
         // Also include co-supervisors (other active members under the same managers)
-        if (managerIds.length > 0) {
+        if (supervisorManagerIds.length > 0) {
           const { data: groupMembers } = await supabaseAdmin
             .from("manager_team_members")
             .select("member_id")
-            .in("manager_id", managerIds)
+            .in("manager_id", supervisorManagerIds)
             .eq("is_active", true);
           if (groupMembers) {
             for (const member of groupMembers) {
@@ -94,13 +94,16 @@ export async function GET(
       }
     }
 
-    // For managers: check if the event is at one of their assigned venues
+    // For managers: check if the event is at one of their assigned venues.
+    // Supervisors inherit this from their lead manager(s), so they can see
+    // events at those venues even when someone else created them.
     let managerAssignedVenueNames: string[] = [];
-    if (userRole === "manager") {
+    const venueManagerIds = userRole === "manager" ? [user.id] : supervisorManagerIds;
+    if (venueManagerIds.length > 0) {
       const { data: venueLinks } = await supabaseAdmin
         .from("venue_managers")
         .select("venue_id")
-        .eq("manager_id", user.id)
+        .in("manager_id", venueManagerIds)
         .eq("is_active", true);
 
       if (venueLinks && venueLinks.length > 0) {

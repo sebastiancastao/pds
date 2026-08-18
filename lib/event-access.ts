@@ -38,12 +38,16 @@ async function isUserOnEventTeam(
 
 async function getAssignedVenueNames(
   supabaseAdmin: SupabaseClient,
-  userId: string
+  managerIds: string[]
 ): Promise<Set<string>> {
+  if (managerIds.length === 0) {
+    return new Set<string>();
+  }
+
   const { data: venueLinks, error: venueLinksError } = await supabaseAdmin
     .from("venue_managers")
     .select("venue_id")
-    .eq("manager_id", userId)
+    .in("manager_id", managerIds)
     .eq("is_active", true);
 
   if (venueLinksError) {
@@ -78,12 +82,10 @@ async function getAssignedVenueNames(
   );
 }
 
-async function getSupervisorGroupCreatorIds(
+async function getDirectManagerIds(
   supabaseAdmin: SupabaseClient,
   userId: string
-): Promise<Set<string>> {
-  const allowedCreatorIds = new Set<string>([userId]);
-
+): Promise<string[]> {
   const { data: teamLinks, error: teamLinksError } = await supabaseAdmin
     .from("manager_team_members")
     .select("manager_id")
@@ -94,14 +96,21 @@ async function getSupervisorGroupCreatorIds(
     throw new Error(teamLinksError.message);
   }
 
-  const managerIds = Array.from(
+  return Array.from(
     new Set(
       (teamLinks || [])
         .map((row: any) => normalizeText(row?.manager_id))
         .filter(Boolean)
     )
   );
+}
 
+async function getSupervisorGroupCreatorIds(
+  supabaseAdmin: SupabaseClient,
+  userId: string,
+  managerIds: string[]
+): Promise<Set<string>> {
+  const allowedCreatorIds = new Set<string>([userId]);
   managerIds.forEach((managerId) => allowedCreatorIds.add(managerId));
 
   if (managerIds.length === 0) {
@@ -157,7 +166,7 @@ export async function canUserAccessLoadedEvent(
     }
 
     if (venueName) {
-      const assignedVenueNames = await getAssignedVenueNames(supabaseAdmin, userId);
+      const assignedVenueNames = await getAssignedVenueNames(supabaseAdmin, [userId]);
       if (assignedVenueNames.has(venueName)) {
         return true;
       }
@@ -165,13 +174,24 @@ export async function canUserAccessLoadedEvent(
   }
 
   if (SUPERVISOR_ROLES.has(role)) {
-    const allowedCreatorIds = await getSupervisorGroupCreatorIds(supabaseAdmin, userId);
+    const managerIds = await getDirectManagerIds(supabaseAdmin, userId);
+    const allowedCreatorIds = await getSupervisorGroupCreatorIds(supabaseAdmin, userId, managerIds);
     if (creatorId && allowedCreatorIds.has(creatorId)) {
       return true;
     }
 
     if (await isUserOnEventTeam(supabaseAdmin, eventId, userId)) {
       return true;
+    }
+
+    // Supervisors inherit their lead manager(s)' venue assignments too, so they
+    // can see events at those venues even when someone else created them —
+    // this mirrors the manager's own venue-based access above.
+    if (venueName && managerIds.length > 0) {
+      const assignedVenueNames = await getAssignedVenueNames(supabaseAdmin, managerIds);
+      if (assignedVenueNames.has(venueName)) {
+        return true;
+      }
     }
   }
 

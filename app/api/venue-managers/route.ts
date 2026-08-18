@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const ASSIGNABLE_VENUE_MANAGER_ROLES = ['manager', 'supervisor3'];
+const ASSIGNABLE_VENUE_MANAGER_ROLES = ['manager', 'supervisor3', 'exec'];
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' };
 
 // GET: Retrieve all venue manager assignments
@@ -205,7 +205,7 @@ export async function POST(request: NextRequest) {
     const normalizedManagerRole = String(managerData.role || '').trim().toLowerCase();
     if (!ASSIGNABLE_VENUE_MANAGER_ROLES.includes(normalizedManagerRole)) {
       return NextResponse.json({
-        error: 'User must have manager or supervisor3 role'
+        error: 'User must have manager, supervisor3, or exec role'
       }, { status: 400 });
     }
 

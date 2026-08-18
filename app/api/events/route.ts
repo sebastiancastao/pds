@@ -221,7 +221,17 @@ export async function GET(req: NextRequest) {
 
     // Include all events at venues this user is assigned to in venue management.
     // venue_managers can hold managers, supervisors, and execs, so don't gate on role.
-    let assignedVenueNames: string[] = [];
+    const assignedVenueNameSet = new Set<string>();
+
+    const addVenueNames = (rows: Array<{ venue_name?: unknown } | null | undefined>) => {
+      // Match both the stored and trimmed names: events.venue is trimmed at
+      // creation, but venue_reference names have historically had stray spaces.
+      for (const row of rows) {
+        const raw = typeof row?.venue_name === 'string' ? row.venue_name : '';
+        if (raw) assignedVenueNameSet.add(raw);
+        if (raw.trim()) assignedVenueNameSet.add(raw.trim());
+      }
+    };
 
     const { data: venueLinks } = await supabaseAdmin
       .from('venue_managers')
@@ -236,17 +246,7 @@ export async function GET(req: NextRequest) {
         .select('venue_name')
         .in('id', venueIds);
 
-      if (venueRefs) {
-        // Match both the stored and trimmed names: events.venue is trimmed at
-        // creation, but venue_reference names have historically had stray spaces.
-        const names = new Set<string>();
-        for (const v of venueRefs) {
-          const raw = typeof v.venue_name === 'string' ? v.venue_name : '';
-          if (raw) names.add(raw);
-          if (raw.trim()) names.add(raw.trim());
-        }
-        assignedVenueNames = Array.from(names);
-      }
+      if (venueRefs) addVenueNames(venueRefs);
     }
 
     if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') {
@@ -281,9 +281,30 @@ export async function GET(req: NextRequest) {
               }
             }
           }
+
+          // Supervisors also see events at the venues their lead manager(s) oversee,
+          // not just events that manager personally created — mirrors the manager's
+          // own venue-based access above.
+          const { data: managerVenueLinks } = await supabaseAdmin
+            .from('venue_managers')
+            .select('venue_id')
+            .in('manager_id', managerIds)
+            .eq('is_active', true);
+
+          if (managerVenueLinks && managerVenueLinks.length > 0) {
+            const managerVenueIds = managerVenueLinks.map((v: any) => v.venue_id);
+            const { data: managerVenueRefs } = await supabaseAdmin
+              .from('venue_reference')
+              .select('venue_name')
+              .in('id', managerVenueIds);
+
+            if (managerVenueRefs) addVenueNames(managerVenueRefs);
+          }
         }
       }
     }
+
+    const assignedVenueNames = Array.from(assignedVenueNameSet);
 
     // Build query: filter by creator IDs, plus venue names for managers
     let data: any[] | null = null;
