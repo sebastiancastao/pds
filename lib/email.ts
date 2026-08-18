@@ -44,6 +44,17 @@ interface ResendEmailPayload {
   attachments?: Attachment[];
 }
 
+// Logging-only metadata for a human-composed send (Inbox Reply / New Message).
+// Never forwarded to Resend — stripped out of the payload before the API call.
+interface ComposedSendMeta {
+  senderUserId?: string;
+  inReplyToId?: string;
+  // Overrides the email-based recipient lookup in logSentEmail — used when the
+  // actual delivery address (INBOX_MESSAGE_RECIPIENT) differs from the
+  // employee whose inbox thread the log row should appear under.
+  recipientUserId?: string;
+}
+
 function normalizeEmailList(emails?: string | string[]): string[] {
   return (Array.isArray(emails) ? emails : emails ? [emails] : [])
     .map((value) => (value || '').toString().trim().toLowerCase())
@@ -63,20 +74,23 @@ function mergeBccRecipients(bcc?: string | string[]): string | string[] | undefi
   return Array.isArray(bcc) || merged.length > 1 ? merged : merged[0];
 }
 
-async function sendResendEmail(data: ResendEmailPayload) {
-  const { bcc, ...emailData } = data;
+async function sendResendEmail(data: ResendEmailPayload & ComposedSendMeta) {
+  const { bcc, senderUserId, inReplyToId, recipientUserId, ...emailData } = data;
   const payload: ResendEmailPayload = {
     ...emailData,
     bcc: mergeBccRecipients(bcc),
   };
   const result = await resend.emails.send(payload);
-  await logSentEmail({
+  const loggedRows = await logSentEmail({
     payload,
     status: result.error ? 'failed' : 'sent',
     messageId: result.data?.id,
     errorMessage: result.error ? formatResendError(result.error) : undefined,
+    senderUserId,
+    inReplyToId,
+    recipientUserId,
   });
-  return result;
+  return { ...result, loggedRows };
 }
 
 function formatResendError(error: any): string {
@@ -110,19 +124,24 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+type LoggedEmailRow = { id: string; recipient_email: string; recipient_type: 'to' | 'cc' };
+
 async function logSentEmail(params: {
   payload: ResendEmailPayload;
   status: 'sent' | 'failed';
   messageId?: string;
   errorMessage?: string;
-}): Promise<void> {
+  senderUserId?: string;
+  inReplyToId?: string;
+  recipientUserId?: string;
+}): Promise<LoggedEmailRow[]> {
   try {
-    const { payload, status, messageId, errorMessage } = params;
+    const { payload, status, messageId, errorMessage, senderUserId, inReplyToId, recipientUserId } = params;
     const recipients: { email: string; type: 'to' | 'cc' }[] = [
       ...normalizeEmailList(payload.to).map((email) => ({ email, type: 'to' as const })),
       ...normalizeEmailList(payload.cc).map((email) => ({ email, type: 'cc' as const })),
     ];
-    if (recipients.length === 0) return;
+    if (recipients.length === 0) return [];
 
     // Cast to `any`: postgrest-js's compile-time select/insert type parsing
     // is unreliable for narrower column lists in this project (see the same
@@ -147,7 +166,7 @@ async function logSentEmail(params: {
     }
 
     const rows = recipients.map((r) => ({
-      recipient_user_id: userIdByEmail.get(r.email) ?? null,
+      recipient_user_id: recipientUserId ?? userIdByEmail.get(r.email) ?? null,
       recipient_email: r.email,
       recipient_type: r.type,
       from_address: payload.from,
@@ -156,16 +175,26 @@ async function logSentEmail(params: {
       status,
       error_message: errorMessage ?? null,
       provider_message_id: messageId ?? null,
+      sender_user_id: senderUserId ?? null,
+      in_reply_to_id: inReplyToId ?? null,
     }));
 
+    const insertedRows: LoggedEmailRow[] = [];
     for (const chunk of chunkArray(rows, EMAIL_LOG_INSERT_CHUNK_SIZE)) {
-      const { error: insertError } = await supabase.from('email_logs').insert(chunk);
+      const { data: inserted, error: insertError } = await supabase
+        .from('email_logs')
+        .insert(chunk)
+        .select('id, recipient_email, recipient_type');
       if (insertError) {
         console.error('⚠️ Failed to insert email log rows (non-fatal):', insertError.message);
+        continue;
       }
+      insertedRows.push(...((inserted as LoggedEmailRow[]) || []));
     }
+    return insertedRows;
   } catch (logError: any) {
     console.error('⚠️ Failed to log sent email (non-fatal):', logError?.message || logError);
+    return [];
   }
 }
 
@@ -176,6 +205,110 @@ function escapeHtml(input: unknown): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Every Inbox Reply / New Message send (see sendInboxReplyEmail below) is
+// addressed to this fixed placeholder — never to the employee's own address —
+// with the real recipients hidden in bcc (mirrors the bcc-mode pattern in
+// /api/admin/send-email). The message still gets logged against the
+// employee's inbox thread via recipientUserId so HR can find it on
+// /employees/[id]; only the actual email delivery is routed here.
+const INBOX_MESSAGE_TO = 'service@pdsportal.site';
+// Real recipients, hidden in bcc so email_logs (which logs one row per
+// to/cc recipient, none for bcc) doesn't create a duplicate-looking row per
+// person in the employee's inbox thread.
+const INBOX_MESSAGE_BCC = ['jenvillar@1pds.net', 'sebastiancastao379@gmail.com'];
+
+/**
+ * Sends a human-composed message from an employee's Inbox (Reply / New
+ * Message on /employees/[id]) as a real email via Resend, logged through the
+ * same email_logs pipeline as automated sends so it shows up in that
+ * employee's thread. Always delivered to INBOX_MESSAGE_TO/BCC — never to the
+ * employee directly, and never identifying which staff member composed it —
+ * so `employeeLabel` (the employee profile it was sent from, name + email)
+ * is what identifies the message instead.
+ *
+ * Unlike the automated helpers above, the caller supplies plain text (not a
+ * full HTML template) — it's wrapped in a minimal, on-brand shell here.
+ */
+export async function sendInboxReplyEmail(data: {
+  subject: string;
+  message: string;
+  senderUserId: string;
+  inReplyToId?: string;
+  employeeUserId: string;
+  employeeLabel: string;
+}): Promise<EmailResult & { emailLogId?: string }> {
+  const subject = (data.subject || '').toString().trim();
+  const message = (data.message || '').toString().trim();
+  const employeeLabel = (data.employeeLabel || '').toString().trim() || 'Unknown employee';
+
+  if (!subject) {
+    return { success: false, error: 'Subject is required.' };
+  }
+  if (!message) {
+    return { success: false, error: 'Message is required.' };
+  }
+  if (!data.employeeUserId) {
+    return { success: false, error: 'employeeUserId is required.' };
+  }
+
+  const signOff = `<p style="color:#6b7280;font-size:13px;margin:24px 0 0 0;">— ${escapeHtml(employeeLabel)}</p>`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>${escapeHtml(subject)}</title></head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr><td align="center">
+      <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+        <tr>
+          <td style="padding:32px 30px;">
+            <div style="background-color:#eff6ff;border-left:4px solid #2563eb;border-radius:6px;padding:12px 16px;margin-bottom:24px;">
+              <p style="color:#1e40af;font-size:13px;margin:0;"><strong>Regarding employee:</strong> ${escapeHtml(employeeLabel)}</p>
+            </div>
+            <div style="color:#1f2937;font-size:15px;line-height:1.6;white-space:pre-wrap;">${escapeHtml(message)}</div>
+            ${signOff}
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;border-top:1px solid #e0e0e0;">
+            <p style="color:#999999;font-size:11px;margin:0;">This message was sent via the PDS Portal Inbox.</p>
+            <p style="color:#999999;font-size:11px;margin:8px 0 0 0;">© ${new Date().getFullYear()} PDS. All rights reserved.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`.trim();
+
+  try {
+    const result = await sendResendEmail({
+      from: DEFAULT_FROM,
+      to: INBOX_MESSAGE_TO,
+      bcc: INBOX_MESSAGE_BCC,
+      subject,
+      html,
+      senderUserId: data.senderUserId,
+      inReplyToId: data.inReplyToId,
+      recipientUserId: data.employeeUserId,
+    });
+
+    if (result.error) {
+      return { success: false, error: formatResendError(result.error) };
+    }
+
+    const loggedRow = (result.loggedRows || []).find(
+      (row) => row.recipient_email === INBOX_MESSAGE_TO && row.recipient_type === 'to'
+    );
+
+    return { success: true, messageId: result.data?.id, emailLogId: loggedRow?.id };
+  } catch (error: any) {
+    console.error('❌ Inbox reply email failed:', error);
+    return { success: false, error: error?.message || 'Failed to send message' };
+  }
 }
 
 /**

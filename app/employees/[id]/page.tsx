@@ -188,6 +188,8 @@ type EmailLogEntry = {
   created_at: string;
   read_at: string | null;
   read_by: string | null;
+  sender_user_id?: string | null;
+  in_reply_to_id?: string | null;
 };
 
 const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
@@ -873,6 +875,16 @@ export default function WorkerProfilePage() {
   const [emailInboxLoading, setEmailInboxLoading] = useState(false);
   const [emailInboxError, setEmailInboxError] = useState<string | null>(null);
   const [selectedInboxEmail, setSelectedInboxEmail] = useState<EmailLogEntry | null>(null);
+  // Whether the caller may Reply / send a New Message into this inbox (HR/admin roles only —
+  // returned by GET /api/employees/[id]/emails alongside the email list).
+  const [canRespondToInbox, setCanRespondToInbox] = useState(false);
+  // Compose panel shared by "Reply" (replyTo set) and "New Message" (replyTo null).
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeReplyTo, setComposeReplyTo] = useState<EmailLogEntry | null>(null);
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeMessage, setComposeMessage] = useState("");
+  const [composeSending, setComposeSending] = useState(false);
+  const [composeError, setComposeError] = useState("");
 
   const [dataEditRequestDoc, setDataEditRequestDoc] = useState<string>("");
   const [dataEditRequestReason, setDataEditRequestReason] = useState<string>("");
@@ -1050,8 +1062,10 @@ export default function WorkerProfilePage() {
           if (body.error) {
             setEmailInboxError(body.error);
             setEmailInbox([]);
+            setCanRespondToInbox(false);
           } else {
             setEmailInbox((body.emails as EmailLogEntry[]) ?? []);
+            setCanRespondToInbox(Boolean(body.canRespond));
           }
           setEmailInboxLoading(false);
         })
@@ -1085,6 +1099,89 @@ export default function WorkerProfilePage() {
         // Non-fatal: worst case the chip re-syncs on next inbox refresh.
       });
     });
+  };
+
+  // Opens the compose panel for a brand new message (no reply target).
+  const openNewMessage = () => {
+    setComposeReplyTo(null);
+    setComposeSubject("");
+    setComposeMessage("");
+    setComposeError("");
+    setComposeOpen(true);
+  };
+
+  // Opens the compose panel pre-filled to reply to the given inbox email.
+  const openReplyToEmail = (mail: EmailLogEntry) => {
+    setComposeReplyTo(mail);
+    const subject = mail.subject || "";
+    setComposeSubject(/^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`);
+    setComposeMessage("");
+    setComposeError("");
+    setComposeOpen(true);
+  };
+
+  const closeCompose = () => {
+    if (composeSending) return;
+    setComposeOpen(false);
+    setComposeReplyTo(null);
+    setComposeSubject("");
+    setComposeMessage("");
+    setComposeError("");
+  };
+
+  // Sends the composed message (new or reply) as a real email to the employee,
+  // logged into email_logs, and prepends it to the inbox list on success.
+  const submitCompose = async () => {
+    if (!employeeId || composeSending) return;
+    const trimmedSubject = composeSubject.trim();
+    const trimmedMessage = composeMessage.trim();
+    if (!trimmedSubject) {
+      setComposeError("Subject is required.");
+      return;
+    }
+    if (!trimmedMessage) {
+      setComposeError("Message is required.");
+      return;
+    }
+
+    setComposeSending(true);
+    setComposeError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/employees/${employeeId}/emails`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          subject: trimmedSubject,
+          message: trimmedMessage,
+          inReplyToId: composeReplyTo?.id,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to send message.");
+      }
+
+      if (data?.email) {
+        setEmailInbox((prev) => [data.email as EmailLogEntry, ...prev]);
+      } else {
+        // Sent but the fresh row couldn't be resolved server-side — refresh to pick it up.
+        setRefreshTick((current) => current + 1);
+      }
+
+      setComposeOpen(false);
+      setComposeReplyTo(null);
+      setComposeSubject("");
+      setComposeMessage("");
+    } catch (error: any) {
+      setComposeError(error?.message || "Failed to send message.");
+    } finally {
+      setComposeSending(false);
+    }
   };
 
   // Fetch I-9 documents after worker is loaded
@@ -4968,9 +5065,23 @@ export default function WorkerProfilePage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
                 <h2 className="text-base font-semibold text-gray-900">Inbox</h2>
-                {!emailInboxLoading && !emailInboxError && (
-                  <span className="ml-auto text-xs text-gray-400">{emailInbox.length} email{emailInbox.length !== 1 ? "s" : ""}</span>
-                )}
+                <div className="ml-auto flex items-center gap-3">
+                  {!emailInboxLoading && !emailInboxError && (
+                    <span className="text-xs text-gray-400">{emailInbox.length} email{emailInbox.length !== 1 ? "s" : ""}</span>
+                  )}
+                  {canRespondToInbox && (
+                    <button
+                      type="button"
+                      onClick={openNewMessage}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      New Message
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="divide-y divide-gray-50">
                 {emailInboxLoading ? (
@@ -5043,15 +5154,33 @@ export default function WorkerProfilePage() {
                       })}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedInboxEmail(null)}
-                    className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 shrink-0"
-                  >
-                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {canRespondToInbox && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const mail = selectedInboxEmail;
+                          setSelectedInboxEmail(null);
+                          if (mail) openReplyToEmail(mail);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17l-5-5 5-5M4 12h13a4 4 0 014 4v1" />
+                        </svg>
+                        Reply
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedInboxEmail(null)}
+                      className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700"
+                    >
+                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 <div className="flex-1 overflow-hidden bg-gray-50">
                   <iframe
@@ -5060,6 +5189,90 @@ export default function WorkerProfilePage() {
                     srcDoc={selectedInboxEmail.html_body}
                     className="h-[65vh] w-full border-0 bg-white"
                   />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Inbox compose panel: shared by "New Message" and "Reply" */}
+          {composeOpen && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+              onClick={closeCompose}
+            >
+              <div
+                className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-6 py-4">
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      {composeReplyTo ? "Reply" : "New Message"}
+                    </h3>
+                    <p className="mt-1 text-xs text-gray-500 truncate">
+                      Regarding {employee?.first_name} {employee?.last_name}
+                      {employee?.email ? ` (${employee.email})` : ""}
+                      {composeReplyTo ? ` · Replying to "${composeReplyTo.subject}"` : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeCompose}
+                    disabled={composeSending}
+                    className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 shrink-0 disabled:opacity-50"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Subject</label>
+                    <input
+                      type="text"
+                      value={composeSubject}
+                      onChange={(e) => setComposeSubject(e.target.value)}
+                      maxLength={200}
+                      disabled={composeSending}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                      placeholder="Subject"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Message</label>
+                    <textarea
+                      value={composeMessage}
+                      onChange={(e) => setComposeMessage(e.target.value)}
+                      maxLength={5000}
+                      disabled={composeSending}
+                      rows={8}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 resize-none"
+                      placeholder="Write your message..."
+                    />
+                    <p className="mt-1 text-right text-[11px] text-gray-400">{composeMessage.length}/5000</p>
+                  </div>
+                  {composeError && (
+                    <p className="text-sm text-red-600">{composeError}</p>
+                  )}
+                </div>
+                <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-6 py-4">
+                  <button
+                    type="button"
+                    onClick={closeCompose}
+                    disabled={composeSending}
+                    className="px-4 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitCompose}
+                    disabled={composeSending || !composeSubject.trim() || !composeMessage.trim()}
+                    className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {composeSending ? "Sending..." : "Send"}
+                  </button>
                 </div>
               </div>
             </div>
