@@ -20,6 +20,17 @@ export async function GET(req: NextRequest) {
     const endDate = searchParams.get('endDate');
     const includeHours = searchParams.get('includeHours') === 'true';
     const debug = searchParams.get('debug') === 'true';
+    // Optional extra event ids to include regardless of date range — used to pull in a
+    // shared/linked-commission partner event whose own date falls outside the pay period,
+    // so its commission pool + vendor roster is available to merge with buildLinkedCommissionDistribution.
+    const extraEventIds = Array.from(
+      new Set(
+        (searchParams.get('extraEventIds') || '')
+          .split(',')
+          .map((id) => id.trim())
+          .filter(Boolean)
+      )
+    );
 
     if (!startDate || !endDate) {
       return NextResponse.json({ error: 'Missing required parameters: startDate and endDate' }, { status: 400 });
@@ -69,7 +80,23 @@ export async function GET(req: NextRequest) {
       console.error('SUPABASE SELECT ERROR:', eventsError);
       return NextResponse.json({ error: eventsError.message || eventsError.code || eventsError }, { status: 500 });
     }
-    const events = await attachRegionMetadataToEvents(supabaseAdmin, rawEvents || []);
+
+    let combinedRawEvents = rawEvents || [];
+    const idsAlreadyLoaded = new Set(combinedRawEvents.map((e: any) => e?.id).filter(Boolean));
+    const missingExtraIds = extraEventIds.filter((id) => !idsAlreadyLoaded.has(id));
+    if (missingExtraIds.length > 0) {
+      const { data: extraEvents, error: extraEventsError } = await supabaseAdmin
+        .from('events')
+        .select('*')
+        .in('id', missingExtraIds);
+      if (extraEventsError) {
+        console.error('SUPABASE SELECT ERROR (extraEventIds):', extraEventsError);
+      } else if (extraEvents && extraEvents.length > 0) {
+        combinedRawEvents = [...combinedRawEvents, ...extraEvents];
+      }
+    }
+
+    const events = await attachRegionMetadataToEvents(supabaseAdmin, combinedRawEvents);
     if (debug) {
       console.log('[EVENTS-BY-DATE][debug] request', {
         startDate,

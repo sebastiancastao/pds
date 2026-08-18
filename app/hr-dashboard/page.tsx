@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
+import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown, type DailyPayBreakdown } from "@/lib/daily-overtime";
 import { supabase } from "@/lib/supabase";
@@ -892,6 +893,92 @@ function HRDashboardContent() {
           totalAdjustments: payJson.totalAdjustments,
         }
       });
+
+      // Shared/linked commission: an event's linked partner (events.linked_commission_event_id)
+      // may fall outside this payroll view's date range, so its own commission pool + vendor
+      // roster wouldn't otherwise be loaded. Fetch any such partner separately so the combined
+      // pool can be split evenly across every vendor of both events (see buildLinkedCommissionDistribution).
+      const filteredEventIdSet = new Set(filteredEventIds);
+      const linkedPartnerIdsToFetch = Array.from(new Set(
+        filtered
+          .map((e: any) => (e.linked_commission_event_id || '').toString().trim())
+          .filter((id: string) => id && !filteredEventIdSet.has(id) && !paymentsByEventId[id])
+      ));
+      if (linkedPartnerIdsToFetch.length > 0) {
+        try {
+          const linkedRes = await fetch(
+            `/api/vendor-payments?event_ids=${encodeURIComponent(linkedPartnerIdsToFetch.join(','))}&ts=${Date.now()}`,
+            {
+              method: 'GET',
+              cache: 'no-store',
+              headers: {
+                'Cache-Control': 'no-cache',
+                ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+              },
+            }
+          );
+          if (linkedRes.ok) {
+            const linkedJson = await linkedRes.json();
+            Object.assign(paymentsByEventId, linkedJson.paymentsByEvent || {});
+          }
+        } catch (err) {
+          console.warn('[HR PAYMENTS] Failed to fetch linked commission partner events:', err);
+        }
+      }
+
+      // Recompute this event's own commission pool the same way as the per-event loop below
+      // (net sales/adjusted gross × commission %, live — never trust a cached dollar figure
+      // first), so linked-partner events fetched above (which never run through that loop)
+      // still contribute an accurate pool figure to the merged distribution below.
+      const resolveCommissionPoolDollarsForLinking = (eventInfoLike: any, eventPaymentSummary: any): number => {
+        if (isSanDiegoRegion(eventInfoLike) || isNonEventPayrollEvent(eventInfoLike)) return 0;
+        const tips = Number(eventInfoLike?.tips || 0);
+        const fees = Number(eventInfoLike?.fees || 0);
+        const otherIncome = Number(eventInfoLike?.other_income || 0);
+        const ticketSales = Number(eventInfoLike?.ticket_sales || 0);
+        const totalSales = Math.max(ticketSales - tips, 0);
+        const taxRate = Number(eventInfoLike?.tax_rate_percent || 0);
+        const tax = totalSales * (taxRate / 100);
+        const persistedAdjustedGrossRaw = Number(eventPaymentSummary?.net_sales);
+        const hasPersistedAdjustedGross =
+          eventPaymentSummary?.net_sales !== null &&
+          eventPaymentSummary?.net_sales !== undefined &&
+          eventPaymentSummary?.net_sales !== "" &&
+          Number.isFinite(persistedAdjustedGrossRaw);
+        const adjustedGrossAmount = hasPersistedAdjustedGross
+          ? Math.max(persistedAdjustedGrossRaw, 0)
+          : Math.max(totalSales - tax - fees + otherIncome, 0);
+        const commissionPoolPercent =
+          Number(eventInfoLike?.commission_pool ?? eventPaymentSummary?.commission_pool_percent ?? 0) || 0;
+        const raw = adjustedGrossAmount * commissionPoolPercent;
+        return Number.isFinite(raw) ? raw : 0;
+      };
+
+      const eventInfoById: Record<string, any> = Object.fromEntries(filtered.map((e: any) => [e.id, e]));
+      const linkedRelevantEventIds = Array.from(new Set([...filteredEventIds, ...linkedPartnerIdsToFetch]));
+      const linkedDistributionInputs: LinkedCommissionEventInput[] = linkedRelevantEventIds.map((id: string) => {
+        const eventData = paymentsByEventId[id] || {};
+        const eventInfoLike = eventInfoById[id] || eventData?.eventInfo || {};
+        const eventPaymentSummary = eventData?.eventPayment || {};
+        const vendorPaymentsForLink = Array.isArray(eventData?.vendorPayments) ? eventData.vendorPayments : [];
+        return {
+          eventId: id,
+          linkedCommissionEventId: eventInfoLike?.linked_commission_event_id || null,
+          eventDate: eventInfoLike?.event_date || null,
+          commissionPoolDollars: resolveCommissionPoolDollarsForLinking(eventInfoLike, eventPaymentSummary),
+          workers: vendorPaymentsForLink.map((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
+            return {
+              userId: paymentUserId,
+              division: payment?.users?.division,
+              hours: roundHoursToTwoDecimals(getEffectiveHours(payment)),
+              commissionDeleted: payment.commission_deleted === true,
+              forceEvenSplit: payment.commission_even_split ?? undefined,
+            };
+          }),
+        };
+      });
+      const linkedCommissionDistribution = buildLinkedCommissionDistribution({ events: linkedDistributionInputs });
       const configuredBaseRatesByState: Record<string, number> = {};
       try {
         const ratesRes = await fetch('/api/rates', {
@@ -1244,18 +1331,27 @@ function HRDashboardContent() {
 
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
-        const commissionSharesByUser = distributePoolByHoursRule({
-          totalAmount: commissionPoolDollars,
-          members: vendorPayments.flatMap((payment: any) => {
-            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
-            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
-            const _divComm = normalizeDivision(payment?.users?.division);
-            const _isExplicitNonVendor = _divComm !== '' && !isVendorDivision(_divComm);
-            if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
-            return [{ id: paymentUserId, hours: payrollHours, forceEvenSplit: payment.commission_even_split ?? undefined }];
-          }),
-          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
-        }).amountsById;
+        // Shared/linked commission: when this event's pool is genuinely combined with a
+        // linked partner event, use the merged distribution (pure even split across every
+        // vendor of both events) computed above instead of this event's own isolated pool.
+        // Standalone events fall through to the original per-event hours-threshold calc
+        // unchanged.
+        const linkedGroupEventIds = linkedCommissionDistribution.groupEventIdsByEventId[eventId] || [eventId];
+        const isCommissionShared = linkedGroupEventIds.length > 1;
+        const commissionSharesByUser = isCommissionShared
+          ? (linkedCommissionDistribution.commissionShareByEventId[eventId] || {})
+          : distributePoolByHoursRule({
+              totalAmount: commissionPoolDollars,
+              members: vendorPayments.flatMap((payment: any) => {
+                const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
+                const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
+                const _divComm = normalizeDivision(payment?.users?.division);
+                const _isExplicitNonVendor = _divComm !== '' && !isVendorDivision(_divComm);
+                if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
+                return [{ id: paymentUserId, hours: payrollHours, forceEvenSplit: payment.commission_even_split ?? undefined }];
+              }),
+              allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
+            }).amountsById;
         const tipsSharesByUser = distributeTipsPool({
           totalAmount: totalTips,
           members: vendorPayments.flatMap((payment: any) => {
@@ -1497,6 +1593,7 @@ function HRDashboardContent() {
           isNonEventHourly: isNonEventPayroll,
           commissionPerVendor,
           vendorsWithHours,
+          isCommissionShared,
           state: eventInfo.state,
           baseRate,
           commissionDollars: eventCommissionDollars,
@@ -1750,6 +1847,13 @@ function HRDashboardContent() {
           commissionDeleted: payment?.commissionDeleted === true,
           commissionOverride: payment?.commissionOverride ?? null,
           forceEvenSplit: payment?.commissionEvenSplit,
+          // Only when this event's commission is genuinely shared with a linked partner,
+          // pass the already-resolved per-vendor share (computed in the main fetch loop via
+          // buildLinkedCommissionDistribution) so computePayPeriodCommission uses it directly
+          // instead of recomputing blind to the linked partner via its own internal
+          // per-event distributePoolByHoursRule. Standalone events are left alone so their
+          // existing CA/NV/WI period-rate math is unaffected.
+          commissionShare: event?.isCommissionShared ? (payment?.commissionShare ?? null) : null,
         })),
       })),
     });

@@ -183,71 +183,134 @@ export function buildLinkedCommissionDistribution({
     const totalCommissionPoolDollars = roundMoney(
       groupEvents.reduce((sum, event) => sum + Number(event?.commissionPoolDollars || 0), 0)
     );
+    const isSharedCommissionGroup = eventIds.length > 1;
+
     const totalHoursByUserId: Record<string, number> = {};
-    const eventHoursByEventIdByUserId: Record<string, Record<string, number>> = {};
-    // Tri-state per user across the linked group: an explicit "force even" on any
-    // event wins, otherwise an explicit "force prorated" wins, otherwise auto.
-    const forceEvenSplitByUserId: Record<string, boolean | undefined> = {};
-
-    for (const event of groupEvents) {
-      const eventId = normalizeId(event.eventId);
-      for (const worker of Array.isArray(event.workers) ? event.workers : []) {
-        if (!isEligibleCommissionWorker(worker)) continue;
-        const userId = normalizeId(worker.userId);
-        const hours = Number(worker.hours || 0);
-        totalHoursByUserId[userId] = Number(totalHoursByUserId[userId] || 0) + hours;
-        if (worker.forceEvenSplit === true) {
-          forceEvenSplitByUserId[userId] = true;
-        } else if (worker.forceEvenSplit === false && forceEvenSplitByUserId[userId] !== true) {
-          forceEvenSplitByUserId[userId] = false;
-        }
-        if (!eventHoursByEventIdByUserId[userId]) {
-          eventHoursByEventIdByUserId[userId] = {};
-        }
-        eventHoursByEventIdByUserId[userId][eventId] =
-          Number(eventHoursByEventIdByUserId[userId][eventId] || 0) + hours;
-      }
-    }
-
-    const groupDate = groupEvents
-      .map((event) => (event?.eventDate || "").toString().split("T")[0])
-      .filter(Boolean)
-      .sort()[0];
-
-    const rawCommissionSharesByUserId = distributePoolByHoursRule({
-      totalAmount: totalCommissionPoolDollars,
-      members: Object.entries(totalHoursByUserId).map(([userId, hours]) => ({
-        id: userId,
-        hours,
-        forceEvenSplit: forceEvenSplitByUserId[userId],
-      })),
-      allShortShiftMode: shortShiftModeForDate(groupDate),
-    }).amountsById;
-    // Round to cents via largest-remainder so per-user shares always sum to
-    // exactly totalCommissionPoolDollars — rounding each user's share
-    // independently (roundMoney per entry) can drift the total by a few cents,
-    // which surfaced as the commission split not matching the pool percentage.
-    const commissionShareByUserId = roundAmountsToCents(
-      rawCommissionSharesByUserId,
-      totalCommissionPoolDollars
-    );
-
     const commissionShareByEventIdForGroup: Record<string, Record<string, number>> = {};
     for (const eventId of eventIds) {
       commissionShareByEventIdForGroup[eventId] = {};
     }
+    let commissionShareByUserId: Record<string, number> = {};
 
-    for (const [userId, totalShare] of Object.entries(commissionShareByUserId)) {
-      const allocatedShares = allocateShareAcrossEvents(
-        totalShare,
-        eventHoursByEventIdByUserId[userId] || {}
-      );
-      for (const [eventId, eventShare] of Object.entries(allocatedShares)) {
-        commissionShareByEventIdForGroup[eventId][userId] = eventShare;
-        commissionShareByEventId[eventId] = {
-          ...(commissionShareByEventId[eventId] || {}),
-          [userId]: eventShare,
+    if (isSharedCommissionGroup) {
+      // Shared/linked commission: every eligible (event, vendor) SLOT across the combined
+      // group gets an equal flat dollar amount — sharedPool / totalSlotCount — not a
+      // per-user total that then gets re-allocated across that user's events by hours. A
+      // vendor working both linked events therefore gets paid twice (once per event they
+      // worked), each time the same flat per-slot amount, rather than one combined total
+      // split between the two rows by hours worked. An explicit per-row "Prorated" override
+      // (forceEvenSplit === false, set via the event-dashboard Payment tab toggle) carves
+      // just that one slot out into hours-prorated pay at the group's blended hourly rate;
+      // the remaining pool is still split flatly among every other slot.
+      type Slot = { eventId: string; userId: string; hours: number; forceEvenSplit?: boolean };
+      const slots: Slot[] = [];
+      for (const event of groupEvents) {
+        const eventId = normalizeId(event.eventId);
+        for (const worker of Array.isArray(event.workers) ? event.workers : []) {
+          if (!isEligibleCommissionWorker(worker)) continue;
+          const userId = normalizeId(worker.userId);
+          const hours = Number(worker.hours || 0);
+          totalHoursByUserId[userId] = Number(totalHoursByUserId[userId] || 0) + hours;
+          slots.push({ eventId, userId, hours, forceEvenSplit: worker.forceEvenSplit });
+        }
+      }
+
+      const totalHours = slots.reduce((sum, slot) => sum + slot.hours, 0);
+      const blendedHourlyRate = totalHours > 0 ? totalCommissionPoolDollars / totalHours : 0;
+
+      const slotKey = (slot: Slot): string => `${slot.eventId}::${slot.userId}`;
+      const slotAmountsByKey: Record<string, number> = {};
+      let proratedTotal = 0;
+      const evenSlotKeys: string[] = [];
+      for (const slot of slots) {
+        if (slot.forceEvenSplit === false) {
+          const amount = blendedHourlyRate * slot.hours;
+          slotAmountsByKey[slotKey(slot)] = amount;
+          proratedTotal += amount;
+        } else {
+          evenSlotKeys.push(slotKey(slot));
+        }
+      }
+      const remainingForEvenSlots = Math.max(0, totalCommissionPoolDollars - proratedTotal);
+      const perSlotEvenShare = evenSlotKeys.length > 0 ? remainingForEvenSlots / evenSlotKeys.length : 0;
+      for (const key of evenSlotKeys) {
+        slotAmountsByKey[key] = perSlotEvenShare;
+      }
+
+      // Round to cents via largest-remainder across every slot so the group's shares
+      // always sum to exactly totalCommissionPoolDollars.
+      const roundedSlotAmountsByKey = roundAmountsToCents(slotAmountsByKey, totalCommissionPoolDollars);
+
+      for (const slot of slots) {
+        const amount = roundedSlotAmountsByKey[slotKey(slot)] || 0;
+        commissionShareByEventIdForGroup[slot.eventId][slot.userId] = amount;
+        commissionShareByEventId[slot.eventId] = {
+          ...(commissionShareByEventId[slot.eventId] || {}),
+          [slot.userId]: amount,
         };
+        commissionShareByUserId[slot.userId] = roundMoney(
+          Number(commissionShareByUserId[slot.userId] || 0) + amount
+        );
+      }
+    } else {
+      // Standalone (unlinked) event: unchanged hours-threshold hybrid rule — 8+ hour
+      // workers split the pool evenly among themselves, under-8h workers are
+      // hours-prorated, both subject to the per-vendor Even/Prorated override.
+      const eventHoursByEventIdByUserId: Record<string, Record<string, number>> = {};
+      const forceEvenSplitByUserId: Record<string, boolean | undefined> = {};
+
+      for (const event of groupEvents) {
+        const eventId = normalizeId(event.eventId);
+        for (const worker of Array.isArray(event.workers) ? event.workers : []) {
+          if (!isEligibleCommissionWorker(worker)) continue;
+          const userId = normalizeId(worker.userId);
+          const hours = Number(worker.hours || 0);
+          totalHoursByUserId[userId] = Number(totalHoursByUserId[userId] || 0) + hours;
+          if (worker.forceEvenSplit === true) {
+            forceEvenSplitByUserId[userId] = true;
+          } else if (worker.forceEvenSplit === false && forceEvenSplitByUserId[userId] !== true) {
+            forceEvenSplitByUserId[userId] = false;
+          }
+          if (!eventHoursByEventIdByUserId[userId]) {
+            eventHoursByEventIdByUserId[userId] = {};
+          }
+          eventHoursByEventIdByUserId[userId][eventId] =
+            Number(eventHoursByEventIdByUserId[userId][eventId] || 0) + hours;
+        }
+      }
+
+      const groupDate = groupEvents
+        .map((event) => (event?.eventDate || "").toString().split("T")[0])
+        .filter(Boolean)
+        .sort()[0];
+
+      const rawCommissionSharesByUserId = distributePoolByHoursRule({
+        totalAmount: totalCommissionPoolDollars,
+        members: Object.entries(totalHoursByUserId).map(([userId, hours]) => ({
+          id: userId,
+          hours,
+          forceEvenSplit: forceEvenSplitByUserId[userId],
+        })),
+        allShortShiftMode: shortShiftModeForDate(groupDate),
+      }).amountsById;
+      // Round to cents via largest-remainder so per-user shares always sum to
+      // exactly totalCommissionPoolDollars — rounding each user's share
+      // independently (roundMoney per entry) can drift the total by a few cents,
+      // which surfaced as the commission split not matching the pool percentage.
+      commissionShareByUserId = roundAmountsToCents(rawCommissionSharesByUserId, totalCommissionPoolDollars);
+
+      for (const [userId, totalShare] of Object.entries(commissionShareByUserId)) {
+        const allocatedShares = allocateShareAcrossEvents(
+          totalShare,
+          eventHoursByEventIdByUserId[userId] || {}
+        );
+        for (const [eventId, eventShare] of Object.entries(allocatedShares)) {
+          commissionShareByEventIdForGroup[eventId][userId] = eventShare;
+          commissionShareByEventId[eventId] = {
+            ...(commissionShareByEventId[eventId] || {}),
+            [userId]: eventShare,
+          };
+        }
       }
     }
 

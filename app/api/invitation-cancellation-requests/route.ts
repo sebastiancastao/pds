@@ -749,6 +749,7 @@ export async function PATCH(req: NextRequest) {
       if (employeeEmail) {
         const emailResult = await sendEmailWithRetry({
           to: employeeEmail,
+          bcc: APPROVAL_NOTIFICATION_EMAILS,
           subject: `Cancellation Request ${action === "approved" ? "Approved" : "Denied"} - ${eventInfo?.event_name || "Event"}`,
           html: buildOutcomeNotificationEmailHtml({
             employeeName,

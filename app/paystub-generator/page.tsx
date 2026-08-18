@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
+import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
 
 interface PaymentData {
@@ -73,6 +74,7 @@ interface Event {
   event_payment?: EventPaymentSummary | null;
   workers?: Worker[];
   tips_distribution_mode?: string | null;
+  linked_commission_event_id?: string | null;
 }
 
 type ImportedEmployeeRow = {
@@ -229,6 +231,10 @@ export default function PaystubGenerator() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
+  // Shared/linked-commission partner events whose own date falls outside the selected
+  // pay period — fetched separately so they never appear in the visible event list, but
+  // are available for merging commission pools/vendor rosters. See loadEventsForPayPeriod.
+  const [linkedPartnerEvents, setLinkedPartnerEvents] = useState<Event[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [matchedUserId, setMatchedUserId] = useState<string | null>(null);
@@ -418,6 +424,37 @@ export default function PaystubGenerator() {
       );
     }).length;
   };
+  // Shared/linked commission: merge every loaded event (visible + out-of-period linked
+  // partners fetched into linkedPartnerEvents) into one combined distribution so a pair of
+  // linked events splits its combined pool purely evenly across every eligible vendor of
+  // both, instead of each event's own hours-threshold split ignoring the other. Standalone
+  // (unlinked) events pass through this unchanged — buildLinkedCommissionDistribution only
+  // changes behavior for groups spanning 2+ events.
+  const linkedCommissionDistribution = useMemo(() => {
+    const allEventsForLinking = [...events, ...linkedPartnerEvents];
+    const inputs: LinkedCommissionEventInput[] = allEventsForLinking.map((event) => {
+      const isEventSD = isSanDiegoRegion(event);
+      const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
+      const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
+      const adjustedGrossPercent = getCommissionPoolPercentForEvent(event, adjustedGross, persistedGrossCommission);
+      const rawGrossCommission = isEventSD ? 0 : (persistedGrossCommission || adjustedGross * adjustedGrossPercent);
+      return {
+        eventId: event.id,
+        linkedCommissionEventId: event.linked_commission_event_id || null,
+        eventDate: event.event_date,
+        commissionPoolDollars: rawGrossCommission,
+        workers: (Array.isArray(event.workers) ? event.workers : []).map((worker) => ({
+          userId: (worker?.user_id || '').toString(),
+          division: worker?.division,
+          hours: getCommissionReportHours(worker),
+          commissionDeleted: worker?.payment_data?.commission_deleted === true,
+          forceEvenSplit: worker?.payment_data?.commission_even_split ?? undefined,
+        })),
+      };
+    });
+    return buildLinkedCommissionDistribution({ events: inputs });
+  }, [events, linkedPartnerEvents]);
+
   const getDistributedSharesForEvent = (event: Event) => {
     const isEventSD = isSanDiegoRegion(event);
     const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
@@ -429,6 +466,8 @@ export default function PaystubGenerator() {
     );
     const rawGrossCommission =
       isEventSD ? 0 : (persistedGrossCommission || adjustedGross * adjustedGrossPercent);
+    const linkedGroupEventIds = linkedCommissionDistribution.groupEventIdsByEventId[event.id] || [event.id];
+    const isCommissionShared = linkedGroupEventIds.length > 1;
     const commissionEligibleMembers = isEventSD ? [] : (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
       const workerId = (worker?.user_id || '').toString();
       const hoursWorked = getCommissionReportHours(worker);
@@ -458,11 +497,16 @@ export default function PaystubGenerator() {
       }
       return [{ id: workerId, hours: hoursWorked }];
     });
-    const commissionDistribution = distributePoolByHoursRule({
-      totalAmount: rawGrossCommission,
-      members: commissionEligibleMembers,
-      allShortShiftMode: shortShiftModeForDate(event.event_date),
-    });
+    const commissionDistribution = isCommissionShared
+      ? {
+          eligibleCount: Object.keys(linkedCommissionDistribution.commissionShareByEventId[event.id] || {}).length,
+          amountsById: linkedCommissionDistribution.commissionShareByEventId[event.id] || {},
+        }
+      : distributePoolByHoursRule({
+          totalAmount: rawGrossCommission,
+          members: commissionEligibleMembers,
+          allShortShiftMode: shortShiftModeForDate(event.event_date),
+        });
     const totalTips = Number(event.event_payment?.total_tips || 0) || Number(event.tips || 0);
     const tipsDistribution = distributeTipsPool({
       totalAmount: totalTips,
@@ -623,7 +667,43 @@ export default function PaystubGenerator() {
 
       const data = await response.json();
       if (requestId !== eventsRequestIdRef.current) return false;
-      setEvents(data.events || []);
+      const loadedEvents: Event[] = data.events || [];
+      setEvents(loadedEvents);
+
+      // Shared/linked commission: a linked partner event may fall outside this pay
+      // period's date range, so it wouldn't otherwise be loaded above. Fetch any such
+      // partner into a SEPARATE state (not the visible "Events During Pay Period" list —
+      // it isn't actually during this period) so its commission pool + vendor roster is
+      // still available to merge into the split (see getDistributedSharesForEvent /
+      // buildLinkedCommissionDistribution and the /api/generate-paystub request body).
+      const loadedEventIds = new Set(loadedEvents.map((e) => e.id));
+      const missingLinkedPartnerIds = Array.from(new Set(
+        loadedEvents
+          .map((e) => (e.linked_commission_event_id || '').toString().trim())
+          .filter((id) => id && !loadedEventIds.has(id))
+      ));
+      if (missingLinkedPartnerIds.length === 0) {
+        setLinkedPartnerEvents([]);
+      } else {
+        try {
+          const linkedResponse = await fetch(
+            `/api/events-by-date?startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}&includeHours=true&extraEventIds=${encodeURIComponent(missingLinkedPartnerIds.join(','))}&ts=${Date.now()}`,
+            { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } }
+          );
+          if (requestId !== eventsRequestIdRef.current) return false;
+          if (linkedResponse.ok) {
+            const linkedData = await linkedResponse.json();
+            const extraEvents = (linkedData.events || []).filter((e: Event) => !loadedEventIds.has(e.id));
+            setLinkedPartnerEvents(extraEvents);
+          } else {
+            setLinkedPartnerEvents([]);
+          }
+        } catch (linkedError) {
+          console.error('Error fetching linked commission partner events:', linkedError);
+          setLinkedPartnerEvents([]);
+        }
+      }
+
       return true;
     } catch (error: any) {
       if (requestId !== eventsRequestIdRef.current) return false;
@@ -960,7 +1040,25 @@ export default function PaystubGenerator() {
 
   const filterEventsForUserIdWithHours = (userId: string | null) => {
     if (!userId) return [];
-    return events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
+    const userEvents = events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
+    // Shared/linked commission: the actual paystub PDF is generated server-side by
+    // /api/generate-paystub from exactly this "events" payload, so a linked partner event
+    // must be included even when this employee didn't personally work it — otherwise the
+    // server has no way to know the pool is shared and falls back to splitting only this
+    // event's own pool among its own vendors. Pull the partner in from whichever of the
+    // visible list or the out-of-period linkedPartnerEvents state has it.
+    const includedIds = new Set(userEvents.map((event) => event.id));
+    const linkedExtras: Event[] = [];
+    for (const event of userEvents) {
+      const partnerId = (event.linked_commission_event_id || '').toString().trim();
+      if (!partnerId || includedIds.has(partnerId)) continue;
+      const partner = events.find((e) => e.id === partnerId) || linkedPartnerEvents.find((e) => e.id === partnerId);
+      if (partner) {
+        linkedExtras.push(partner);
+        includedIds.add(partnerId);
+      }
+    }
+    return linkedExtras.length > 0 ? [...userEvents, ...linkedExtras] : userEvents;
   };
 
   const hasCommissionReportEventsForUserId = (userId: string | null) => {

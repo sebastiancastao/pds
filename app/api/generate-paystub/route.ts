@@ -5,6 +5,7 @@ import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
+import { buildLinkedCommissionDistribution } from "@/lib/linked-commission";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -427,25 +428,75 @@ export async function POST(req: NextRequest) {
 
     const getDisplayHoursForWorker = (event: any, worker: any): number => getActualHoursForWorker(event, worker);
 
-    const payPeriodCommission = computePayPeriodCommission({
+    // Shared/linked commission: buildLinkedCommissionDistribution only changes behavior for
+    // an event whose linked partner (events.linked_commission_event_id) is ALSO present in
+    // this request's `events` array. paystub-generator/page.tsx's filterEventsForUserIdWithHours
+    // ensures the partner is included even when the target employee didn't personally work
+    // it, specifically so this merge (pure even split across every vendor of both events)
+    // can happen here. An event with no linked partner in the request is left untouched.
+    const linkedCommissionDistributionForPaystub = buildLinkedCommissionDistribution({
       events: (Array.isArray(events) ? events : []).map((event: any) => {
-        const payrollInputs = getPayrollInputsForEvent(event);
+        const baselineInputs = getPayrollInputsForEvent(event);
         return {
           eventId: (event?.id || "").toString(),
-          state: event?.state,
-          date: (event?.event_date || "").toString().split("T")[0] || undefined,
-          commissionPoolDollars: Number(payrollInputs.commissionPoolDollars || 0),
+          linkedCommissionEventId: event?.linked_commission_event_id || null,
+          eventDate: event?.event_date || null,
+          commissionPoolDollars: Number(baselineInputs.commissionPoolDollars || 0),
           workers: (Array.isArray(event?.workers) ? event.workers : []).map((worker: any) => ({
             userId: (worker?.user_id || "").toString(),
             division: worker?.division,
             hours: Number(getActualHoursForWorker(event, worker).toFixed(2)),
             commissionDeleted: worker?.payment_data?.commission_deleted === true,
-            commissionOverride:
-              worker?.payment_data?.commission_override != null &&
-              Number.isFinite(Number(worker.payment_data.commission_override))
-                ? Number(worker.payment_data.commission_override)
-                : null,
+            forceEvenSplit: worker?.payment_data?.commission_even_split ?? undefined,
           })),
+        };
+      }),
+    });
+
+    // Wraps getPayrollInputsForEvent so its commissionSharesByUser reflects the merged,
+    // evenly-split group total when this event is genuinely shared with a linked partner
+    // present in this request; standalone events pass through unchanged.
+    const getPayrollInputsForEventWithLinkedCommission = (event: any) => {
+      const baseline = getPayrollInputsForEvent(event);
+      const eventId = (event?.id || "").toString();
+      const groupEventIds = linkedCommissionDistributionForPaystub.groupEventIdsByEventId[eventId] || [eventId];
+      if (groupEventIds.length <= 1) return baseline;
+      const mergedShares = linkedCommissionDistributionForPaystub.commissionShareByEventId[eventId] || {};
+      return {
+        ...baseline,
+        commissionSharesByUser: mergedShares,
+        commissionEligibleCount: Object.keys(mergedShares).length || baseline.commissionEligibleCount,
+      };
+    };
+
+    const payPeriodCommission = computePayPeriodCommission({
+      events: (Array.isArray(events) ? events : []).map((event: any) => {
+        const payrollInputs = getPayrollInputsForEvent(event);
+        const eventId = (event?.id || "").toString();
+        const groupEventIds = linkedCommissionDistributionForPaystub.groupEventIdsByEventId[eventId] || [eventId];
+        const mergedShares = groupEventIds.length > 1
+          ? (linkedCommissionDistributionForPaystub.commissionShareByEventId[eventId] || {})
+          : null;
+        return {
+          eventId,
+          state: event?.state,
+          date: (event?.event_date || "").toString().split("T")[0] || undefined,
+          commissionPoolDollars: Number(payrollInputs.commissionPoolDollars || 0),
+          workers: (Array.isArray(event?.workers) ? event.workers : []).map((worker: any) => {
+            const workerUserId = (worker?.user_id || "").toString();
+            return {
+              userId: workerUserId,
+              division: worker?.division,
+              hours: Number(getActualHoursForWorker(event, worker).toFixed(2)),
+              commissionDeleted: worker?.payment_data?.commission_deleted === true,
+              commissionOverride:
+                worker?.payment_data?.commission_override != null &&
+                Number.isFinite(Number(worker.payment_data.commission_override))
+                  ? Number(worker.payment_data.commission_override)
+                  : null,
+              commissionShare: mergedShares ? Number(mergedShares[workerUserId] || 0) : null,
+            };
+          }),
         };
       }),
     });
@@ -1668,7 +1719,7 @@ export async function POST(req: NextRequest) {
           totalTipsEvent,
           commissionSharesByUser,
           tipsSharesByUser,
-        } = getPayrollInputsForEvent(event);
+        } = getPayrollInputsForEventWithLinkedCommission(event);
 
         const adjustedGrossForReport = getAdjustedGrossForEvent(event);
 
@@ -2659,7 +2710,7 @@ export async function POST(req: NextRequest) {
           totalTipsEvent,
           commissionSharesByUser,
           tipsSharesByUser,
-        } = getPayrollInputsForEvent(event);
+        } = getPayrollInputsForEventWithLinkedCommission(event);
         const adjustedGrossForReport = getAdjustedGrossForEvent(event);
 
         const regHours = Number(paymentData?.regular_hours || 0);

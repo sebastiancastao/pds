@@ -4554,10 +4554,41 @@ export default function EventDashboardPage() {
       });
     }
 
+    // Shared/linked commission: the specific linked partner event must be a node in this
+    // graph regardless of whether it falls inside any AZ/NY-style "period window" — otherwise
+    // buildLinkedCommissionDistribution below never sees a group of size 2+ (since it only
+    // connects an event to a linkedCommissionEventId that is ALSO present in this array) and
+    // silently falls back to the old hours-threshold split instead of the even split, even
+    // though the Sales tab's "Shared Commission" total (computed separately, always including
+    // this partner via linkedCommissionEventContext) correctly shows the combined pool. This
+    // mirrors linkedEventLinkedCommissionInput above.
+    const linkedPartnerEventId = selectedLinkedCommissionEventId.trim();
+    if (linkedPartnerEventId && linkedCommissionEventContext?.event) {
+      eventsForPeriod.push({
+        eventId: linkedPartnerEventId,
+        linkedCommissionEventId:
+          linkedCommissionEventContext.event?.linked_commission_event_id || eventId,
+        state: linkedCommissionEventContext.event?.state,
+        date: linkedCommissionEventContext.event?.event_date,
+        commissionPoolDollars: linkedEventCommissionPoolDollars,
+        workers: (linkedCommissionEventContext.vendorPayments || []).map((payment: any) => ({
+          userId: (payment?.user_id || payment?.userId || payment?.users?.id || "").toString(),
+          division: payment?.users?.division,
+          hours: getPersistedWorkerHoursForCommission(payment),
+          commissionDeleted: payment?.commission_deleted === true,
+          commissionOverride:
+            payment?.commission_override != null ? Number(payment.commission_override) : null,
+          forceEvenSplit: payment?.commission_even_split ?? undefined,
+        })),
+      });
+    }
+
     if (hasPeriodWindow) {
       for (const periodEvent of periodEvents) {
         const periodEventId = (periodEvent?.id || "").toString();
         if (!periodEventId || periodEventId === eventId) continue;
+        // Already added above (fresher, no-store fetch dedicated to this specific partner).
+        if (periodEventId === linkedPartnerEventId) continue;
 
         eventsForPeriod.push({
           eventId: periodEventId,
@@ -4619,6 +4650,8 @@ export default function EventDashboardPage() {
     commissionsOverrides,
     commissionEvenSplitOverrides,
     selectedLinkedCommissionEventId,
+    linkedCommissionEventContext,
+    linkedEventCommissionPoolDollars,
     timesheetTotals,
   ]);
 

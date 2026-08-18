@@ -515,6 +515,7 @@ export async function PATCH(req: NextRequest) {
       if (vendorEmail) {
         const emailResult = await sendEmailWithRetry({
           to: vendorEmail,
+          bcc: APPROVAL_NOTIFICATION_EMAILS,
           subject: `Availability Change ${action === "approved" ? "Approved" : "Denied"}`,
           html: buildOutcomeNotificationEmailHtml({
             vendorName,

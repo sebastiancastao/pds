@@ -18,6 +18,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 import { getInviterEmailContext, getSingleProfile, sendSingleVendorInvite } from "@/lib/vendorInvites";
 import {
+  APPROVAL_NOTIFICATION_EMAILS,
   createVendorInviteOverrideRequests,
   escapeHtml,
   nameFromProfile,
@@ -322,6 +323,7 @@ export async function PATCH(req: NextRequest) {
       if (requesterEmail) {
         const emailResult = await sendEmailWithRetry({
           to: requesterEmail,
+          bcc: APPROVAL_NOTIFICATION_EMAILS,
           subject: `Vendor Invite Override ${action === "approved" ? "Approved" : "Denied"} - ${vendorName}`,
           html: buildOutcomeNotificationEmailHtml({
             requesterName,
