@@ -622,6 +622,21 @@ const normalizeEventDate = (dateValue?: string | null) => {
   return dateValue.split("T")[0];
 };
 
+function formatIsoToLocalDate(iso: string, timeZone: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return year && month && day ? `${year}-${month}-${day}` : "";
+}
+
 function eventAllowsOvernight(event: {
   start_time?: string | null;
   end_time?: string | null;
@@ -890,12 +905,10 @@ export async function PUT(
     }
     const { startIso: dayStart, endExclusiveIso: dayEndExclusive } = dayRange;
 
-    // Replace all rows already bound to this event for this worker, plus any
-    // untagged rows inside the local 2-day window that the editor is taking over.
-    // For a multi-day (special) event, entries tagged with this event_id span every
-    // day of the event, so the event-bound query must also be scoped to the target
-    // day's window — otherwise every day's entries would be pulled in and collapsed
-    // into the single day's timeline being rebuilt here.
+    // Fetch candidate rows already bound to this event for this worker, plus any
+    // untagged rows inside the local window that the editor is taking over. This
+    // window can span two calendar days to catch overnight spillover; the next
+    // day's own shift is filtered back out below once entries are grouped.
     let eventBoundQuery = supabaseAdmin
       .from("time_entries")
       .select("id, action, timestamp, notes, event_id")
@@ -923,10 +936,40 @@ export async function PUT(
     if (nullWindowResult.error) {
       return NextResponse.json({ error: nullWindowResult.error.message }, { status: 500 });
     }
-    const existingRaw = [
+    const existingCandidates = [
       ...(eventBoundResult.data || []),
       ...(nullWindowResult.data || []),
     ].filter((row, index, arr) => arr.findIndex((candidate) => candidate.id === row.id) === index);
+
+    // The day-scoped window above can span two calendar days (to capture a shift that
+    // legitimately spills past midnight), which also pulls in the NEXT day's already
+    // -recorded, independent shift for this same event_id. Group candidates into
+    // clock_in-anchored shifts and keep only the shift that actually starts on
+    // targetDate, so rebuilding one day's timeline can never delete or clobber the
+    // next day's entries just because they happened to fall inside the same window.
+    type ExistingEntry = { id: string; action: string; timestamp: string; notes: string | null; event_id: string | null };
+    const sortedCandidates = [...existingCandidates].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    ) as ExistingEntry[];
+    const shiftGroups: ExistingEntry[][] = [];
+    let currentShift: ExistingEntry[] = [];
+    for (const entry of sortedCandidates) {
+      if (entry.action === "clock_in") {
+        if (currentShift.length > 0) shiftGroups.push(currentShift);
+        currentShift = [entry];
+        continue;
+      }
+      if (currentShift.length === 0) continue;
+      currentShift.push(entry);
+      if (entry.action === "clock_out") {
+        shiftGroups.push(currentShift);
+        currentShift = [];
+      }
+    }
+    if (currentShift.length > 0) shiftGroups.push(currentShift);
+
+    const existingRaw =
+      shiftGroups.find((group) => formatIsoToLocalDate(group[0].timestamp, eventTimezone) === targetDate) || [];
 
     // Group both existing and new entries by action type
     const existingByAction: Record<string, Array<{ id: string; action: string; timestamp: string; notes: string | null; event_id: string | null }>> = {};
