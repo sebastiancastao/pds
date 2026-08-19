@@ -157,6 +157,8 @@ type EmailLogEntry = {
   error_message: string | null;
   provider_message_id: string | null;
   created_at: string;
+  read_at: string | null;
+  read_by: string | null;
 };
 
 const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
@@ -624,6 +626,31 @@ export default function EmployeeProfilePage() {
         });
     });
   }, [employeeId, refreshTick]);
+
+  // Opens an inbox email and marks it read (first open wins) so the list
+  // can show a "Read" chip going forward.
+  const openInboxEmail = (mail: EmailLogEntry) => {
+    setSelectedInboxEmail(mail);
+    if (mail.read_at || !employeeId) return;
+
+    // Optimistic: show the chip immediately rather than waiting on the network.
+    const readAt = new Date().toISOString();
+    setEmailInbox((prev) => prev.map((m) => (m.id === mail.id ? { ...m, read_at: readAt } : m)));
+    setSelectedInboxEmail((prev) => (prev && prev.id === mail.id ? { ...prev, read_at: readAt } : prev));
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetch(`/api/employees/${employeeId}/emails`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ emailId: mail.id }),
+      }).catch(() => {
+        // Non-fatal: worst case the chip re-syncs on next inbox refresh.
+      });
+    });
+  };
 
   // Opens the compose panel for a brand new message (no reply target).
   const openNewMessage = () => {
@@ -3404,15 +3431,17 @@ export default function EmployeeProfilePage() {
                     <button
                       key={mail.id}
                       type="button"
-                      onClick={() => setSelectedInboxEmail(mail)}
+                      onClick={() => openInboxEmail(mail)}
                       className="w-full text-left px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 hover:bg-gray-50 transition-colors"
                     >
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 ${
-                        mail.status === "sent"
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : "bg-red-50 text-red-700 border-red-200"
+                        mail.status === "failed"
+                          ? "bg-red-50 text-red-700 border-red-200"
+                          : mail.read_at
+                          ? "bg-blue-50 text-blue-700 border-blue-200"
+                          : "bg-gray-100 text-gray-600 border-gray-200"
                       }`}>
-                        {mail.status === "sent" ? "Delivered" : "Failed"}
+                        {mail.status === "failed" ? "Failed" : mail.read_at ? "Read" : "Unread"}
                       </span>
 
                       <div className="min-w-0 flex-1">

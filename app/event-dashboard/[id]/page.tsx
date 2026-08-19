@@ -573,11 +573,14 @@ export default function EventDashboardPage() {
   const [pendingTimesheetEditUid, setPendingTimesheetEditUid] = useState<string | null>(null);
   // Multi-day non-event (special) timesheets record one isolated timesheet per day,
   // so edits are scoped to a single day rather than the whole worker. Keyed by
-  // `${uid}::${date}` so each day-row can be edited independently.
+  // `${uid}::${date}` so several day-rows can be queued for edit at once — each
+  // is either sent individually or all together via "Send All Days".
   const [pendingTimesheetEditDay, setPendingTimesheetEditDay] = useState<string | null>(null);
-  const [editingTimesheetDayKey, setEditingTimesheetDayKey] = useState<string | null>(null);
+  const [pendingTimesheetEditAllDays, setPendingTimesheetEditAllDays] = useState(false);
+  const [editingTimesheetDayKeys, setEditingTimesheetDayKeys] = useState<Record<string, boolean>>({});
   const [timesheetDayDrafts, setTimesheetDayDrafts] = useState<Record<string, TimesheetEditDraft>>({});
   const [savingTimesheetDayKey, setSavingTimesheetDayKey] = useState<string | null>(null);
+  const [savingAllTimesheetDaysUid, setSavingAllTimesheetDaysUid] = useState<string | null>(null);
   const [timesheetEditNote, setTimesheetEditNote] = useState("");
   const [timesheetEditSignature, setTimesheetEditSignature] = useState("");
   const [exportingTimesheetPdf, setExportingTimesheetPdf] = useState(false);
@@ -4124,9 +4127,10 @@ export default function EventDashboardPage() {
     setMessage("");
   };
 
-  const openTimesheetEditModal = (uid: string, day?: string) => {
+  const openTimesheetEditModal = (uid: string, day?: string, allDays?: boolean) => {
     setPendingTimesheetEditUid(uid);
     setPendingTimesheetEditDay(day || null);
+    setPendingTimesheetEditAllDays(!!allDays);
     setTimesheetEditNote("");
     setTimesheetEditSignature("");
     setSignatureIsEmpty(true);
@@ -4292,6 +4296,8 @@ export default function EventDashboardPage() {
 
   // Multi-day non-event (special) timesheets: same edit flow as saveTimesheetEdit,
   // but scoped to a single day since each day is stored as an isolated timesheet.
+  // Several days can be queued for edit at the same time (each keeps its own
+  // draft), then sent individually or all together via "Send All Days".
   const startTimesheetDayEdit = (
     uid: string,
     day: {
@@ -4316,7 +4322,7 @@ export default function EventDashboardPage() {
         thirdMealEnd: day.meals[2]?.endDisplay || "",
       },
     }));
-    setEditingTimesheetDayKey(key);
+    setEditingTimesheetDayKeys((prev) => ({ ...prev, [key]: true }));
     setMessage("");
   };
 
@@ -4345,8 +4351,12 @@ export default function EventDashboardPage() {
     }));
   };
 
-  const cancelTimesheetDayEdit = () => {
-    setEditingTimesheetDayKey(null);
+  const cancelTimesheetDayEdit = (key: string) => {
+    setEditingTimesheetDayKeys((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     setMessage("");
   };
 
@@ -4396,7 +4406,11 @@ export default function EventDashboardPage() {
         return;
       }
 
-      setEditingTimesheetDayKey(null);
+      setEditingTimesheetDayKeys((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       setPendingTimesheetEditUid(null);
       setPendingTimesheetEditDay(null);
       await loadTimesheetTotals();
@@ -4406,6 +4420,90 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Network error while saving timesheet.");
     } finally {
       setSavingTimesheetDayKey(null);
+    }
+  };
+
+  // Sends every day of a multi-day (non-event/special) timesheet for one worker in
+  // a single confirmation: days currently queued for edit use their draft values,
+  // any other day is resubmitted unchanged. Each day still gets its own signed
+  // audit record on the backend (one PUT per day), so the accountability trail is
+  // identical to sending days one at a time — this just avoids re-signing per day.
+  const saveAllTimesheetDaysEdit = async (uid: string, editNote: string, editSignature: string) => {
+    if (!eventId || !canEditTimesheets) return;
+    const days = timesheetDays[uid] || [];
+    if (days.length === 0) return;
+
+    const dayPayloads = days.map((day) => {
+      const key = `${uid}::${day.date}`;
+      const draft = timesheetDayDrafts[key] || {
+        firstIn: day.firstInDisplay || "",
+        lastOut: day.lastOutDisplay || "",
+        firstMealStart: day.meals[0]?.startDisplay || "",
+        lastMealEnd: day.meals[0]?.endDisplay || "",
+        secondMealStart: day.meals[1]?.startDisplay || "",
+        secondMealEnd: day.meals[1]?.endDisplay || "",
+        thirdMealStart: day.meals[2]?.startDisplay || "",
+        thirdMealEnd: day.meals[2]?.endDisplay || "",
+      };
+      return { date: day.date, draft, original: day };
+    });
+
+    // Only execs may delete time entries (clear a field that had a value)
+    if (userRole !== "exec") {
+      const wouldDeleteAny = dayPayloads.some(
+        ({ draft, original }) =>
+          (original.firstInDisplay && !draft.firstIn) ||
+          (original.lastOutDisplay && !draft.lastOut) ||
+          (original.meals[0]?.startDisplay && !draft.firstMealStart) ||
+          (original.meals[0]?.endDisplay && !draft.lastMealEnd) ||
+          (original.meals[1]?.startDisplay && !draft.secondMealStart) ||
+          (original.meals[1]?.endDisplay && !draft.secondMealEnd) ||
+          (original.meals[2]?.startDisplay && !draft.thirdMealStart) ||
+          (original.meals[2]?.endDisplay && !draft.thirdMealEnd)
+      );
+      if (wouldDeleteAny) {
+        setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
+        return;
+      }
+    }
+
+    setShowTimesheetEditModal(false);
+    setSavingAllTimesheetDaysUid(uid);
+    setMessage("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers = {
+        "Content-Type": "application/json",
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      };
+
+      for (const { date, draft } of dayPayloads) {
+        const res = await fetch(`/api/events/${eventId}/timesheet`, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({ userId: uid, day: date, spans: draft, editNote, editSignature }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setMessage(`Failed to save ${formatTimesheetDayLabel(date)}: ${data?.error || "Unknown error"}`);
+          return;
+        }
+      }
+
+      setEditingTimesheetDayKeys((prev) => {
+        const next = { ...prev };
+        for (const { date } of dayPayloads) delete next[`${uid}::${date}`];
+        return next;
+      });
+      setPendingTimesheetEditUid(null);
+      setPendingTimesheetEditAllDays(false);
+      await loadTimesheetTotals();
+      setMessage("All days updated successfully.");
+      setTimeout(() => setMessage(""), 3000);
+    } catch (err: any) {
+      setMessage(err?.message || "Network error while saving timesheet.");
+    } finally {
+      setSavingAllTimesheetDaysUid(null);
     }
   };
 
@@ -7956,6 +8054,16 @@ export default function EventDashboardPage() {
                         {formatHoursFromMs(getDisplayedWorkedMs(uid))}
                       </td>
                       <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                        {canEditTimesheets && memberDays.length > 1 && (
+                          <button
+                            onClick={() => openTimesheetEditModal(uid, undefined, true)}
+                            disabled={savingAllTimesheetDaysUid === uid}
+                            className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Send every day of this timesheet in one signed edit"
+                          >
+                            {savingAllTimesheetDaysUid === uid ? "Sending…" : "Send All Days"}
+                          </button>
+                        )}
                         <Link
                           href={`/time-sheets/${eventId}?userId=${encodeURIComponent(uid)}`}
                           className="text-gray-600 hover:text-gray-800 font-medium text-xs"
@@ -7964,10 +8072,12 @@ export default function EventDashboardPage() {
                         </Link>
                       </td>
                     </tr>
-                    {/* One row per day — editable for exec/manager on non-event (special) timesheets */}
+                    {/* One row per day — editable for exec/manager on non-event (special) timesheets.
+                        Multiple days can be queued for edit simultaneously; each is sent on its own
+                        "Save", or all queued/unedited days can be sent together via "Send All Days" above. */}
                     {memberDays.map((day) => {
                       const dayKey = `${uid}::${day.date}`;
-                      const isDayEditing = canEditTimesheets && editingTimesheetDayKey === dayKey;
+                      const isDayEditing = canEditTimesheets && !!editingTimesheetDayKeys[dayKey];
                       const dayDraft = timesheetDayDrafts[dayKey] || {
                         firstIn: day.firstInDisplay || "",
                         lastOut: day.lastOutDisplay || "",
@@ -8050,14 +8160,14 @@ export default function EventDashboardPage() {
                                 <>
                                   <button
                                     onClick={() => openTimesheetEditModal(uid, day.date)}
-                                    disabled={savingTimesheetDayKey === dayKey}
+                                    disabled={savingTimesheetDayKey === dayKey || savingAllTimesheetDaysUid === uid}
                                     className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     {savingTimesheetDayKey === dayKey ? "Saving…" : "Save"}
                                   </button>
                                   <button
-                                    onClick={cancelTimesheetDayEdit}
-                                    disabled={savingTimesheetDayKey === dayKey}
+                                    onClick={() => cancelTimesheetDayEdit(dayKey)}
+                                    disabled={savingTimesheetDayKey === dayKey || savingAllTimesheetDaysUid === uid}
                                     className="text-gray-500 hover:text-gray-700 font-medium text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     Cancel
@@ -8066,7 +8176,8 @@ export default function EventDashboardPage() {
                               ) : (
                                 <button
                                   onClick={() => startTimesheetDayEdit(uid, day)}
-                                  className="text-blue-600 hover:text-blue-700 font-medium text-xs"
+                                  disabled={savingAllTimesheetDaysUid === uid}
+                                  className="text-blue-600 hover:text-blue-700 font-medium text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   Edit
                                 </button>
@@ -9739,7 +9850,9 @@ export default function EventDashboardPage() {
                     return;
                   }
                   const sigDataUrl = signatureCanvasRef.current?.toDataURL("image/png") ?? "";
-                  if (pendingTimesheetEditDay) {
+                  if (pendingTimesheetEditAllDays) {
+                    saveAllTimesheetDaysEdit(pendingTimesheetEditUid!, timesheetEditNote.trim(), sigDataUrl);
+                  } else if (pendingTimesheetEditDay) {
                     saveTimesheetDayEdit(pendingTimesheetEditUid!, pendingTimesheetEditDay, timesheetEditNote.trim(), sigDataUrl);
                   } else {
                     saveTimesheetEdit(pendingTimesheetEditUid!, timesheetEditNote.trim(), sigDataUrl);
