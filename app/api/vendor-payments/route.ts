@@ -488,7 +488,11 @@ export async function GET(req: NextRequest) {
       for (const uid of vendorIds) {
         const totalMs = Number(totalsMsByUser[uid] || 0);
         const effectiveMs = getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
-        const payableMs = effectiveMs > 0 ? effectiveMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS : 0;
+        // Non-event ("special") timesheets have no physical gate/kiosk to walk from,
+        // so the 30-minute gate/admin-response allowance only applies to real events.
+        const payableMs = effectiveMs > 0
+          ? effectiveMs + (isNonEventPayroll ? 0 : ADMIN_RESPONSE_ENTRY_PROCESSING_MS)
+          : 0;
         totalsHours[uid] = roundHoursFromMs(payableMs);
       }
 
@@ -666,13 +670,14 @@ export async function GET(req: NextRequest) {
       // Fetch events metadata for date windows
       const { data: eventsForMeals } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, state, start_time, end_time, ends_next_day')
+        .select('id, event_date, state, start_time, end_time, ends_next_day, event_type')
         .in('id', allEventIdsForMeals);
 
       for (const evt of eventsForMeals || []) {
         const eid = evt.id;
         const dateStr = (evt.event_date || '').toString().split('T')[0];
         if (!dateStr) continue;
+        const isNonEventPayrollForMeals = (evt as any)?.event_type === 'special';
 
         const { data: teamRows } = await supabaseAdmin
           .from('event_teams')
@@ -701,7 +706,9 @@ export async function GET(req: NextRequest) {
           const totalMs = Number(totalsMsByUser[uid] || 0);
           const effectiveMs = getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
           const deductMs = Math.max(totalMs - effectiveMs, 0);
-          const payableMs = effectiveMs > 0 ? effectiveMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS : 0;
+          const payableMs = effectiveMs > 0
+            ? effectiveMs + (isNonEventPayrollForMeals ? 0 : ADMIN_RESPONSE_ENTRY_PROCESSING_MS)
+            : 0;
           if (deductMs > 0) {
             mealDeductionHours[eid][uid] = roundHoursFromMs(deductMs);
           }

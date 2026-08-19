@@ -484,7 +484,7 @@ export async function GET(
     const [eventResult, teamResult] = await Promise.all([
       supabaseAdmin
         .from("events")
-        .select("id, event_name, event_date, end_date, state, start_time, end_time, ends_next_day")
+        .select("id, event_name, event_date, end_date, state, start_time, end_time, ends_next_day, event_type")
         .eq("id", eventId)
         .maybeSingle(),
       supabaseAdmin
@@ -515,7 +515,9 @@ export async function GET(
       ? Math.round((Date.parse(endDate!) - Date.parse(date)) / 86400000) + 1
       : 0;
     const displayDate = isMultiDay ? `${date} - ${endDate}` : date;
-    const applyGateOffset = true;
+    // Non-event ("special") timesheets have no physical gate/kiosk to walk from, so
+    // the 30-minute gate/admin-response allowance only applies to real ticketed events.
+    const applyGateOffset = event.event_type !== "special";
     const eventState = String(event.state || "CA").toUpperCase();
     const tz = getTimezoneForState(eventState) || "America/Los_Angeles";
     const teamMembers = teamResult.data || [];

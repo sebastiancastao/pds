@@ -3189,7 +3189,9 @@ export default function EventDashboardPage() {
 
   const GATE_PHONE_OFFSET_MINUTES = 30;
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
-  const applyGateOffset = true;
+  // Non-event ("special") timesheets have no physical gate/kiosk to walk from, so
+  // the 30-minute gate/admin-response allowance only applies to real ticketed events.
+  const applyGateOffset = !isNonEventTimesheet;
 
   const getDisplayedWorkedMs = (uid: string): number => {
     const span = timesheetSpans[uid];
