@@ -358,7 +358,8 @@ export async function GET(
           .select('vendor_id, availability')
           .in('vendor_id', batch)
           .not('availability', 'is', null)
-          .order('created_at', { ascending: false });
+          .order('responded_at', { ascending: false, nullsFirst: false })
+          .order('updated_at', { ascending: false });
 
         if (invBatchError) {
           console.error('❌ Error fetching invitation batch:', invBatchError);
@@ -385,9 +386,13 @@ export async function GET(
 
     // A vendor accumulates one vendor_invitations row per invite cycle, each
     // carrying a full availability snapshot as of that submission. Rows are
-    // fetched most-recent-first, so the FIRST submission that says anything
-    // at all about eventDateKey is authoritative for that vendor — including
-    // an explicit "unavailable" — and older submissions must not override it.
+    // fetched most-recently-RESPONDED-first (matching
+    // lib/vendorAvailability.ts's getMergedVendorAvailability, which powers
+    // the /employees and /hr/employees calendar views), so the FIRST
+    // submission that says anything at all about eventDateKey is
+    // authoritative for that vendor — including an explicit "unavailable" —
+    // and older submissions must not override it, regardless of which
+    // invitation cycle they belong to.
     const vendorDateResolved = new Set<string>();
 
     for (const inv of allInvitations) {

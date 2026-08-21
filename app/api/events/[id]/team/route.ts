@@ -386,15 +386,19 @@ export async function POST(
         .select('vendor_id, availability, created_at')
         .in('vendor_id', conflictFreeVendorIds)
         .not('availability', 'is', null)
-        .order('created_at', { ascending: false });
+        .order('responded_at', { ascending: false, nullsFirst: false })
+        .order('updated_at', { ascending: false });
 
       if (availabilityError) {
         console.warn('[TEAM] Could not check vendor self-declared availability:', availabilityError);
       } else {
-        // Rows come back most-recent-first per vendor; the first submission
-        // that says anything about eventDateKey is authoritative, even if
-        // it's an explicit "unavailable" — older submissions must not
-        // override it.
+        // Rows come back most-recently-RESPONDED-first per vendor (matching
+        // lib/vendorAvailability.ts's getMergedVendorAvailability, which
+        // powers the /employees and /hr/employees calendar views), so the
+        // first submission that says anything about eventDateKey is
+        // authoritative, even if it's an explicit "unavailable" — older
+        // submissions must not override it, regardless of which invitation
+        // cycle they belong to.
         const vendorDateResolved = new Set<string>();
         for (const row of availabilityRows || []) {
           const vendorId = String((row as any)?.vendor_id || '').trim();
