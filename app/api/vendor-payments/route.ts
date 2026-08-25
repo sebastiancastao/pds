@@ -7,6 +7,7 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { decrypt } from '@/lib/encryption';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
+import { normalizeEventEndDate, getInclusiveDateSpanDays } from '@/lib/non-event-timesheets';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -93,6 +94,19 @@ function timeToSeconds(value: unknown): number | null {
   return hh * 3600 + mm * 60 + ss;
 }
 
+// Non-event ("special") timesheets can span multiple days (up to
+// MAX_NON_EVENT_TIMESHEET_DAYS). Regular events are always scanned with a fixed
+// 2-day window (see fetchEventTimesheetEntries) to catch overnight shifts; a
+// multi-day timesheet instead needs a window covering every day it spans, or
+// entries on later days are silently dropped from the payroll totals.
+function getMultiDayWindow(eventDate: string, endDateRaw: string | null | undefined): { isMultiDay: boolean; daySpan: number } {
+  const dateStr = (eventDate || '').toString().split('T')[0];
+  const normalizedEndDate = normalizeEventEndDate(dateStr, endDateRaw ? endDateRaw.toString().split('T')[0] : null);
+  const isMultiDay = Boolean(dateStr && normalizedEndDate && normalizedEndDate > dateStr);
+  const daySpan = isMultiDay ? getInclusiveDateSpanDays(dateStr, normalizedEndDate) : 2;
+  return { isMultiDay, daySpan };
+}
+
 function createEmptyTimesheetSpan() {
   return {
     firstIn: null as string | null,
@@ -116,15 +130,16 @@ async function fetchEventTimesheetEntries(params: {
   eventDate: string;
   eventState: string | null | undefined;
   endsNextDay: boolean;
+  daySpan?: number;
 }) {
-  const { eventId, userIds, eventDate, eventState, endsNextDay } = params;
+  const { eventId, userIds, eventDate, eventState, endsNextDay, daySpan = 2 } = params;
   if (!eventId || userIds.length === 0) {
     return [];
   }
 
   const normalizedDate = (eventDate || '').toString().split('T')[0];
   const eventTimezone = getTimezoneForState(eventState);
-  const queryRange = getLocalDateRange(normalizedDate, eventTimezone, 2);
+  const queryRange = getLocalDateRange(normalizedDate, eventTimezone, daySpan);
   if (!queryRange) {
     return [];
   }
@@ -195,7 +210,7 @@ async function fetchEventTimesheetEntries(params: {
   return entries || [];
 }
 
-function computeTimesheetTotalsAndSpans(userIds: string[], entries: any[]) {
+function computeTimesheetTotalsAndSpans(userIds: string[], entries: any[], isMultiDay = false) {
   const entriesByUser: Record<string, any[]> = {};
   for (const uid of userIds) {
     entriesByUser[uid] = [];
@@ -208,6 +223,11 @@ function computeTimesheetTotalsAndSpans(userIds: string[], entries: any[]) {
 
   const totalsMsByUser: Record<string, number> = {};
   const spansByUser: Record<string, ReturnType<typeof createEmptyTimesheetSpan>> = {};
+  // Sum of every meal_start/meal_end pair, uncapped. A multi-day non-event
+  // timesheet can have more than 3 meal periods (one per day); the `span`
+  // object above only tracks the first three for display, which is not
+  // enough to deduct meals correctly across a whole multi-day span.
+  const mealMsByUser: Record<string, number> = {};
 
   for (const uid of userIds) {
     const userEntries = entriesByUser[uid] || [];
@@ -260,8 +280,29 @@ function computeTimesheetTotalsAndSpans(userIds: string[], entries: any[]) {
       }
     }
 
+    // Sum every meal_start/meal_end pair (uncapped) for multi-day deduction.
+    let mealMs = 0;
+    let currentMealStart: string | null = null;
+    for (const entry of userEntries) {
+      if (entry.action === 'meal_start') {
+        if (!currentMealStart) currentMealStart = entry.timestamp;
+      } else if (entry.action === 'meal_end') {
+        if (currentMealStart) {
+          const duration = new Date(entry.timestamp).getTime() - new Date(currentMealStart).getTime();
+          if (duration > 0) mealMs += duration;
+          currentMealStart = null;
+        }
+      }
+    }
+    mealMsByUser[uid] = mealMs;
+
+    // AUTO-DETECT MEAL BREAKS: gaps between clock-out/clock-in pairs are treated
+    // as unpaid meal breaks when no explicit meal punches exist. Skipped for
+    // multi-day timesheets, where a gap can be an overnight gap between two
+    // different days rather than a meal — misdetecting it would deduct hours
+    // that were never a break.
     const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
-    if (!hasExplicitMeals && workIntervals.length >= 2) {
+    if (!hasExplicitMeals && !isMultiDay && workIntervals.length >= 2) {
       workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
       const gaps: Array<{ start: Date; end: Date }> = [];
@@ -291,7 +332,7 @@ function computeTimesheetTotalsAndSpans(userIds: string[], entries: any[]) {
     }
   }
 
-  return { totalsMsByUser, spansByUser };
+  return { totalsMsByUser, spansByUser, mealMsByUser };
 }
 
 function getMealDeductedWorkedMs(totalMs: number, span?: ReturnType<typeof createEmptyTimesheetSpan> | null): number {
@@ -432,11 +473,14 @@ export async function GET(req: NextRequest) {
       // 1) Load event for date/state
       const { data: eventRow } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, state, start_time, end_time, ends_next_day, tips_distribution_mode, event_type')
+        .select('id, event_date, end_date, state, start_time, end_time, ends_next_day, tips_distribution_mode, event_type')
         .eq('id', eventId)
         .maybeSingle();
       if (!eventRow) return [] as any[];
       const isNonEventPayroll = (eventRow.event_type || '').toString().trim().toLowerCase() === 'special';
+      // Non-event timesheets can span multiple days; widen the time_entries scan
+      // window accordingly so days beyond the first aren't dropped from payroll.
+      const { isMultiDay, daySpan } = getMultiDayWindow(eventRow.event_date, (eventRow as any).end_date);
 
       // 2) Team (confirmed)
       // Try with any status first (some teams may not be confirmed yet)
@@ -482,13 +526,24 @@ export async function GET(req: NextRequest) {
         eventDate: dateStr,
         eventState: eventRow.state,
         endsNextDay,
+        daySpan,
       });
-      const { totalsMsByUser, spansByUser } = computeTimesheetTotalsAndSpans(vendorIds, entries);
+      const { totalsMsByUser, spansByUser, mealMsByUser } = computeTimesheetTotalsAndSpans(vendorIds, entries, isMultiDay);
       const totalsHours: Record<string, number> = {};
       for (const uid of vendorIds) {
         const totalMs = Number(totalsMsByUser[uid] || 0);
-        const effectiveMs = getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
-        const payableMs = effectiveMs > 0 ? effectiveMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS : 0;
+        // Multi-day: deduct every meal punch across the whole span directly
+        // (span-based deduction below assumes a single day's firstIn/lastOut).
+        const effectiveMs = isMultiDay
+          ? Math.max(totalMs - Number(mealMsByUser[uid] || 0), 0)
+          : getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
+        // Non-event ("special") pure-hourly timesheets: event-dashboard's source-of-truth
+        // pay calc (getDisplayedPaymentBreakdown's daySums, built from raw per-day totals)
+        // never adds this 30-minute gate/admin-response allowance to the hours actually
+        // paid — the allowance only applies to the separate actualHours display value used
+        // by other event types, where it correctly flows straight through into paid hours.
+        // Adding it here for non-event too silently inflates every non-event paycheck by 0.5h.
+        const payableMs = effectiveMs > 0 ? effectiveMs + (isNonEventPayroll ? 0 : ADMIN_RESPONSE_ENTRY_PROCESSING_MS) : 0;
         totalsHours[uid] = roundHoursFromMs(payableMs);
       }
 
@@ -666,13 +721,14 @@ export async function GET(req: NextRequest) {
       // Fetch events metadata for date windows
       const { data: eventsForMeals } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, state, start_time, end_time, ends_next_day')
+        .select('id, event_date, end_date, state, start_time, end_time, ends_next_day, event_type')
         .in('id', allEventIdsForMeals);
 
       for (const evt of eventsForMeals || []) {
         const eid = evt.id;
         const dateStr = (evt.event_date || '').toString().split('T')[0];
         if (!dateStr) continue;
+        const isNonEventPayrollMeals = ((evt as any).event_type || '').toString().trim().toLowerCase() === 'special';
 
         const { data: teamRows } = await supabaseAdmin
           .from('event_teams')
@@ -688,20 +744,29 @@ export async function GET(req: NextRequest) {
         const endSec = timeToSeconds((evt as any)?.end_time);
         const endsNextDay = Boolean((evt as any)?.ends_next_day) ||
           (startSec !== null && endSec !== null && endSec <= startSec);
+        // Non-event timesheets can span multiple days; widen the scan window so
+        // days beyond the first aren't dropped from the recomputed totals below
+        // (which otherwise overwrite whatever hours were already saved/merged).
+        const { isMultiDay, daySpan } = getMultiDayWindow(dateStr, (evt as any).end_date);
         const entries = await fetchEventTimesheetEntries({
           eventId: eid,
           userIds,
           eventDate: dateStr,
           eventState: evt.state,
           endsNextDay,
+          daySpan,
         });
-        const { totalsMsByUser, spansByUser } = computeTimesheetTotalsAndSpans(userIds, entries);
+        const { totalsMsByUser, spansByUser, mealMsByUser } = computeTimesheetTotalsAndSpans(userIds, entries, isMultiDay);
 
         for (const uid of userIds) {
           const totalMs = Number(totalsMsByUser[uid] || 0);
-          const effectiveMs = getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
+          const effectiveMs = isMultiDay
+            ? Math.max(totalMs - Number(mealMsByUser[uid] || 0), 0)
+            : getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
           const deductMs = Math.max(totalMs - effectiveMs, 0);
-          const payableMs = effectiveMs > 0 ? effectiveMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS : 0;
+          // See matching comment in computeFallbackVendorPayments: non-event ("special")
+          // timesheets must not get this 30-minute allowance baked into paid hours.
+          const payableMs = effectiveMs > 0 ? effectiveMs + (isNonEventPayrollMeals ? 0 : ADMIN_RESPONSE_ENTRY_PROCESSING_MS) : 0;
           if (deductMs > 0) {
             mealDeductionHours[eid][uid] = roundHoursFromMs(deductMs);
           }

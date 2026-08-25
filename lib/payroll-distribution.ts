@@ -45,7 +45,7 @@ type DistributeTipsArgs = {
 };
 
 export function distributeTipsPool({ totalAmount, members, mode }: DistributeTipsArgs): PoolDistributionResult {
-  return distributePoolByHoursRule({
+  const result = distributePoolByHoursRule({
     totalAmount,
     members,
     // Even split is the default; only an explicit "prorated" opts into hours-based.
@@ -53,6 +53,18 @@ export function distributeTipsPool({ totalAmount, members, mode }: DistributeTip
     // No short-shift exception for tips; the mode above is the only lever.
     shortShiftThresholdHours: 0,
   });
+  // Reconcile independent per-member cents back to the pool total via the same
+  // largest-remainder rounding already used for commission splits (see
+  // roundAmountsToCents). Without this, every caller rounds each member's raw
+  // share to cents on its own, which can drift the displayed/saved total a few
+  // cents from totalAmount — most visibly under Even Split, where every
+  // member's raw share is identical so the drift compounds in one direction
+  // instead of partially canceling like a prorated split's varied shares do.
+  const safeTotal = toPositiveNumber(totalAmount);
+  return {
+    ...result,
+    amountsById: safeTotal > 0 ? roundAmountsToCents(result.amountsById, safeTotal) : result.amountsById,
+  };
 }
 
 export function tipsDistributionModeLabel(mode?: string | null): "Even Split" | "Prorated" {
