@@ -128,7 +128,7 @@ function formatDate(value?: string | null) {
   });
 }
 
-const EMPLOYEES_LIST_REFRESH_MS = 90000;
+const EMPLOYEES_LIST_REFRESH_MS = 120000;
 // Refocusing the window/tab (e.g. alt-tabbing back) also triggers a refresh,
 // but that can fire far more often than the timer if the user switches
 // windows a lot. Throttle refocus-triggered refreshes to this cadence so
@@ -195,7 +195,7 @@ export default function HREmployeesPage() {
 
   // Keeps the employee list, tickets, and form-edit history current without
   // requiring a manual page reload. Refreshes silently (no loading spinner)
-  // every 1.5 minutes while the tab is visible, plus on refocus/tab-switch -
+  // every 2 minutes while the tab is visible, plus on refocus/tab-switch -
   // but refocus-triggered refreshes are throttled to the same cadence as the
   // timer so rapid alt-tabbing doesn't spam the API.
   useEffect(() => {
