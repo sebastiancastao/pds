@@ -1,7 +1,7 @@
 // app/hr/employees/[id]/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
@@ -270,7 +270,12 @@ const STATE_TIMEZONES: Record<string, string> = {
   WI: "America/Chicago", WY: "America/Denver",
 };
 
-const EMPLOYEE_DETAIL_REFRESH_MS = 45000;
+const EMPLOYEE_DETAIL_REFRESH_MS = 120000;
+// Refocusing the window/tab also triggers a refresh, but that can fire far
+// more often than the timer if the user switches windows a lot. Throttle
+// refocus-triggered refreshes to the same cadence as the timer so rapid
+// alt-tabbing doesn't spam the API.
+const MIN_REFOCUS_REFRESH_GAP_MS = EMPLOYEE_DETAIL_REFRESH_MS;
 
 function formatDateTime(d?: string | null, state?: string | null) {
   if (!d) return "—";
@@ -416,6 +421,7 @@ export default function EmployeeProfilePage() {
   };
   const [regionEvents, setRegionEvents] = useState<{ id: string; event_name: string | null; event_date: string | null; start_time: string | null; venue: string | null; city: string | null; state: string | null }[]>([]);
   const [refreshTick, setRefreshTick] = useState(0);
+  const lastLoadedAtRef = useRef(0);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
@@ -498,24 +504,30 @@ export default function EmployeeProfilePage() {
   useEffect(() => {
     if (!employeeId) return;
 
-    const refreshVisiblePage = () => {
+    const refreshOnTimer = () => {
       if (document.visibilityState !== "visible") return;
       setRefreshTick((current) => current + 1);
     };
 
-    const intervalId = window.setInterval(refreshVisiblePage, EMPLOYEE_DETAIL_REFRESH_MS);
+    const refreshOnRefocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastLoadedAtRef.current < MIN_REFOCUS_REFRESH_GAP_MS) return;
+      setRefreshTick((current) => current + 1);
+    };
+
+    const intervalId = window.setInterval(refreshOnTimer, EMPLOYEE_DETAIL_REFRESH_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        refreshVisiblePage();
+        refreshOnRefocus();
       }
     };
 
-    window.addEventListener("focus", refreshVisiblePage);
+    window.addEventListener("focus", refreshOnRefocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.clearInterval(intervalId);
-      window.removeEventListener("focus", refreshVisiblePage);
+      window.removeEventListener("focus", refreshOnRefocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [employeeId]);
@@ -572,6 +584,7 @@ export default function EmployeeProfilePage() {
         setErr(e.message || "Failed to load employee");
       } finally {
         setLoading(false);
+        lastLoadedAtRef.current = Date.now();
         console.log("🔵 [DEBUG] Loading complete");
       }
     };

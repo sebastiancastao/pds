@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from 'xlsx';
@@ -128,7 +128,12 @@ function formatDate(value?: string | null) {
   });
 }
 
-const EMPLOYEES_LIST_REFRESH_MS = 90000;
+const EMPLOYEES_LIST_REFRESH_MS = 120000;
+// Refocusing the window/tab (e.g. alt-tabbing back) also triggers a refresh,
+// but that can fire far more often than the timer if the user switches
+// windows a lot. Throttle refocus-triggered refreshes to this cadence so
+// they never outpace the interval-driven one.
+const MIN_REFOCUS_REFRESH_GAP_MS = EMPLOYEES_LIST_REFRESH_MS;
 
 export default function HREmployeesPage() {
   const router = useRouter();
@@ -146,6 +151,7 @@ export default function HREmployeesPage() {
   const [latestFormEditsByUser, setLatestFormEditsByUser] = useState<Record<string, LatestFormEdit>>({});
   const [helpdeskTickets, setHelpdeskTickets] = useState<HelpdeskTicket[]>([]);
   const [ticketsError, setTicketsError] = useState("");
+  const lastLoadedAtRef = useRef(0);
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -189,28 +195,36 @@ export default function HREmployeesPage() {
 
   // Keeps the employee list, tickets, and form-edit history current without
   // requiring a manual page reload. Refreshes silently (no loading spinner)
-  // every 1.5 minutes while the tab is visible, plus immediately on refocus.
+  // every 2 minutes while the tab is visible, plus on refocus/tab-switch -
+  // but refocus-triggered refreshes are throttled to the same cadence as the
+  // timer so rapid alt-tabbing doesn't spam the API.
   useEffect(() => {
     if (!isAuthorized) return;
 
-    const refreshVisiblePage = () => {
+    const refreshOnTimer = () => {
       if (document.visibilityState !== "visible") return;
       loadUsers({ silent: true });
     };
 
-    const intervalId = window.setInterval(refreshVisiblePage, EMPLOYEES_LIST_REFRESH_MS);
+    const refreshOnRefocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastLoadedAtRef.current < MIN_REFOCUS_REFRESH_GAP_MS) return;
+      loadUsers({ silent: true });
+    };
+
+    const intervalId = window.setInterval(refreshOnTimer, EMPLOYEES_LIST_REFRESH_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        refreshVisiblePage();
+        refreshOnRefocus();
       }
     };
 
-    window.addEventListener("focus", refreshVisiblePage);
+    window.addEventListener("focus", refreshOnRefocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.clearInterval(intervalId);
-      window.removeEventListener("focus", refreshVisiblePage);
+      window.removeEventListener("focus", refreshOnRefocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [isAuthorized]);
@@ -289,6 +303,7 @@ export default function HREmployeesPage() {
       setError(err.message || 'Failed to load users');
     } finally {
       if (!silent) setLoading(false);
+      lastLoadedAtRef.current = Date.now();
     }
   };
 
