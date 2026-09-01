@@ -54,23 +54,41 @@ export async function GET(req: NextRequest) {
     const eventIds = eventIdsParam.split(',').map(s => s.trim()).filter(Boolean);
     if (eventIds.length === 0) return NextResponse.json({ approvals: {} });
 
-    // Try to include amount override columns (may not exist in DB yet — fall back gracefully)
+    // Try to include amount override + company-vehicle columns (may not exist in DB yet — fall back gracefully)
     let data: any[] | null = null;
     let fetchError: any = null;
-    const withAmounts = await supabaseAdmin
+    const withVehicle = await supabaseAdmin
       .from('event_payment_approvals')
-      .select('event_id, user_id, mileage_approved, travel_approved, mileage_amount_override, travel_amount_override')
+      .select('event_id, user_id, mileage_approved, travel_approved, mileage_amount_override, travel_amount_override, mileage_company_vehicle')
       .in('event_id', eventIds);
-    if (withAmounts.error) {
-      // Amount override columns may not exist yet; fall back to base columns
-      const base = await supabaseAdmin
+    if (withVehicle.error) {
+      // Optional amount override columns may not exist yet; keep company-vehicle state if available.
+      const vehicleOnly = await supabaseAdmin
         .from('event_payment_approvals')
-        .select('event_id, user_id, mileage_approved, travel_approved')
+        .select('event_id, user_id, mileage_approved, travel_approved, mileage_company_vehicle')
         .in('event_id', eventIds);
-      data = base.data;
-      fetchError = base.error;
+      if (vehicleOnly.error) {
+        // mileage_company_vehicle column may not exist yet; fall back to amount-override columns.
+        const withAmounts = await supabaseAdmin
+          .from('event_payment_approvals')
+          .select('event_id, user_id, mileage_approved, travel_approved, mileage_amount_override, travel_amount_override')
+          .in('event_id', eventIds);
+        if (withAmounts.error) {
+          // Amount override columns may not exist yet either; fall back to base columns.
+          const base = await supabaseAdmin
+            .from('event_payment_approvals')
+            .select('event_id, user_id, mileage_approved, travel_approved')
+            .in('event_id', eventIds);
+          data = base.data;
+          fetchError = base.error;
+        } else {
+          data = withAmounts.data;
+        }
+      } else {
+        data = vehicleOnly.data;
+      }
     } else {
-      data = withAmounts.data;
+      data = withVehicle.data;
     }
 
     if (fetchError) {
@@ -78,7 +96,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: fetchError.message }, { status: 500 });
     }
 
-    const approvals: Record<string, Record<string, { mileage: boolean | null; travel: boolean | null; mileage_amount?: number | null; travel_amount?: number | null }>> = {};
+    const approvals: Record<string, Record<string, { mileage: boolean | null; travel: boolean | null; mileage_amount?: number | null; travel_amount?: number | null; company_vehicle?: boolean }>> = {};
     for (const row of data || []) {
       if (!row.event_id || !row.user_id) continue;
       if (!approvals[row.event_id]) approvals[row.event_id] = {};
@@ -87,6 +105,7 @@ export async function GET(req: NextRequest) {
         travel: row.travel_approved ?? null,
         mileage_amount: row.mileage_amount_override ?? null,
         travel_amount: row.travel_amount_override ?? null,
+        company_vehicle: row.mileage_company_vehicle ?? false,
       };
     }
 
@@ -99,7 +118,10 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/mileage-approvals
- * Body: { event_id, user_id, field: 'mileage'|'travel', approved: boolean }
+ * Body: { event_id, user_id, field: 'mileage'|'travel'|'company_vehicle', approved: boolean }
+ * 'company_vehicle' marks that the employee used a company vehicle for the event,
+ * which forces mileage pay to $0 regardless of the mileage_approved flag or any
+ * amount override (see mileage calculation call sites).
  */
 export async function POST(req: NextRequest) {
   try {
@@ -113,12 +135,12 @@ export async function POST(req: NextRequest) {
     if (!event_id || !user_id || !field || typeof approved !== 'boolean') {
       return NextResponse.json({ error: 'event_id, user_id, field and approved are required' }, { status: 400 });
     }
-    if (field !== 'mileage' && field !== 'travel') {
-      return NextResponse.json({ error: 'field must be mileage or travel' }, { status: 400 });
+    if (field !== 'mileage' && field !== 'travel' && field !== 'company_vehicle') {
+      return NextResponse.json({ error: 'field must be mileage, travel or company_vehicle' }, { status: 400 });
     }
 
-    const column = field === 'mileage' ? 'mileage_approved' : 'travel_approved';
-    const amountColumn = field === 'mileage' ? 'mileage_amount_override' : 'travel_amount_override';
+    const column = field === 'mileage' ? 'mileage_approved' : field === 'travel' ? 'travel_approved' : 'mileage_company_vehicle';
+    const amountColumn = field === 'mileage' ? 'mileage_amount_override' : field === 'travel' ? 'travel_amount_override' : null;
 
     const upsertData: Record<string, any> = {
       event_id,
@@ -126,18 +148,40 @@ export async function POST(req: NextRequest) {
       [column]: approved,
       updated_at: new Date().toISOString(),
     };
-    if (typeof amount_override === 'number') {
+    if (field === 'mileage' && approved) {
+      upsertData.mileage_company_vehicle = false;
+    }
+    if (field === 'company_vehicle' && approved) {
+      upsertData.mileage_approved = false;
+      upsertData.mileage_amount_override = null;
+    }
+    if (amountColumn && amount_override === null) {
+      upsertData[amountColumn] = null;
+    } else if (amountColumn && typeof amount_override === 'number') {
       upsertData[amountColumn] = amount_override;
     }
 
-    // Upsert into dedicated approvals table; if amount column doesn't exist, retry without it
+    // Upsert into dedicated approvals table; if optional columns do not exist yet, retry with base fields.
     let { error } = await supabaseAdmin
       .from('event_payment_approvals')
       .upsert(upsertData, { onConflict: 'event_id,user_id' });
 
-    if (error && typeof amount_override === 'number') {
-      // Amount override columns may not exist in DB yet — retry without them
-      const baseData = { event_id, user_id, [column]: approved, updated_at: new Date().toISOString() };
+    if (error) {
+      const retryData: Record<string, any> = { event_id, user_id, [column]: approved, updated_at: new Date().toISOString() };
+      if (field === 'mileage' && approved) {
+        retryData.mileage_company_vehicle = false;
+      }
+      if (field === 'company_vehicle' && approved) {
+        retryData.mileage_approved = false;
+      }
+      const retry = await supabaseAdmin
+        .from('event_payment_approvals')
+        .upsert(retryData, { onConflict: 'event_id,user_id' });
+      error = retry.error;
+    }
+
+    if (error && field === 'mileage' && approved) {
+      const baseData: Record<string, any> = { event_id, user_id, [column]: approved, updated_at: new Date().toISOString() };
       const retry = await supabaseAdmin
         .from('event_payment_approvals')
         .upsert(baseData, { onConflict: 'event_id,user_id' });

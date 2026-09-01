@@ -39,6 +39,15 @@ type Employee = {
 
 type EmployeeStatusFilter = "active" | "inactive" | "all";
 type PayrollLoadMode = "all" | "nonEvent" | "cw";
+type MileageApproval = {
+  mileage: boolean;
+  company_vehicle: boolean;
+};
+
+const DEFAULT_MILEAGE_APPROVAL: MileageApproval = {
+  mileage: false,
+  company_vehicle: false,
+};
 
 type BackgroundCheck = {
   id: string;
@@ -187,7 +196,7 @@ function HRDashboardContent() {
   // Sick-leave hours that apply to each event, keyed by event id then user id.
   // Merged from approved sick-leave requests + sick-leave pay sheets (see /api/hr/sick-leave-by-event).
   const [sickHoursByEvent, setSickHoursByEvent] = useState<Record<string, Record<string, number>>>({});
-  const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, { mileage: boolean; travel: boolean }>>>({});
+  const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, MileageApproval>>>({});
   // Sick leave pay sheet (queued sick-leave payroll) state
   type SickLeavePaysheet = {
     id: string;
@@ -287,13 +296,46 @@ function HRDashboardContent() {
   const [convertSalariedError, setConvertSalariedError] = useState('');
   const [convertSalariedSuccess, setConvertSalariedSuccess] = useState('');
   const [convertSalariedLoading, setConvertSalariedLoading] = useState(false);
-  const getMileageApproval = (eventId: string, userId: string) =>
-    mileageApprovals[eventId]?.[userId] ?? { mileage: true, travel: true };
-  const setMileageApproval = async (eventId: string, userId: string, field: 'mileage' | 'travel', value: boolean) => {
+  const getMileageApproval = useCallback((eventId: string, userId: string): MileageApproval => {
+    const approval = mileageApprovals[eventId]?.[userId];
+    if (!approval) return DEFAULT_MILEAGE_APPROVAL;
+    return {
+      mileage: approval.company_vehicle ? false : !!approval.mileage,
+      company_vehicle: !!approval.company_vehicle,
+    };
+  }, [mileageApprovals]);
+
+  const setMileageApproval = async (
+    eventId: string,
+    userId: string,
+    field: 'mileage' | 'company_vehicle',
+    value: boolean,
+    options?: { clearAmountOverride?: boolean }
+  ) => {
     setMileageApprovals(prev => ({
       ...prev,
-      [eventId]: { ...(prev[eventId] || {}), [userId]: { ...(prev[eventId]?.[userId] ?? { mileage: true, travel: true }), [field]: value } },
+      [eventId]: {
+        ...(prev[eventId] || {}),
+        [userId]: (() => {
+          const next = {
+            ...(prev[eventId]?.[userId] ?? DEFAULT_MILEAGE_APPROVAL),
+            [field]: value,
+          };
+          if (field === 'mileage' && value) next.company_vehicle = false;
+          if (field === 'company_vehicle' && value) next.mileage = false;
+          return next;
+        })(),
+      },
     }));
+    if (field === 'company_vehicle' && value) {
+      setMileagePayOverrides(prev => {
+        const byEvent = prev[eventId];
+        if (!byEvent || byEvent[userId] === undefined) return prev;
+        const nextForEvent = { ...byEvent };
+        delete nextForEvent[userId];
+        return { ...prev, [eventId]: nextForEvent };
+      });
+    }
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch('/api/mileage-approvals', {
@@ -302,7 +344,13 @@ function HRDashboardContent() {
           'Content-Type': 'application/json',
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
-        body: JSON.stringify({ event_id: eventId, user_id: userId, field, approved: value }),
+        body: JSON.stringify({
+          event_id: eventId,
+          user_id: userId,
+          field,
+          approved: value,
+          ...(options?.clearAmountOverride ? { amount_override: null } : {}),
+        }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -313,12 +361,19 @@ function HRDashboardContent() {
     }
   };
 
-  const saveMileageAmountOverride = async (eventId: string, userId: string, field: 'mileage' | 'travel', amount: number) => {
-    if (field === 'mileage') {
-      setMileagePayOverrides(prev => ({ ...prev, [eventId]: { ...(prev[eventId] || {}), [userId]: amount } }));
-    } else {
-      setTravelPayOverrides(prev => ({ ...prev, [eventId]: { ...(prev[eventId] || {}), [userId]: amount } }));
-    }
+  const saveMileageAmountOverride = async (eventId: string, userId: string, field: 'mileage', amount: number) => {
+    setMileageApprovals(prev => ({
+      ...prev,
+      [eventId]: {
+        ...(prev[eventId] || {}),
+        [userId]: {
+          ...(prev[eventId]?.[userId] ?? DEFAULT_MILEAGE_APPROVAL),
+          mileage: true,
+          company_vehicle: false,
+        },
+      },
+    }));
+    setMileagePayOverrides(prev => ({ ...prev, [eventId]: { ...(prev[eventId] || {}), [userId]: amount } }));
     try {
       const { data: { session } } = await supabase.auth.getSession();
       await fetch('/api/mileage-approvals', {
@@ -412,11 +467,6 @@ function HRDashboardContent() {
     roundToThreeDecimals(amount).toFixed(2);
   const usesPeriodRateBreakdown = (stateCode?: string | null): boolean =>
     isPeriodRateState(normalizeState(stateCode));
-  const computeTravelPay = (diffMiles: number, stateCode: string | null | undefined, rateInEffect: number): number => {
-    const stateMin = normalizeState(stateCode) === 'CA' ? 28.50 : 25.94;
-    const travelRate = Math.max(stateMin, rateInEffect);
-    return (diffMiles / 30) * travelRate;
-  };
   const getEffectiveHours = (payment: any): number => {
     // `effective_hours` already reflects the canonical HR timesheet payable hours.
     if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
@@ -509,9 +559,44 @@ function HRDashboardContent() {
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [savingTipsModeEventId, setSavingTipsModeEventId] = useState<string | null>(null);
   const [mileagePayOverrides, setMileagePayOverrides] = useState<Record<string, Record<string, number>>>({});
-  const [travelPayOverrides, setTravelPayOverrides] = useState<Record<string, Record<string, number>>>({});
-  const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' | 'travel' } | null>(null);
+  const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' } | null>(null);
   const [editingMileageValue, setEditingMileageValue] = useState<string>('');
+  const getDisplayedMileagePay = useCallback((eventId: string, userId: string, rawMileagePay?: number): number => {
+    const approval = getMileageApproval(eventId, userId);
+    if (approval.company_vehicle || !approval.mileage) return 0;
+    const override = (mileagePayOverrides[eventId] || {})[userId];
+    if (override !== undefined) return Number(override || 0);
+    if (rawMileagePay !== undefined) return Number(rawMileagePay || 0);
+    return Number((mileageByEvent[eventId] || {})[userId]?.mileagePay || 0);
+  }, [getMileageApproval, mileageByEvent, mileagePayOverrides]);
+  const clearMileagePayOverride = useCallback((eventId: string, userId: string) => {
+    setMileagePayOverrides(prev => {
+      const byEvent = prev[eventId];
+      if (!byEvent || byEvent[userId] === undefined) return prev;
+      const nextForEvent = { ...byEvent };
+      delete nextForEvent[userId];
+      return { ...prev, [eventId]: nextForEvent };
+    });
+  }, []);
+  const setMileagePaymentStatus = async (
+    eventId: string,
+    userId: string,
+    status: 'paid' | 'unpaid' | 'company_vehicle'
+  ) => {
+    clearMileagePayOverride(eventId, userId);
+    if (status === 'paid') {
+      await setMileageApproval(eventId, userId, 'mileage', true, { clearAmountOverride: true });
+      return;
+    }
+    if (status === 'company_vehicle') {
+      await setMileageApproval(eventId, userId, 'company_vehicle', true, { clearAmountOverride: true });
+      return;
+    }
+    await setMileageApproval(eventId, userId, 'company_vehicle', false);
+    await setMileageApproval(eventId, userId, 'mileage', false, { clearAmountOverride: true });
+  };
+  const mileageStatusButtonClass = (active: boolean, activeClass: string) =>
+    `text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${active ? activeClass : 'border-gray-300 text-gray-400 hover:border-gray-400 hover:text-gray-600'}`;
 
   // Onboarding forms state
   const [onboardingForms, setOnboardingForms] = useState<any[]>([]);
@@ -1633,31 +1718,26 @@ function HRDashboardContent() {
           }
           if (approvalsRes.ok) {
             const approvalsJson = await approvalsRes.json();
-            // Convert DB nulls to true (null = not yet reviewed = approved)
-            const loaded: Record<string, Record<string, { mileage: boolean; travel: boolean }>> = {};
+            // DB null means not yet reviewed, so mileage is not paid until explicitly approved.
+            const loaded: Record<string, Record<string, MileageApproval>> = {};
             const loadedMileageOverrides: Record<string, Record<string, number>> = {};
-            const loadedTravelOverrides: Record<string, Record<string, number>> = {};
             for (const [evId, users] of Object.entries(approvalsJson.approvals || {})) {
               loaded[evId] = {};
               for (const [uid, vals] of Object.entries(users as any)) {
-                const v = vals as { mileage: boolean | null; travel: boolean | null; mileage_amount?: number | null; travel_amount?: number | null };
+                const v = vals as { mileage: boolean | null; mileage_amount?: number | null; company_vehicle?: boolean | null };
+                const companyVehicle = v.company_vehicle ?? false;
                 loaded[evId][uid] = {
-                  mileage: v.mileage ?? true,
-                  travel: v.travel ?? true,
+                  mileage: companyVehicle ? false : (v.mileage ?? false),
+                  company_vehicle: companyVehicle,
                 };
                 if (v.mileage_amount != null) {
                   if (!loadedMileageOverrides[evId]) loadedMileageOverrides[evId] = {};
                   loadedMileageOverrides[evId][uid] = v.mileage_amount;
                 }
-                if (v.travel_amount != null) {
-                  if (!loadedTravelOverrides[evId]) loadedTravelOverrides[evId] = {};
-                  loadedTravelOverrides[evId][uid] = v.travel_amount;
-                }
               }
             }
             setMileageApprovals(loaded);
             setMileagePayOverrides(loadedMileageOverrides);
-            setTravelPayOverrides(loadedTravelOverrides);
           }
         } catch (e) {
           console.warn('[HR PAYMENTS] Failed to fetch mileage data:', e);
@@ -2057,21 +2137,7 @@ function HRDashboardContent() {
       return sum + (stateVal !== undefined ? Number(stateVal || 0) : Number(payment?.otherAmount || 0));
     }, 0);
     const totalMileagePay = payments.reduce((sum: number, payment: any) => {
-      const override = (mileagePayOverrides[event.id] || {})[payment.userId];
-      if (override !== undefined) return sum + override;
-      return sum + (getMileageApproval(event.id, payment.userId).mileage
-        ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0)
-        : 0);
-    }, 0);
-    const totalTravelPay = payments.reduce((sum: number, payment: any) => {
-      const override = (travelPayOverrides[event.id] || {})[payment.userId];
-      if (override !== undefined) return sum + override;
-      const approval = getMileageApproval(event.id, payment.userId);
-      if (!approval.travel) return sum;
-      const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-      if (diffMiles === null) return sum;
-      const breakdown = getDisplayedPaymentBreakdown(event, payment);
-      return sum + computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect);
+      return sum + getDisplayedMileagePay(event.id, payment.userId);
     }, 0);
     const totalSickHours = payments.reduce((sum: number, payment: any) => {
       return sum + Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
@@ -2082,7 +2148,7 @@ function HRDashboardContent() {
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
       return sum + sickHours * breakdown.rateInEffect;
     }, 0);
-    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalReimbursement + totalOther + totalMileagePay + totalTravelPay + totalSickPay;
+    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalReimbursement + totalOther + totalMileagePay + totalSickPay;
 
     return {
       eventHours,
@@ -2102,10 +2168,9 @@ function HRDashboardContent() {
       totalReimbursement,
       totalOther,
       totalMileagePay,
-      totalTravelPay,
       totalGross,
     };
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
+  }, [getDisplayedPaymentBreakdown, getDisplayedMileagePay, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
 
   const getDisplayedVendorTotals = useCallback((vendor: {
     userId?: string;
@@ -2117,14 +2182,7 @@ function HRDashboardContent() {
       const tips = Number(payment?.tips || 0);
       const restBreak = isHourlyEvent ? 0 : Number(payment?.restBreak || 0);
       const other = Number(payment?.adjustmentAmount || 0);
-      const approval = getMileageApproval(event.id, payment.userId);
-      const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-      const mileageOverrideV = (mileagePayOverrides[event.id] || {})[payment.userId];
-      const travelOverrideV = (travelPayOverrides[event.id] || {})[payment.userId];
-      const mileagePay = mileageOverrideV !== undefined ? mileageOverrideV
-        : (approval.mileage ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0) : 0);
-      const travelPay = travelOverrideV !== undefined ? travelOverrideV
-        : (approval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0);
+      const mileagePay = getDisplayedMileagePay(event.id, payment.userId);
       const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
       const sickPay = sickHours > 0 ? sickHours * breakdown.rateInEffect : 0;
 
@@ -2147,12 +2205,11 @@ function HRDashboardContent() {
       totals.totalTips += tips;
       totals.totalRestBreak += restBreak;
       totals.totalMileagePay += mileagePay;
-      totals.totalTravelPay += travelPay;
       totals.totalReimbursement += rowReimbursement;
       totals.totalOther += rowOther;
       totals.totalSickHours += sickHours;
       totals.totalSickPay += sickPay;
-      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + rowReimbursement + rowOther + mileagePay + travelPay + sickPay;
+      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + rowReimbursement + rowOther + mileagePay + sickPay;
 
       return totals;
     }, {
@@ -2169,7 +2226,6 @@ function HRDashboardContent() {
       totalTips: 0,
       totalRestBreak: 0,
       totalMileagePay: 0,
-      totalTravelPay: 0,
       totalReimbursement: 0,
       totalOther: 0,
       totalSickHours: 0,
@@ -2187,7 +2243,7 @@ function HRDashboardContent() {
       result.totalVariableIncentive = periodUserTotals.totalVariableIncentive + totalManualVariableIncentive;
     }
     return result;
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
+  }, [getDisplayedPaymentBreakdown, getDisplayedMileagePay, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];
@@ -2296,8 +2352,7 @@ function HRDashboardContent() {
     const allVendorDetailRows: any[] = [];
     const vendorRows: any[] = [];
     const hourlyRows: any[] = [];
-    const commissionTravelRows: any[] = [];
-    const commissionNoTravelRows: any[] = [];
+    const commissionRows: any[] = [];
     const hourlyOnlyKeys = [
       'Regular Time Hours',
       'Regular Time Pay',
@@ -2335,16 +2390,10 @@ function HRDashboardContent() {
       const restBreak = hideRest ? 0 : Number(payment.restBreak || 0);
       const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
       const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
-      const diffMilesExport = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
       const exportApproval = getMileageApproval(event.id, payment.userId);
-      const mileagePay = exportApproval.mileage ? rawMileagePay : 0;
-      const travelHoursExport = 0;
-      const travelPayExport = exportApproval.travel && diffMilesExport !== null ? computeTravelPay(diffMilesExport, state, loadedRate) : 0;
-      const category = isHourlyEvent
-        ? 'Hourly'
-        : travelPayExport > 0
-          ? 'Commission - Travel Pay'
-          : 'Commission - No Travel Pay';
+      const mileagePaid = exportApproval.mileage && !exportApproval.company_vehicle;
+      const mileagePay = getDisplayedMileagePay(event.id, payment.userId, rawMileagePay);
+      const category = isHourlyEvent ? 'Hourly' : 'Commission';
 
       const dailyBreakdown: DailyPayBreakdown[] = Array.isArray(payment.dailyBreakdown) ? payment.dailyBreakdown : [];
       const dayList = isHourlyEvent && dailyBreakdown.length > 0
@@ -2372,19 +2421,18 @@ function HRDashboardContent() {
           : loadedRate;
 
         // One-off period-level amounts (commission, variable incentive, tips, rest
-        // break, mileage, travel, reimbursement, other) aren't tied to a single day,
-        // so they're carried only on the last day's row — totals still reconcile.
+        // break, mileage, reimbursement, other) aren't tied to a single day, so
+        // they're carried only on the last day's row — totals still reconcile.
         const dayCommissionPay = isHourlyEvent || !isLastDay ? 0 : Number(displayedCommissionPay.toFixed(2));
         const dayVariableIncentive = isHourlyEvent || !isLastDay ? 0 : Number(variableIncentive.toFixed(2));
         const dayTips = isLastDay ? Number(tips.toFixed(2)) : 0;
         const dayRestBreak = hideRest ? 'N/A' : (isLastDay ? Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)) : 0);
         const dayMileagePay = isLastDay ? Number(formatExactMoney(mileagePay)) : 0;
-        const dayTravelPay = isLastDay ? Number(formatExactMoney(travelPayExport)) : 0;
         const dayReimbursement = isLastDay ? Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)) : 0;
         const dayOther = isLastDay ? Number(roundUpThousandsToNextHundred(other).toFixed(2)) : 0;
         const dayTotalGrossPay = isHourlyEvent
-          ? Number(formatExactMoney(dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + dayMileagePay + dayTravelPay + (isLastDay ? adjustmentAmt : 0)))
-          : Number(formatExactMoney(breakdown.commissionPaidTotal + tips + restBreak + adjustmentAmt + mileagePay + travelPayExport));
+          ? Number(formatExactMoney(dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + dayMileagePay + (isLastDay ? adjustmentAmt : 0)))
+          : Number(formatExactMoney(breakdown.commissionPaidTotal + tips + restBreak + adjustmentAmt + mileagePay));
 
         const baseRow: any = {
           'First Name': vendor.firstName || payment.firstName || '',
@@ -2404,11 +2452,8 @@ function HRDashboardContent() {
           'Variable Incentive': dayVariableIncentive,
           'Tips': dayTips,
           'Rest Break': dayRestBreak,
-          'Mileage Miles': !exportApproval.mileage || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+          'Mileage Miles': !mileagePaid || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
           'Mileage Pay': dayMileagePay,
-          'Travel Differential Miles': !exportApproval.travel || !isLastDay ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
-          'Travel Hours': !exportApproval.travel || !isLastDay ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
-          'Travel Pay': dayTravelPay,
           'Reimbursement': dayReimbursement,
           'Other': dayOther,
           'Total Gross Pay': dayTotalGrossPay,
@@ -2455,9 +2500,6 @@ function HRDashboardContent() {
         'Rest Break': Number(rowsToSum.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
-        'Travel Differential Miles': '',
-        'Travel Hours': '',
-        'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
         'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
         'Other': Number(sumNum('Other').toFixed(2)),
         'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
@@ -2501,9 +2543,6 @@ function HRDashboardContent() {
       { key: 'Rest Break', wch: 12 },
       { key: 'Mileage Miles', wch: 14 },
       { key: 'Mileage Pay', wch: 12 },
-      { key: 'Travel Differential Miles', wch: 22 },
-      { key: 'Travel Hours', wch: 12 },
-      { key: 'Travel Pay', wch: 12 },
       { key: 'Reimbursement', wch: 15 },
       { key: 'Other', wch: 10 },
       { key: 'Total Gross Pay', wch: 15 },
@@ -2536,23 +2575,13 @@ function HRDashboardContent() {
           : 0;
         const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)), 0);
         const totalDisplayedOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
-        const totalDisplayedTravelPay = eventPayments.reduce((sum: number, p: any) => {
-          const approval = getMileageApproval(event.id, p.userId);
-          if (!approval.travel) return sum;
-          const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
-          if (diffMiles === null) return sum;
-          const breakdown = getDisplayedPaymentBreakdown(event, p);
-          return sum + computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect);
-        }, 0);
         const totalDisplayedMileagePay = eventPayments.reduce((sum: number, p: any) => {
-          return sum + (getMileageApproval(event.id, p.userId).mileage
-            ? Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0)
-            : 0);
+          return sum + getDisplayedMileagePay(event.id, p.userId);
         }, 0);
         const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
           return sum + breakdown.commissionPaidTotal + getDisplayedTips(event, p) + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
-        }, 0) + totalDisplayedMileagePay + totalDisplayedTravelPay;
+        }, 0) + totalDisplayedMileagePay;
 
         summaryRows.push({
           'Venue': venue.venue,
@@ -2572,7 +2601,6 @@ function HRDashboardContent() {
           'Total Rest Break': Number(Number(totalDisplayedRestBreak).toFixed(2)),
           'Total Other': Number(Number(totalDisplayedOther).toFixed(2)),
           'Total Mileage Pay': Number(Number(totalDisplayedMileagePay).toFixed(2)),
-          'Total Travel Pay': Number(Number(totalDisplayedTravelPay).toFixed(2)),
           'Total': Number(Number(totalDisplayedGrossPay).toFixed(2)),
           'Total Ext Amt Reg Rate': Number(Number(totalDisplayedCommissionPay).toFixed(2)),
         });
@@ -2600,10 +2628,8 @@ function HRDashboardContent() {
         const category = row['Category'];
         if (category === 'Hourly') {
           hourlyRows.push(row);
-        } else if (category === 'Commission - Travel Pay') {
-          commissionTravelRows.push(row);
         } else {
-          commissionNoTravelRows.push(row);
+          commissionRows.push(row);
         }
       });
 
@@ -2639,7 +2665,6 @@ function HRDashboardContent() {
         'Total Rest Break': Number(sumNum('Total Rest Break').toFixed(2)),
         'Total Other': Number(sumNum('Total Other').toFixed(2)),
         'Total Mileage Pay': Number(sumNum('Total Mileage Pay').toFixed(2)),
-        'Total Travel Pay': Number(sumNum('Total Travel Pay').toFixed(2)),
         'Total': Number(sumNum('Total').toFixed(2)),
         'Total Ext Amt Reg Rate': Number(sumNum('Total Ext Amt Reg Rate').toFixed(2)),
       });
@@ -2647,12 +2672,11 @@ function HRDashboardContent() {
 
     appendTotalsRow(vendorRows, allVendorDetailRows);
     appendTotalsRow(hourlyRows);
-    appendTotalsRow(commissionTravelRows);
-    appendTotalsRow(commissionNoTravelRows);
+    appendTotalsRow(commissionRows);
 
     // Build By Venue & Event sheet: venue/event first, employee columns, financial columns, grand total
     const byVenueEventRows: any[] = [];
-    const bveTotals = { hoursDecimal: 0, commissionPay: 0, variableIncentive: 0, tips: 0, restBreak: 0, mileagePay: 0, travelPay: 0, reimbursement: 0, other: 0, totalGrossPay: 0 };
+    const bveTotals = { hoursDecimal: 0, commissionPay: 0, variableIncentive: 0, tips: 0, restBreak: 0, mileagePay: 0, reimbursement: 0, other: 0, totalGrossPay: 0 };
     paymentsByVenue.forEach((venueGroup: any) => {
       venueGroup.events.forEach((event: any) => {
         const eventPayments = Array.isArray(event.payments) ? event.payments : [];
@@ -2668,16 +2692,14 @@ function HRDashboardContent() {
           const restBreak = isHourlyEvent ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
           const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
           const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
-          const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
           const exportApproval = getMileageApproval(event.id, payment.userId);
-          const mileagePay = exportApproval.mileage ? Number(formatExactMoney(rawMileagePay)) : 0;
-          const travelHours = 0;
-          const travelPay = exportApproval.travel && diffMiles !== null ? Number(formatExactMoney(computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect))) : 0;
+          const mileagePaid = exportApproval.mileage && !exportApproval.company_vehicle;
+          const mileagePay = Number(formatExactMoney(getDisplayedMileagePay(event.id, payment.userId, rawMileagePay)));
           const reimbursementBve = Number(roundUpThousandsToNextHundred(Number(payment.reimbursementAmount ?? 0)).toFixed(2));
           const other = Number(roundUpThousandsToNextHundred(Number(payment.otherAmount ?? 0)).toFixed(2));
           const adjAmtBve = reimbursementBve + other;
           const totalGrossPay = Number(formatExactMoney(
-            breakdown.commissionPaidTotal + tipsRaw + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
+            breakdown.commissionPaidTotal + tipsRaw + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay
           ));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
@@ -2685,7 +2707,6 @@ function HRDashboardContent() {
           bveTotals.tips += tips;
           bveTotals.restBreak += typeof restBreak === 'number' ? restBreak : 0;
           bveTotals.mileagePay += mileagePay;
-          bveTotals.travelPay += travelPay;
           bveTotals.reimbursement += reimbursementBve;
           bveTotals.other += other;
           bveTotals.totalGrossPay += totalGrossPay;
@@ -2706,11 +2727,8 @@ function HRDashboardContent() {
             'Variable Incentive': varIncentive,
             'Tips': tips,
             'Rest Break': restBreak,
-            'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+            'Mileage Miles': !mileagePaid ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
             'Mileage Pay': mileagePay,
-            'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
-            'Travel Hours': !exportApproval.travel ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
-            'Travel Pay': travelPay,
             'Reimbursement': reimbursementBve,
             'Other': other,
             'Total Gross Pay': totalGrossPay,
@@ -2729,9 +2747,6 @@ function HRDashboardContent() {
         'Rest Break': Number(bveTotals.restBreak.toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(bveTotals.mileagePay.toFixed(2)),
-        'Travel Differential Miles': '',
-        'Travel Hours': '',
-        'Travel Pay': Number(bveTotals.travelPay.toFixed(2)),
         'Reimbursement': Number(bveTotals.reimbursement.toFixed(2)),
         'Other': Number(bveTotals.other.toFixed(2)),
         'Total Gross Pay': Number(bveTotals.totalGrossPay.toFixed(2)),
@@ -2762,8 +2777,7 @@ function HRDashboardContent() {
 
     appendDetailSheet('Vendor Payments', vendorRows);
     appendDetailSheet('Hourly Users', hourlyRows, ['Commission Pay', 'Variable Incentive']);
-    appendDetailSheet('Comm Travel Pay', commissionTravelRows);
-    appendDetailSheet('Comm No Travel', commissionNoTravelRows);
+    appendDetailSheet('Commission', commissionRows);
     if (byVenueEventRows.length > 0) {
       const bveCols = [
         { key: 'Venue', wch: 25 }, { key: 'City', wch: 15 }, { key: 'State', wch: 8 },
@@ -2774,8 +2788,7 @@ function HRDashboardContent() {
         { key: 'Commission Pay', wch: 16 }, { key: 'Variable Incentive', wch: 18 },
         { key: 'Tips', wch: 10 }, { key: 'Rest Break', wch: 12 },
         { key: 'Mileage Miles', wch: 14 }, { key: 'Mileage Pay', wch: 12 },
-        { key: 'Travel Differential Miles', wch: 22 }, { key: 'Travel Hours', wch: 12 },
-        { key: 'Travel Pay', wch: 12 }, { key: 'Reimbursement', wch: 15 }, { key: 'Other', wch: 10 }, { key: 'Total Gross Pay', wch: 15 },
+        { key: 'Reimbursement', wch: 15 }, { key: 'Other', wch: 10 }, { key: 'Total Gross Pay', wch: 15 },
       ];
       const bveSheet = XLSX.utils.json_to_sheet(byVenueEventRows, { header: bveCols.map(c => c.key) });
       bveSheet['!cols'] = bveCols.map(({ wch }) => ({ wch }));
@@ -2814,7 +2827,7 @@ function HRDashboardContent() {
 
     // Download file
     XLSX.writeFile(workbook, filename);
-  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getDisplayedVendorTotals, adjustmentTypes]);
+  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getDisplayedVendorTotals, getDisplayedMileagePay, getMileageApproval, adjustmentTypes]);
 
   // Exports the venue view as a "Show Pay Summary" journal sheet. Each show gets
   // a row totaling commission (or hourly wages) + rest break + reimbursement +
@@ -2861,7 +2874,7 @@ function HRDashboardContent() {
       venue: string; name: string; date: string; isNonEvent: boolean;
       ticketSales: number; tipsDeducted: number; totalSales: number; tax: number; fees: number; otherIncome: number; adjustedGross: number;
       commission: number; restBreak: number; reimbursement: number; other: number; tips: number;
-      showPay: number; variableIncentive: number; mileagePay: number; travelPay: number; sickPay: number; totalGross: number;
+      showPay: number; variableIncentive: number; mileagePay: number; sickPay: number; totalGross: number;
     }> = [];
     let nonEventTotal = 0;
     let hasNonEvent = false;
@@ -2901,7 +2914,6 @@ function HRDashboardContent() {
           showPay: rowTotal,
           variableIncentive: totals.totalVariableIncentive,
           mileagePay: totals.totalMileagePay,
-          travelPay: totals.totalTravelPay,
           sickPay: totals.totalSickPay,
           totalGross: totals.totalGross,
         });
@@ -3031,7 +3043,6 @@ function HRDashboardContent() {
       'Show Pay (Journal)': money3(d.showPay),
       'Variable Incentive': money3(d.variableIncentive),
       'Mileage Pay (Excl.)': money3(d.mileagePay),
-      'Travel Pay (Excl.)': money3(d.travelPay),
       'Sick Pay (Excl.)': money3(d.sickPay),
       'Total Gross Pay': money3(d.totalGross),
     }));
@@ -3086,10 +3097,8 @@ function HRDashboardContent() {
           const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
           const _mileagePayRaw = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
           const exportApproval = getMileageApproval(event.id, p.userId);
-          const mileagePay = exportApproval.mileage ? _mileagePayRaw : 0;
-          const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
-          const travelHours = 0;
-          const travelPay = exportApproval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0;
+          const mileagePaid = exportApproval.mileage && !exportApproval.company_vehicle;
+          const mileagePay = getDisplayedMileagePay(event.id, p.userId, _mileagePayRaw);
           const pTipsRaw = getDisplayedTips(event, p);
 
           // Break the period down into one row per calendar day worked, using the
@@ -3120,16 +3129,15 @@ function HRDashboardContent() {
               ? (Number(day.regularPay || 0) + Number(day.overtimePay || 0) + Number(day.doubletimePay || 0)) / dayHours
               : breakdown.rateInEffect;
 
-            // One-off period-level amounts (tips, mileage, travel, reimbursement, other)
-            // aren't tied to a single day, so they're carried only on the last day's row
-            // — the TOTAL row below still adds up to the same period total either way.
+            // One-off period-level amounts (tips, mileage, reimbursement, other) aren't
+            // tied to a single day, so they're carried only on the last day's row — the
+            // TOTAL row below still adds up to the same period total either way.
             const dayTips = isLastDay ? Number(pTipsRaw.toFixed(2)) : 0;
             const dayMileagePay = isLastDay ? Number(formatExactMoney(mileagePay)) : 0;
-            const dayTravelPay = isLastDay ? Number(formatExactMoney(travelPay)) : 0;
             const dayReimbursement = isLastDay ? Number(roundUpThousandsToNextHundred(reimbursementNe).toFixed(2)) : 0;
             const dayOther = isLastDay ? Number(roundUpThousandsToNextHundred(other).toFixed(2)) : 0;
             const dayTotalGrossPay = Number(formatExactMoney(
-              dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + (isLastDay ? adjAmtNe : 0) + dayMileagePay + dayTravelPay
+              dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + (isLastDay ? adjAmtNe : 0) + dayMileagePay
             ));
 
             rows.push({
@@ -3152,11 +3160,8 @@ function HRDashboardContent() {
               'Double Time Hours': Number(Number(day.doubletimeHours || 0).toFixed(2)),
               'Double Time Pay': dayDoubletimePay,
               'Tips': dayTips,
-              'Mileage Miles': !exportApproval.mileage || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+              'Mileage Miles': !mileagePaid || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
               'Mileage Pay': dayMileagePay,
-              'Travel Differential Miles': !exportApproval.travel || !isLastDay ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
-              'Travel Hours': !exportApproval.travel || !isLastDay ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
-              'Travel Pay': dayTravelPay,
               'Reimbursement': dayReimbursement,
               'Other': dayOther,
               'Total Gross Pay': dayTotalGrossPay,
@@ -3184,8 +3189,6 @@ function HRDashboardContent() {
       'Double Time Pay': Number(sumNum('Double Time Pay').toFixed(2)),
       'Tips': Number(sumNum('Tips').toFixed(2)),
       'Mileage Miles': '', 'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
-      'Travel Differential Miles': '', 'Travel Hours': '',
-      'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
       'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
       'Other': Number(sumNum('Other').toFixed(2)),
       'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
@@ -3197,7 +3200,7 @@ function HRDashboardContent() {
       { wch: 18 }, { wch: 18 }, { wch: 30 }, { wch: 10 }, { wch: 12 },
       { wch: 8 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
       { wch: 13 }, { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 },
-      { wch: 12 }, { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 15 }, { wch: 10 },
+      { wch: 12 }, { wch: 15 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, cwExportMode ? 'CW Payroll' : 'Non Event Payroll');
@@ -3205,7 +3208,7 @@ function HRDashboardContent() {
     const endStr = paymentsEndDate || 'end';
     const filePrefix = cwExportMode ? 'cw_payroll' : 'non_event_payroll';
     XLSX.writeFile(wb, `${filePrefix}_${startStr}_to_${endStr}.xlsx`);
-  }, [paymentsByVenue, payrollLoadMode, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getMileageApproval, adjustmentTypes]);
+  }, [paymentsByVenue, payrollLoadMode, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getDisplayedMileagePay, getMileageApproval, adjustmentTypes]);
 
   const exportSalariedPayroll = useCallback(async () => {
     try {
@@ -5222,7 +5225,6 @@ function HRDashboardContent() {
                                 <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
                               )}
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
-                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Sick Leave</th>
@@ -5236,19 +5238,17 @@ function HRDashboardContent() {
                               const loadedRate = breakdown.rateInEffect;
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-                              const _tp = diffMiles !== null ? computeTravelPay(diffMiles, state ?? event?.state, loadedRate) : 0;
                               const approval = getMileageApproval(event.id, payment.userId);
                               const mileageOverrideS1 = (mileagePayOverrides[event.id] || {})[payment.userId];
-                              const travelOverrideS1 = (travelPayOverrides[event.id] || {})[payment.userId];
-                              const mileagePay = mileageOverrideS1 !== undefined ? mileageOverrideS1 : (approval.mileage ? _mp : 0);
-                              const travelPay = travelOverrideS1 !== undefined ? travelOverrideS1 : (approval.travel ? _tp : 0);
+                              const mileagePaid = approval.mileage && !approval.company_vehicle;
+                              const mileagePay = getDisplayedMileagePay(event.id, payment.userId, _mp);
                               const currentAdjustmentType = normalizeOtherAdjustmentType(
                                 ((adjustmentTypes[event.id] ?? {})[payment.userId] ?? payment.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
                               );
                               const currentAdjustmentTypeLabel = getOtherAdjustmentTypeLabel(currentAdjustmentType);
                               const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
                               const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
-                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay + sickPay;
+                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + sickPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
                               const dailyBreakdown = Array.isArray(payment.dailyBreakdown) ? payment.dailyBreakdown : [];
                               return (
@@ -5303,65 +5303,41 @@ function HRDashboardContent() {
                                     <td className="px-4 py-2 text-sm text-right text-green-600">{isHourlyEvent ? '—' : `$${formatVendorMoney(Number(payment.restBreak || 0))}`}</td>
                                   )}
                                   <td className="px-4 py-2 text-sm text-right text-blue-600">
-                                    {_mp > 0 ? (
-                                      editingMileageCell?.eventId === event.id && editingMileageCell?.userId === payment.userId && editingMileageCell?.field === 'mileage' ? (
-                                        <div className="flex flex-col items-end gap-1">
-                                          <div className="flex items-center gap-1">
-                                            <span className="text-gray-500 text-xs">$</span>
-                                            <input type="number" className="w-20 px-1 py-0.5 border rounded text-xs text-right" value={editingMileageValue} onChange={(e) => setEditingMileageValue(e.target.value)} step="0.01" min="0" autoFocus />
+                                    {_mp > 0 || mileageOverrideS1 !== undefined || approval.company_vehicle ? (
+                                      <div className="flex flex-col items-end gap-0.5">
+                                        {mileagePaid && editingMileageCell?.eventId === event.id && editingMileageCell?.userId === payment.userId && editingMileageCell?.field === 'mileage' ? (
+                                          <div className="flex flex-col items-end gap-1">
+                                            <div className="flex items-center gap-1">
+                                              <span className="text-gray-500 text-xs">$</span>
+                                              <input type="number" className="w-20 px-1 py-0.5 border rounded text-xs text-right" value={editingMileageValue} onChange={(e) => setEditingMileageValue(e.target.value)} step="0.01" min="0" autoFocus />
+                                            </div>
+                                            <div className="flex gap-1">
+                                              <button type="button" onClick={async () => { const val = parseFloat(editingMileageValue); if (!isNaN(val)) await saveMileageAmountOverride(event.id, payment.userId, 'mileage', val); setEditingMileageCell(null); }} className="text-[10px] text-green-600 hover:text-green-700 font-medium">Save</button>
+                                              <button type="button" onClick={() => setEditingMileageCell(null)} className="text-[10px] text-gray-500">Cancel</button>
+                                            </div>
                                           </div>
-                                          <div className="flex gap-1">
-                                            <button type="button" onClick={async () => { const val = parseFloat(editingMileageValue); if (!isNaN(val)) await saveMileageAmountOverride(event.id, payment.userId, 'mileage', val); setEditingMileageCell(null); }} className="text-[10px] text-green-600 hover:text-green-700 font-medium">Save</button>
-                                            <button type="button" onClick={() => setEditingMileageCell(null)} className="text-[10px] text-gray-500">Cancel</button>
+                                        ) : mileagePaid ? (
+                                          <button type="button" onClick={() => { setEditingMileageCell({ eventId: event.id, userId: payment.userId, field: 'mileage' }); setEditingMileageValue(String(mileagePay.toFixed(2))); }} className="flex flex-col items-end gap-0.5 hover:text-blue-800" title="Click to edit">
+                                            <span>{mileageOverrideS1 !== undefined ? <span className="text-orange-500">${formatVendorMoney(mileagePay)}<span className="text-[9px] ml-1">edited</span></span> : `$${formatVendorMoney(mileagePay)}`}</span>
+                                            {diffMiles !== null && diffMiles > 0 && (
+                                              <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 x $0.71</div>
+                                            )}
+                                          </button>
+                                        ) : (
+                                          <div className="flex flex-col items-end gap-0.5">
+                                            <span className="text-gray-400">$0.00</span>
+                                            <span className="text-[10px] text-gray-400">{approval.company_vehicle ? 'Company vehicle' : 'Not paid'}</span>
+                                            {diffMiles !== null && diffMiles > 0 && (
+                                              <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 x $0.71</div>
+                                            )}
                                           </div>
+                                        )}
+                                        <div className="flex flex-wrap justify-end gap-1 mt-0.5">
+                                          <button type="button" onClick={() => setMileagePaymentStatus(event.id, payment.userId, 'paid')} className={mileageStatusButtonClass(mileagePaid, 'bg-green-100 border-green-400 text-green-700 font-semibold')}>Paid</button>
+                                          <button type="button" onClick={() => setMileagePaymentStatus(event.id, payment.userId, 'unpaid')} className={mileageStatusButtonClass(!approval.mileage && !approval.company_vehicle, 'bg-gray-100 border-gray-400 text-gray-700 font-semibold')}>Not paid</button>
+                                          <button type="button" onClick={() => setMileagePaymentStatus(event.id, payment.userId, 'company_vehicle')} className={mileageStatusButtonClass(approval.company_vehicle, 'bg-slate-100 border-slate-400 text-slate-700 font-semibold')}>Company vehicle</button>
                                         </div>
-                                      ) : (
-                                        <button type="button" onClick={() => { setEditingMileageCell({ eventId: event.id, userId: payment.userId, field: 'mileage' }); setEditingMileageValue(String(mileagePay.toFixed(2))); }} className="flex flex-col items-end gap-0.5 hover:text-blue-800" title="Click to edit">
-                                          <span>{mileageOverrideS1 !== undefined ? <span className="text-orange-500">${formatVendorMoney(mileagePay)}<span className="text-[9px] ml-1">edited</span></span> : `$${formatVendorMoney(mileagePay)}`}</span>
-                                          {diffMiles !== null && diffMiles > 0 && (
-                                            <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 x $0.71</div>
-                                          )}
-                                        </button>
-                                      )
-                                    ) : '\u2014'}
-                                  </td>
-                                  <td className="px-4 py-2 text-sm text-right text-indigo-600">
-                                    {(_mp > 0 || _tp > 0) ? (
-                                      editingMileageCell?.eventId === event.id && editingMileageCell?.userId === payment.userId && editingMileageCell?.field === 'travel' ? (
-                                        <div className="flex flex-col items-end gap-1">
-                                          <div className="flex items-center gap-1">
-                                            <span className="text-gray-500 text-xs">$</span>
-                                            <input type="number" className="w-20 px-1 py-0.5 border rounded text-xs text-right" value={editingMileageValue} onChange={(e) => setEditingMileageValue(e.target.value)} step="0.01" min="0" autoFocus />
-                                          </div>
-                                          <div className="flex gap-1">
-                                            <button type="button" onClick={async () => { const val = parseFloat(editingMileageValue); if (!isNaN(val)) await saveMileageAmountOverride(event.id, payment.userId, 'travel', val); setEditingMileageCell(null); }} className="text-[10px] text-green-600 hover:text-green-700 font-medium">Save</button>
-                                            <button type="button" onClick={() => setEditingMileageCell(null)} className="text-[10px] text-gray-500">Cancel</button>
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div className="flex flex-col gap-0.5 items-end">
-                                          {_tp > 0 ? (
-                                            <button type="button" onClick={() => { setEditingMileageCell({ eventId: event.id, userId: payment.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col items-end gap-0.5 hover:text-indigo-800" title="Click to edit">
-                                              <span>{travelOverrideS1 !== undefined ? <span className="text-orange-500">${formatVendorMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : `$${formatVendorMoney(travelPay)}`}</span>
-                                              {diffMiles !== null && diffMiles > 0 && (
-                                                <div className="text-[10px] text-gray-400">{diffMiles} mi ÷ 30 × ${formatVendorMoney(Math.max(normalizeState(state ?? event?.state) === 'CA' ? 28.50 : 25.94, loadedRate))}/hr</div>
-                                              )}
-                                            </button>
-                                          ) : <span className="text-gray-400">&mdash;</span>}
-                                          <div className="flex gap-1 mt-0.5 justify-end">
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                setMileageApproval(event.id, payment.userId, 'mileage', true);
-                                                setMileageApproval(event.id, payment.userId, 'travel', true);
-                                                setMileagePayOverrides(prev => { const n = { ...prev }; if (n[event.id]) { const m = { ...n[event.id] }; delete m[payment.userId]; n[event.id] = m; } return n; });
-                                                setTravelPayOverrides(prev => { const n = { ...prev }; if (n[event.id]) { const m = { ...n[event.id] }; delete m[payment.userId]; n[event.id] = m; } return n; });
-                                              }}
-                                              className={`text-[10px] px-1.5 py-0.5 rounded border ${(approval.mileage && approval.travel && mileageOverrideS1 === undefined && travelOverrideS1 === undefined) ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}
-                                            >Approve</button>
-                                          </div>
-                                        </div>
-                                      )
+                                      </div>
                                     ) : '\u2014'}
                                   </td>
                                   <td className="px-4 py-2 text-sm text-right">
@@ -5503,7 +5479,6 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-right text-green-600">${formatVendorMoney(vendorTotals.totalRestBreak)}</td>
                               )}
                               <td className="px-4 py-2 text-right text-blue-600">${formatVendorMoney(vendorTotals.totalMileagePay)}</td>
-                              <td className="px-4 py-2 text-right text-indigo-600">${formatVendorMoney(vendorTotals.totalTravelPay)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorTotals.totalReimbursement)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorTotals.totalOther)}</td>
                               <td className="px-4 py-2 text-right text-teal-600">${formatVendorMoney(vendorTotals.totalSickPay)}</td>
@@ -5550,7 +5525,6 @@ function HRDashboardContent() {
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Tips</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
-                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Sick Leave</th>
@@ -5570,7 +5544,6 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-sm text-right text-orange-600">${formatExactMoney(totals.totalTips)}</td>
                                 <td className="px-4 py-2 text-sm text-right text-green-600">${formatExactMoney(totals.totalRestBreak)}</td>
                                 <td className="px-4 py-2 text-sm text-right text-blue-600">${formatExactMoney(totals.totalMileagePay)}</td>
-                                <td className="px-4 py-2 text-sm text-right text-indigo-600">${formatExactMoney(totals.totalTravelPay)}</td>
                                 <td className="px-4 py-2 text-sm text-right">${formatExactMoney(totals.totalReimbursement)}</td>
                                 <td className="px-4 py-2 text-sm text-right">${formatExactMoney(totals.totalOther)}</td>
                                 <td className="px-4 py-2 text-sm text-right text-teal-600">${formatExactMoney(totals.totalSickPay)}</td>
@@ -5587,7 +5560,6 @@ function HRDashboardContent() {
                               <td className="px-4 py-2 text-right text-orange-600">${formatExactMoney(sumBy(t => t.totalTips))}</td>
                               <td className="px-4 py-2 text-right text-green-600">${formatExactMoney(sumBy(t => t.totalRestBreak))}</td>
                               <td className="px-4 py-2 text-right text-blue-600">${formatExactMoney(sumBy(t => t.totalMileagePay))}</td>
-                              <td className="px-4 py-2 text-right text-indigo-600">${formatExactMoney(sumBy(t => t.totalTravelPay))}</td>
                               <td className="px-4 py-2 text-right">${formatExactMoney(sumBy(t => t.totalReimbursement))}</td>
                               <td className="px-4 py-2 text-right">${formatExactMoney(sumBy(t => t.totalOther))}</td>
                               <td className="px-4 py-2 text-right text-teal-600">${formatExactMoney(sumBy(t => t.totalSickPay))}</td>
@@ -5767,7 +5739,6 @@ function HRDashboardContent() {
                                                   <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rest Break</th>
                                                 )}
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Sick Leave</th>
@@ -5812,12 +5783,10 @@ function HRDashboardContent() {
                                                 const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
-                                                const _travelPay = differentialMiles !== null ? computeTravelPay(differentialMiles, ev?.state ?? v?.state, loadedRate) : 0;
                                                 const approval = getMileageApproval(ev.id, p.userId);
                                                 const mileageOverrideS2 = (mileagePayOverrides[ev.id] || {})[p.userId];
-                                                const travelOverrideS2 = (travelPayOverrides[ev.id] || {})[p.userId];
-                                                const mileagePay = mileageOverrideS2 !== undefined ? mileageOverrideS2 : (approval.mileage ? _mileagePay : 0);
-                                                const travelPay = travelOverrideS2 !== undefined ? travelOverrideS2 : (approval.travel ? _travelPay : 0);
+                                                const mileagePaid = approval.mileage && !approval.company_vehicle;
+                                                const mileagePay = getDisplayedMileagePay(ev.id, p.userId, _mileagePay);
                                                 const reimbursementForRow = reimbursementAmounts[ev.id]?.[p.userId] !== undefined ? Number(reimbursementAmounts[ev.id]?.[p.userId] || 0) : Number(p.reimbursementAmount || 0);
                                                 const otherForRow = adjustments[ev.id]?.[p.userId] !== undefined ? Number(adjustments[ev.id]?.[p.userId] || 0) : Number(p.otherAmount || 0);
                                                 const sickHours = Number((sickHoursByEvent[ev.id] || {})[p.userId] || 0);
@@ -5829,7 +5798,6 @@ function HRDashboardContent() {
                                                   reimbursementForRow +
                                                   otherForRow +
                                                   mileagePay +
-                                                  travelPay +
                                                   sickPay;
                                                 const currentAdjustmentType = normalizeOtherAdjustmentType(
                                                   ((adjustmentTypes[ev.id] ?? {})[p.userId] ?? p.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
@@ -5877,8 +5845,9 @@ function HRDashboardContent() {
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
                                                     )}
                                                     <td className="p-2 text-sm text-blue-600">
-                                                      {_mileagePay > 0 ? (
-                                                        editingMileageCell?.eventId === ev.id && editingMileageCell?.userId === p.userId && editingMileageCell?.field === 'mileage' ? (
+                                                      {_mileagePay > 0 || mileageOverrideS2 !== undefined || approval.company_vehicle ? (
+                                                        <div className="flex flex-col gap-0.5">
+                                                        {mileagePaid && editingMileageCell?.eventId === ev.id && editingMileageCell?.userId === p.userId && editingMileageCell?.field === 'mileage' ? (
                                                           <div className="flex flex-col gap-1">
                                                             <div className="flex items-center gap-1">
                                                               <span className="text-gray-500 text-xs">$</span>
@@ -5889,40 +5858,26 @@ function HRDashboardContent() {
                                                               <button type="button" onClick={() => setEditingMileageCell(null)} className="text-[10px] text-gray-500">Cancel</button>
                                                             </div>
                                                           </div>
-                                                        ) : (
+                                                        ) : mileagePaid ? (
                                                           <button type="button" onClick={() => { setEditingMileageCell({ eventId: ev.id, userId: p.userId, field: 'mileage' }); setEditingMileageValue(String(mileagePay.toFixed(2))); }} className="flex flex-col gap-0.5 hover:text-blue-800 text-left" title="Click to edit">
                                                             {mileageOverrideS2 !== undefined ? <span className="text-orange-500">${formatExactMoney(mileagePay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatExactMoney(mileagePay)}</span>}
-                                                            {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.differentialMiles != null && md.differentialMiles > 0 ? <div className="text-[10px] text-gray-400">{md.differentialMiles} mi diff ? 2 ? $0.71</div> : null; })()}
+                                                            {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.differentialMiles != null && md.differentialMiles > 0 ? <div className="text-[10px] text-gray-400">{md.differentialMiles} mi diff x 2 x $0.71</div> : null; })()}
                                                           </button>
-                                                        )
-                                                      ) : '\u2014'}
-                                                    </td>
-                                                    <td className="p-2 text-sm text-indigo-600">
-                                                      {(_mileagePay > 0 || _travelPay > 0) ? (
-                                                        editingMileageCell?.eventId === ev.id && editingMileageCell?.userId === p.userId && editingMileageCell?.field === 'travel' ? (
-                                                          <div className="flex flex-col gap-1">
-                                                            <div className="flex items-center gap-1">
-                                                              <span className="text-gray-500 text-xs">$</span>
-                                                              <input type="number" className="w-20 px-1 py-0.5 border rounded text-xs" value={editingMileageValue} onChange={(e) => setEditingMileageValue(e.target.value)} step="0.01" min="0" autoFocus />
-                                                            </div>
-                                                            <div className="flex gap-1">
-                                                              <button type="button" onClick={async () => { const val = parseFloat(editingMileageValue); if (!isNaN(val)) await saveMileageAmountOverride(ev.id, p.userId, 'travel', val); setEditingMileageCell(null); }} className="text-[10px] text-green-600 hover:text-green-700 font-medium">Save</button>
-                                                              <button type="button" onClick={() => setEditingMileageCell(null)} className="text-[10px] text-gray-500">Cancel</button>
-                                                            </div>
-                                                          </div>
                                                         ) : (
                                                           <div className="flex flex-col gap-0.5">
-                                                            {_travelPay > 0 ? (
-                                                              <button type="button" onClick={() => { setEditingMileageCell({ eventId: ev.id, userId: p.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col gap-0.5 hover:text-indigo-800 text-left" title="Click to edit">
-                                                                {travelOverrideS2 !== undefined ? <span className="text-orange-500">${formatExactMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatExactMoney(travelPay)}</span>}
-                                                                {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi ÷ 30 × ${formatPayrollMoney(Math.max(normalizeState(ev?.state ?? v?.state) === 'CA' ? 28.50 : 25.94, loadedRate))}/hr</div>}
-                                                              </button>
-                                                            ) : <span className="text-gray-400">&mdash;</span>}
-                                                            <div className="flex gap-1 mt-0.5">
-                                                              <button type="button" onClick={() => { setMileageApproval(ev.id, p.userId, 'mileage', true); setMileageApproval(ev.id, p.userId, 'travel', true); setMileagePayOverrides(prev => { const n = { ...prev }; if (n[ev.id]) { const m = { ...n[ev.id] }; delete m[p.userId]; n[ev.id] = m; } return n; }); setTravelPayOverrides(prev => { const n = { ...prev }; if (n[ev.id]) { const m = { ...n[ev.id] }; delete m[p.userId]; n[ev.id] = m; } return n; }); }} className={`text-[10px] px-1.5 py-0.5 rounded border ${(approval.mileage && approval.travel && mileageOverrideS2 === undefined && travelOverrideS2 === undefined) ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}>? Approve</button>
-                                                            </div>
+                                                            <span className="text-gray-400">$0.00</span>
+                                                            <span className="text-[10px] text-gray-400">{approval.company_vehicle ? 'Company vehicle' : 'Not paid'}</span>
+                                                            {differentialMiles !== null && differentialMiles > 0 && (
+                                                              <div className="text-[10px] text-gray-400">{differentialMiles} mi diff x 2 x $0.71</div>
+                                                            )}
                                                           </div>
-                                                        )
+                                                        )}
+                                                        <div className="flex flex-wrap gap-1 mt-0.5">
+                                                          <button type="button" onClick={() => setMileagePaymentStatus(ev.id, p.userId, 'paid')} className={mileageStatusButtonClass(mileagePaid, 'bg-green-100 border-green-400 text-green-700 font-semibold')}>Paid</button>
+                                                          <button type="button" onClick={() => setMileagePaymentStatus(ev.id, p.userId, 'unpaid')} className={mileageStatusButtonClass(!approval.mileage && !approval.company_vehicle, 'bg-gray-100 border-gray-400 text-gray-700 font-semibold')}>Not paid</button>
+                                                          <button type="button" onClick={() => setMileagePaymentStatus(ev.id, p.userId, 'company_vehicle')} className={mileageStatusButtonClass(approval.company_vehicle, 'bg-slate-100 border-slate-400 text-slate-700 font-semibold')}>Company vehicle</button>
+                                                        </div>
+                                                        </div>
                                                       ) : '\u2014'}
                                                     </td>
                                                     <td className="p-2 text-sm text-right">
@@ -6012,7 +5967,6 @@ function HRDashboardContent() {
                                                 <td className="p-2 text-orange-600">${formatMoney3(eventTotals.totalTips)}</td>
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
                                                 <td className="p-2 text-blue-600">${formatExactMoney(eventTotals.totalMileagePay)}</td>
-                                                <td className="p-2 text-indigo-600">${formatExactMoney(eventTotals.totalTravelPay)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalReimbursement)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalOther)}</td>
                                                 <td className="p-2 text-right text-teal-600">${formatPayrollMoney(eventTotals.totalSickPay)}</td>

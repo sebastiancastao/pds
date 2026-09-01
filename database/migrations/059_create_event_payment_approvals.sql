@@ -1,6 +1,6 @@
 -- Dedicated table for per-vendor mileage/travel pay approvals per event
 -- Separate from event_vendor_payments so no ALTER TABLE is required on existing data.
--- NULL = not yet reviewed (treated as approved in the UI).
+-- NULL = not yet reviewed (treated as not approved by payroll).
 
 CREATE TABLE IF NOT EXISTS event_payment_approvals (
   event_id   UUID NOT NULL,

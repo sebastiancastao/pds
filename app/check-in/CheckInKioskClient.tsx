@@ -406,6 +406,22 @@ export default function CheckInKioskPage() {
     return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [isAuthed]);
 
+  const handleLogout = async () => {
+    if (!window.confirm("Log out of this kiosk?")) return;
+    try {
+      sessionStorage.removeItem("mfa_verified");
+      sessionStorage.removeItem("mfa_checkpoint");
+      // This is a shared kiosk device, so also clear the "remembered" MFA
+      // flag in localStorage — otherwise the next person to sign in on it
+      // would skip MFA verification.
+      localStorage.removeItem("mfa_verified");
+      accessTokenRef.current = null;
+      await supabase.auth.signOut();
+    } finally {
+      router.push("/login");
+    }
+  };
+
   const checkAuth = async () => {
     const mfaVerified = sessionStorage.getItem("mfa_verified") || localStorage.getItem("mfa_verified");
     if (!mfaVerified) {
@@ -1442,6 +1458,15 @@ export default function CheckInKioskPage() {
               {isSyncing && <span className="animate-spin ml-1">...</span>}
             </div>
           )}
+          <button
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold bg-white text-gray-600 border border-gray-300 shadow-sm hover:bg-gray-50 transition-all"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            Log Out
+          </button>
         </div>
       </div>
 

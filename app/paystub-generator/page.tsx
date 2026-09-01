@@ -537,15 +537,6 @@ export default function PaystubGenerator() {
     }
     return actualHours >= 10 ? 12 : 9;
   };
-  const computeTravelPay = (
-    diffMiles: number,
-    stateCode: string | null | undefined,
-    rateInEffect: number
-  ) => {
-    const stateMin = normalizeState(stateCode) === 'CA' ? 28.5 : 25.94;
-    const travelRate = Math.max(stateMin, Number.isFinite(rateInEffect) ? rateInEffect : 0);
-    return roundMoney((diffMiles / 30) * travelRate);
-  };
   const getCommissionReportBonusAmount = (worker?: Worker | null) => {
     if (!worker) return 0;
     const adjustmentTotal = roundMoney(Number(worker.adjustment_amount || 0));
@@ -1918,51 +1909,6 @@ export default function PaystubGenerator() {
       setFinalPayTotals(latestFinalPay.totals || null);
       setFinalPayError(null);
       const finalPayByEventId = new Map((latestFinalPay.events || []).map((event) => [event.eventId, event]));
-      const travelCompByEventId: Record<string, { differentialMiles: number | null; approved: boolean; override?: number }> = {};
-      const reportEventIds = filteredEvents
-        .map((event) => String(event?.id || '').trim())
-        .filter(Boolean);
-      if (reportEventIds.length > 0) {
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          const headers: HeadersInit = session?.access_token
-            ? { Authorization: `Bearer ${session.access_token}` }
-            : {};
-          const eventIdsParam = encodeURIComponent(reportEventIds.join(','));
-          const [mileageRes, approvalsRes] = await Promise.all([
-            fetch(`/api/mileage-pay?event_ids=${eventIdsParam}`, { headers }),
-            fetch(`/api/mileage-approvals?event_ids=${eventIdsParam}`, { headers }),
-          ]);
-          const mileageBody = mileageRes.ok ? await mileageRes.json().catch(() => ({})) : {};
-          const approvalsBody = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
-          const mileageByEvent = mileageBody?.mileage || {};
-          const approvalsByEvent = approvalsBody?.approvals || {};
-
-          for (const eventId of reportEventIds) {
-            const mileageRow = mileageByEvent[eventId]?.[reportUserId];
-            const approvalRow = approvalsByEvent[eventId]?.[reportUserId];
-            const overrideRaw = approvalRow?.travel_amount;
-            const override =
-              overrideRaw !== null &&
-              overrideRaw !== undefined &&
-              Number.isFinite(Number(overrideRaw))
-                ? Number(overrideRaw)
-                : undefined;
-
-            travelCompByEventId[eventId] = {
-              differentialMiles:
-                mileageRow?.differentialMiles != null && Number.isFinite(Number(mileageRow.differentialMiles))
-                  ? Number(mileageRow.differentialMiles)
-                  : null,
-              approved: approvalRow?.travel !== false,
-              ...(override !== undefined ? { override } : {}),
-            };
-          }
-        } catch (error) {
-          console.warn('[PAYSTUB-GEN] Unable to load travel pay inputs for commission report', error);
-        }
-      }
-
       type CommissionReportRow = {
         eventId: string;
         showDate: string;
@@ -1982,7 +1928,6 @@ export default function PaystubGenerator() {
         variableIncentive: number | '';
         tips: number | '';
         restPay: number | '';
-        travelPay: number | '';
         bonus: number | '';
         finalPay: number;
       };
@@ -2104,16 +2049,6 @@ export default function PaystubGenerator() {
                 ? commission / hoursWorked
                 : 0
           );
-          const travelComp = travelCompByEventId[String(event.id || '')];
-          const travelPayValue = roundMoney(
-            travelComp?.override !== undefined
-              ? travelComp.override
-              : travelComp?.approved !== false &&
-                travelComp?.differentialMiles != null &&
-                travelComp.differentialMiles > 0
-                ? computeTravelPay(travelComp.differentialMiles, event.state || formData.state, rateInEffect)
-                : 0
-          );
           const variableRate =
             !isEventSD && hoursWorked > 0 && Math.abs(variableIncentiveValue) >= 0.005
               ? roundMoney(variableIncentiveValue / hoursWorked)
@@ -2121,9 +2056,7 @@ export default function PaystubGenerator() {
           const baseFinalPay = roundMoney(
             Number(finalPayData?.totalPay ?? (commissionPaidTotal + tips + restPay))
           );
-          const finalPay = roundMoney(
-            baseFinalPay + travelPayValue + bonusValue
-          );
+          const finalPay = roundMoney(baseFinalPay + bonusValue);
 
           return [{
             eventId: String(event.id || ''),
@@ -2144,7 +2077,6 @@ export default function PaystubGenerator() {
             variableIncentive: Math.abs(variableIncentiveValue) < 0.005 ? '' : variableIncentiveValue,
             tips: Math.abs(tips) < 0.005 ? '' : tips,
             restPay: Math.abs(restPay) < 0.005 ? '' : restPay,
-            travelPay: Math.abs(travelPayValue) < 0.005 ? '' : travelPayValue,
             bonus: Math.abs(bonusValue) < 0.005 ? '' : bonusValue,
             finalPay,
           }];
@@ -2174,14 +2106,13 @@ export default function PaystubGenerator() {
         );
         const tips = typeof row.tips === 'number' ? row.tips : 0;
         const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
-        const travelPay = typeof row.travelPay === 'number' ? row.travelPay : 0;
         const bonus = typeof row.bonus === 'number' ? row.bonus : 0;
         return {
           ...row,
           variableRate: variableRateValue,
           commissionPaidTotal: roundMoney(row.commission + variableIncentiveValue),
           variableIncentive: Math.abs(variableIncentiveValue) < 0.005 ? '' : variableIncentiveValue,
-          finalPay: roundMoney(row.commission + variableIncentiveValue + tips + restPay + travelPay + bonus),
+          finalPay: roundMoney(row.commission + variableIncentiveValue + tips + restPay + bonus),
         };
       });
 
@@ -2264,7 +2195,6 @@ export default function PaystubGenerator() {
         variable_incentive: maskedCommissionRowValue,
         tips: row.tips === '' ? 0 : row.tips,
         rest_pay: row.restPay === '' ? 0 : row.restPay,
-        travel_pay: row.travelPay === '' ? 0 : row.travelPay,
         bonus: row.bonus === '' ? 0 : row.bonus,
         final_pay: row.finalPay,
       }));
@@ -2285,9 +2215,8 @@ export default function PaystubGenerator() {
           'Variable Incentive',
           'Tips',
           'Rest Pay',
-          'Travel Pay',
           'Bonus',
-          'Final Gross Pay (incl. tips/rest/travel/bonus)',
+          'Final Gross Pay (incl. tips/rest/bonus)',
         ],
         ...normalizedCommissionReportRows.map((row) => [
           row.showDate,
@@ -2303,7 +2232,6 @@ export default function PaystubGenerator() {
           maskedCommissionRowValue,
           row.tips,
           row.restPay,
-          row.travelPay,
           row.bonus,
           row.finalPay,
         ]),
@@ -2314,7 +2242,6 @@ export default function PaystubGenerator() {
           typeof row.variableIncentive === 'number' ? row.variableIncentive : 0;
         const tips = typeof row.tips === 'number' ? row.tips : 0;
         const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
-        const travelPay = typeof row.travelPay === 'number' ? row.travelPay : 0;
         const bonus = typeof row.bonus === 'number' ? row.bonus : 0;
         return {
           commission: acc.commission + row.commission,
@@ -2322,7 +2249,6 @@ export default function PaystubGenerator() {
           rowVariableIncentive: acc.rowVariableIncentive + rowVariableIncentive,
           tips: acc.tips + tips,
           restPay: acc.restPay + restPay,
-          travelPay: acc.travelPay + travelPay,
           bonus: acc.bonus + bonus,
           finalPay: acc.finalPay + row.finalPay,
         };
@@ -2332,7 +2258,6 @@ export default function PaystubGenerator() {
         rowVariableIncentive: 0,
         tips: 0,
         restPay: 0,
-        travelPay: 0,
         bonus: 0,
         finalPay: 0,
       });
@@ -2348,7 +2273,6 @@ export default function PaystubGenerator() {
         totalVariableIncentive +
         roundMoney(totals.tips) +
         roundMoney(totals.restPay) +
-        roundMoney(totals.travelPay) +
         roundMoney(totals.bonus)
       );
 
@@ -2373,7 +2297,6 @@ export default function PaystubGenerator() {
             expectedVariableIncentive,
             actualVariableIncentive:
               typeof row.variableIncentive === 'number' ? row.variableIncentive : 0,
-            travelPay: typeof row.travelPay === 'number' ? row.travelPay : 0,
             bonus: typeof row.bonus === 'number' ? row.bonus : 0,
             variableIncentiveDifference: roundMoney(
               (typeof row.variableIncentive === 'number' ? row.variableIncentive : 0) -
@@ -2393,7 +2316,6 @@ export default function PaystubGenerator() {
           totalHoursWorked: roundHours(totals.hoursWorked),
           totalPayPeriodRateInEffect: totalRateInEffect,
           totalVariableIncentive,
-          totalTravelPay: roundMoney(totals.travelPay),
           totalBonus: roundMoney(totals.bonus),
           totalFinalPay,
         });
@@ -2415,7 +2337,6 @@ export default function PaystubGenerator() {
         totalVariableIncentive,
         roundMoney(totals.tips),
         roundMoney(totals.restPay),
-        roundMoney(totals.travelPay),
         roundMoney(totals.bonus),
         totalFinalPay,
       ]);
@@ -2436,15 +2357,14 @@ export default function PaystubGenerator() {
         { wch: 12 },
         { wch: 12 },
         { wch: 12 },
-        { wch: 12 },
         { wch: 24 },
       ];
       commissionReportSheet['!autofilter'] = {
-        ref: `A1:P${commissionReportSheetData.length}`,
+        ref: `A1:O${commissionReportSheetData.length}`,
       };
 
-      // E=GrossComm, G=Commission, I=RateInEffect, J=VariableRate, K=VariableIncentive, L=Tips, M=RestPay, N=TravelPay, O=Bonus, P=FinalPay
-      const currencyColumns = ['E', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+      // E=GrossComm, G=Commission, I=RateInEffect, J=VariableRate, K=VariableIncentive, L=Tips, M=RestPay, N=Bonus, O=FinalPay
+      const currencyColumns = ['E', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O'];
       const numericColumns = ['H'];
       for (let rowIndex = 2; rowIndex <= commissionReportSheetData.length; rowIndex += 1) {
         for (const column of currencyColumns) {

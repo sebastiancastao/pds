@@ -4565,10 +4565,16 @@ export default function EventDashboardPage() {
     return normalizedHours;
   };
 
-  const buildTipsSharesByUser = (
+  // Full tips distribution result, including distributedTotal — the actual
+  // pool paid out. Under Even Split, every eligible member gets an identical
+  // ceil-rounded share, so when the entered tips amount doesn't divide evenly
+  // among them, distributedTotal is a cent or two MORE than the entered
+  // amount (the pool grows to cover the even split) rather than some members
+  // being paid more than others while the pool stays pinned at the raw entry.
+  const buildTipsDistribution = (
     totalAmount: number,
     getHoursForUser: (uid: string) => number
-  ): Record<string, number> => {
+  ) => {
     return distributeTipsPool({
       totalAmount,
       members: teamMembers.flatMap((member: any) => {
@@ -4578,7 +4584,14 @@ export default function EventDashboardPage() {
         return [{ id: uid, hours: actualHours }];
       }),
       mode: event?.tips_distribution_mode,
-    }).amountsById;
+    });
+  };
+
+  const buildTipsSharesByUser = (
+    totalAmount: number,
+    getHoursForUser: (uid: string) => number
+  ): Record<string, number> => {
+    return buildTipsDistribution(totalAmount, getHoursForUser).amountsById;
   };
 
   const getPersistedWorkerHoursForCommission = (worker: any): number => {
@@ -4695,11 +4708,13 @@ export default function EventDashboardPage() {
     resolvedCommissionPoolDollars,
   ]);
 
-  const liveTipsSharesByUser = useMemo(() => {
-    return buildTipsSharesByUser(Number(tips) || 0, (uid) =>
+  const liveTipsDistribution = useMemo(() => {
+    return buildTipsDistribution(Number(tips) || 0, (uid) =>
       getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
     );
   }, [teamMembers, timesheetTotals, tipsOverrides, tips, event?.tips_distribution_mode]);
+
+  const liveTipsSharesByUser = liveTipsDistribution.amountsById;
 
   const getPersistedWorkerHoursForPeriod = (worker: any): number => {
     return getPersistedWorkerHoursForCommission(worker);
@@ -5150,6 +5165,10 @@ export default function EventDashboardPage() {
       const netSales = resolvedCommissionNetSales;
       const poolPercent = resolvedCommissionPoolPercent;
       const totalCommissionPool = resolvedCommissionPoolDollars;
+      // totalTips stays the raw entered/collected amount — save-payment's
+      // total_tips_distributed column (computed server-side from each
+      // vendorPayment's own tips figure) is what tracks the pool actually
+      // paid out, and now reflects the ceil-grown Even Split total on its own.
       const totalTips = Number(tips) || 0;
       const commissionSharesByUser = liveCommissionSharesByUser;
       const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
@@ -5976,6 +5995,13 @@ export default function EventDashboardPage() {
                       </div>
                       {savingTipsDistributionMode && <span className="text-xs text-gray-400">Saving…</span>}
                     </div>
+                    {event?.tips_distribution_mode !== "prorated" &&
+                      liveTipsDistribution.distributedTotal > (Number(tips) || 0) && (
+                        <p className="mt-1 text-xs text-amber-600">
+                          ${(Number(tips) || 0).toFixed(2)} doesn't split evenly across {liveTipsDistribution.eligibleCount} staff —
+                          paying out ${liveTipsDistribution.distributedTotal.toFixed(2)} so everyone gets the same amount.
+                        </p>
+                      )}
                   </div>
 
                   <div>

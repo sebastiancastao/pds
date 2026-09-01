@@ -22,6 +22,16 @@ export type PoolDistributionResult = {
   eligibleCount: number;
   totalHours: number;
   usedShortShiftRule: boolean;
+  // The actual sum of amountsById, in dollars, after cent rounding. For an
+  // hours-prorated split this always equals totalAmount (largest-remainder
+  // rounding reconciles to it exactly). For a genuine equal split, every
+  // member is rounded UP to the same per-cent share so nobody is shortchanged
+  // relative to a peer — when the pool doesn't divide evenly among members,
+  // that means distributedTotal can exceed totalAmount by a cent or two.
+  // Callers that display or persist "the pool" should use distributedTotal,
+  // not the original totalAmount, so the recorded pool always matches what
+  // was actually paid out.
+  distributedTotal: number;
 };
 
 type DistributePoolArgs = {
@@ -45,26 +55,18 @@ type DistributeTipsArgs = {
 };
 
 export function distributeTipsPool({ totalAmount, members, mode }: DistributeTipsArgs): PoolDistributionResult {
-  const result = distributePoolByHoursRule({
+  // shortShiftThresholdHours: 0 means every eligible member lands in
+  // distributePoolByHoursRule's pure equal-split branch under "equal" mode
+  // (no short-shift exception for tips — mode is the only lever), which
+  // already rounds to cents (see ceilEqualSplit) and reports the true
+  // distributedTotal, so no extra rounding pass is needed here.
+  return distributePoolByHoursRule({
     totalAmount,
     members,
     // Even split is the default; only an explicit "prorated" opts into hours-based.
     mode: mode === "prorated" ? "hours" : "equal",
-    // No short-shift exception for tips; the mode above is the only lever.
     shortShiftThresholdHours: 0,
   });
-  // Reconcile independent per-member cents back to the pool total via the same
-  // largest-remainder rounding already used for commission splits (see
-  // roundAmountsToCents). Without this, every caller rounds each member's raw
-  // share to cents on its own, which can drift the displayed/saved total a few
-  // cents from totalAmount — most visibly under Even Split, where every
-  // member's raw share is identical so the drift compounds in one direction
-  // instead of partially canceling like a prorated split's varied shares do.
-  const safeTotal = toPositiveNumber(totalAmount);
-  return {
-    ...result,
-    amountsById: safeTotal > 0 ? roundAmountsToCents(result.amountsById, safeTotal) : result.amountsById,
-  };
 }
 
 export function tipsDistributionModeLabel(mode?: string | null): "Even Split" | "Prorated" {
@@ -130,6 +132,36 @@ export function roundAmountsToCents(
   return Object.fromEntries(withCents.map((entry) => [entry.id, entry.floorCents / 100]));
 }
 
+const sumAmounts = (amountsById: Record<string, number>): number =>
+  roundMoney(
+    Object.values(amountsById).reduce((sum, amount) => sum + (Number.isFinite(amount) ? amount : 0), 0)
+  );
+
+/**
+ * Split `totalAmount` evenly across `memberIds`, rounding every member's
+ * share UP to the same next cent so all of them are paid an identical
+ * amount — nobody gets shortchanged, and nobody gets paid more than a peer.
+ * When the pool doesn't divide evenly among members, the ceiling means the
+ * summed `distributedTotal` can exceed `totalAmount` by up to
+ * (memberIds.length - 1) cents; callers should treat distributedTotal as
+ * the real pool that was paid out and use it wherever "the pool" is shown
+ * or saved, instead of quietly paying some members more than others just
+ * to keep the total pinned at the original, non-divisible pool amount.
+ */
+export function ceilEqualSplit(
+  totalAmount: number,
+  memberIds: string[]
+): { amountsById: Record<string, number>; distributedTotal: number } {
+  const ids = Array.from(new Set(memberIds.filter((id) => !!id)));
+  if (ids.length === 0) return { amountsById: {}, distributedTotal: 0 };
+
+  const totalCents = Math.round(roundMoney(toPositiveNumber(totalAmount)) * 100);
+  const perMemberCents = Math.ceil(totalCents / ids.length);
+  const amountsById = Object.fromEntries(ids.map((id) => [id, perMemberCents / 100]));
+
+  return { amountsById, distributedTotal: (perMemberCents * ids.length) / 100 };
+}
+
 export function distributePoolByHoursRule({
   totalAmount,
   members,
@@ -174,17 +206,26 @@ export function distributePoolByHoursRule({
       eligibleCount: eligibleMembers.length,
       totalHours: totalEligibleHours,
       usedShortShiftRule: false,
+      distributedTotal: 0,
     };
   }
 
   if (mode === "hours") {
-    return {
-      amountsById: Object.fromEntries(
+    // Hours-prorated shares are already unequal by design, so reconciling
+    // rounding drift back to the pool via largest-remainder (rather than
+    // growing the pool) doesn't create any unfairness between members.
+    const roundedAmounts = roundAmountsToCents(
+      Object.fromEntries(
         eligibleMembers.map((member) => [member.id, safeTotalAmount * (member.hours / totalEligibleHours)])
       ),
+      safeTotalAmount
+    );
+    return {
+      amountsById: roundedAmounts,
       eligibleCount: eligibleMembers.length,
       totalHours: totalEligibleHours,
       usedShortShiftRule: false,
+      distributedTotal: sumAmounts(roundedAmounts),
     };
   }
 
@@ -196,12 +237,16 @@ export function distributePoolByHoursRule({
   const shortShiftMembers = eligibleMembers.filter(isShortShift);
 
   if (shortShiftMembers.length === 0) {
-    const equalShare = safeTotalAmount / eligibleMembers.length;
+    const { amountsById, distributedTotal } = ceilEqualSplit(
+      safeTotalAmount,
+      eligibleMembers.map((member) => member.id)
+    );
     return {
-      amountsById: Object.fromEntries(eligibleMembers.map((member) => [member.id, equalShare])),
+      amountsById,
       eligibleCount: eligibleMembers.length,
       totalHours: totalEligibleHours,
       usedShortShiftRule: false,
+      distributedTotal,
     };
   }
 
@@ -209,40 +254,55 @@ export function distributePoolByHoursRule({
 
   if (shortShiftMembers.length === eligibleMembers.length) {
     if (allShortShiftMode === "equal") {
-      const equalShare = safeTotalAmount / eligibleMembers.length;
+      const { amountsById, distributedTotal } = ceilEqualSplit(
+        safeTotalAmount,
+        eligibleMembers.map((member) => member.id)
+      );
       return {
-        amountsById: Object.fromEntries(eligibleMembers.map((member) => [member.id, equalShare])),
+        amountsById,
         eligibleCount: eligibleMembers.length,
         totalHours: totalEligibleHours,
         usedShortShiftRule: false,
+        distributedTotal,
       };
     }
 
+    const roundedAmounts = roundAmountsToCents(
+      Object.fromEntries(eligibleMembers.map((member) => [member.id, hourlyRate * member.hours])),
+      safeTotalAmount
+    );
     return {
-      amountsById: Object.fromEntries(eligibleMembers.map((member) => [member.id, hourlyRate * member.hours])),
+      amountsById: roundedAmounts,
       eligibleCount: eligibleMembers.length,
       totalHours: totalEligibleHours,
       usedShortShiftRule: true,
+      distributedTotal: sumAmounts(roundedAmounts),
     };
   }
 
-  const shortShiftAmounts = Object.fromEntries(
-    shortShiftMembers.map((member) => [member.id, hourlyRate * member.hours])
+  // Mixed shift lengths: short-shift members are hours-prorated (unequal by
+  // design, so reconciled to their own subtotal via largest-remainder, same
+  // as the pure "hours" mode above) while full-shift members split whatever
+  // remains evenly among themselves (ceil-rounded, so the pool grows by a
+  // cent or two rather than paying one full-shift member more than another).
+  const rawShortShiftTotal = shortShiftMembers.reduce((sum, member) => sum + hourlyRate * member.hours, 0);
+  const roundedShortShiftAmounts = roundAmountsToCents(
+    Object.fromEntries(shortShiftMembers.map((member) => [member.id, hourlyRate * member.hours])),
+    rawShortShiftTotal
   );
-  const shortShiftTotal = Object.values(shortShiftAmounts).reduce((sum, amount) => sum + amount, 0);
+  const shortShiftDistributedTotal = sumAmounts(roundedShortShiftAmounts);
   const fullShiftMembers = eligibleMembers.filter((member) => !isShortShift(member));
-  const remainingAmount = Math.max(0, safeTotalAmount - shortShiftTotal);
-  const fullShiftShare = fullShiftMembers.length > 0 ? remainingAmount / fullShiftMembers.length : 0;
+  const remainingAmount = Math.max(0, safeTotalAmount - shortShiftDistributedTotal);
+  const { amountsById: fullShiftAmounts, distributedTotal: fullShiftDistributedTotal } = ceilEqualSplit(
+    remainingAmount,
+    fullShiftMembers.map((member) => member.id)
+  );
 
   return {
-    amountsById: Object.fromEntries(
-      eligibleMembers.map((member) => [
-        member.id,
-        isShortShift(member) ? shortShiftAmounts[member.id] || 0 : fullShiftShare,
-      ])
-    ),
+    amountsById: { ...roundedShortShiftAmounts, ...fullShiftAmounts },
     eligibleCount: eligibleMembers.length,
     totalHours: totalEligibleHours,
     usedShortShiftRule: true,
+    distributedTotal: roundMoney(shortShiftDistributedTotal + fullShiftDistributedTotal),
   };
 }

@@ -1,4 +1,4 @@
-import { distributePoolByHoursRule, roundAmountsToCents, shortShiftModeForDate } from "./payroll-distribution";
+import { ceilEqualSplit, distributePoolByHoursRule, roundAmountsToCents, shortShiftModeForDate } from "./payroll-distribution";
 
 export type LinkedCommissionWorkerInput = {
   userId: string;
@@ -219,27 +219,31 @@ export function buildLinkedCommissionDistribution({
       const blendedHourlyRate = totalHours > 0 ? totalCommissionPoolDollars / totalHours : 0;
 
       const slotKey = (slot: Slot): string => `${slot.eventId}::${slot.userId}`;
-      const slotAmountsByKey: Record<string, number> = {};
-      let proratedTotal = 0;
+      const proratedAmountsByKey: Record<string, number> = {};
+      let rawProratedTotal = 0;
       const evenSlotKeys: string[] = [];
       for (const slot of slots) {
         if (slot.forceEvenSplit === false) {
           const amount = blendedHourlyRate * slot.hours;
-          slotAmountsByKey[slotKey(slot)] = amount;
-          proratedTotal += amount;
+          proratedAmountsByKey[slotKey(slot)] = amount;
+          rawProratedTotal += amount;
         } else {
           evenSlotKeys.push(slotKey(slot));
         }
       }
-      const remainingForEvenSlots = Math.max(0, totalCommissionPoolDollars - proratedTotal);
-      const perSlotEvenShare = evenSlotKeys.length > 0 ? remainingForEvenSlots / evenSlotKeys.length : 0;
-      for (const key of evenSlotKeys) {
-        slotAmountsByKey[key] = perSlotEvenShare;
-      }
-
-      // Round to cents via largest-remainder across every slot so the group's shares
-      // always sum to exactly totalCommissionPoolDollars.
-      const roundedSlotAmountsByKey = roundAmountsToCents(slotAmountsByKey, totalCommissionPoolDollars);
+      // Prorated (opted-out) slots are unequal by design, so they're reconciled
+      // to their own subtotal via largest-remainder. The remaining even slots
+      // all get an identical ceil-rounded share — when the remainder doesn't
+      // divide evenly, that grows the group's total slightly rather than
+      // paying one even slot more than another.
+      const roundedProratedAmountsByKey = roundAmountsToCents(proratedAmountsByKey, rawProratedTotal);
+      const proratedDistributedTotal = Object.values(roundedProratedAmountsByKey).reduce(
+        (sum, amount) => sum + amount,
+        0
+      );
+      const remainingForEvenSlots = Math.max(0, totalCommissionPoolDollars - proratedDistributedTotal);
+      const { amountsById: evenSlotAmountsByKey } = ceilEqualSplit(remainingForEvenSlots, evenSlotKeys);
+      const roundedSlotAmountsByKey = { ...roundedProratedAmountsByKey, ...evenSlotAmountsByKey };
 
       for (const slot of slots) {
         const amount = roundedSlotAmountsByKey[slotKey(slot)] || 0;
@@ -284,7 +288,13 @@ export function buildLinkedCommissionDistribution({
         .filter(Boolean)
         .sort()[0];
 
-      const rawCommissionSharesByUserId = distributePoolByHoursRule({
+      // distributePoolByHoursRule already rounds to cents internally — hours-
+      // prorated shares via largest-remainder against the pool, and genuine
+      // equal-split shares via ceiling so every member gets the same amount
+      // (growing the total by a cent or two rather than paying one member
+      // more than another). Re-reconciling the result to totalCommissionPoolDollars
+      // here would undo that ceiling, so use the amounts as returned.
+      commissionShareByUserId = distributePoolByHoursRule({
         totalAmount: totalCommissionPoolDollars,
         members: Object.entries(totalHoursByUserId).map(([userId, hours]) => ({
           id: userId,
@@ -293,11 +303,6 @@ export function buildLinkedCommissionDistribution({
         })),
         allShortShiftMode: shortShiftModeForDate(groupDate),
       }).amountsById;
-      // Round to cents via largest-remainder so per-user shares always sum to
-      // exactly totalCommissionPoolDollars — rounding each user's share
-      // independently (roundMoney per entry) can drift the total by a few cents,
-      // which surfaced as the commission split not matching the pool percentage.
-      commissionShareByUserId = roundAmountsToCents(rawCommissionSharesByUserId, totalCommissionPoolDollars);
 
       for (const [userId, totalShare] of Object.entries(commissionShareByUserId)) {
         const allocatedShares = allocateShareAcrossEvents(

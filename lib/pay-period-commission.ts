@@ -1,4 +1,4 @@
-import { distributePoolByHoursRule, roundAmountsToCents, shortShiftModeForDate } from "./payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "./payroll-distribution";
 
 export const PERIOD_RATE_MINIMUM = 28.5;
 export const PERIOD_RATE_STATES = ["CA", "NV", "WI"] as const;
@@ -120,7 +120,13 @@ export function computePayPeriodCommission({
     const usesPeriodRate = isPeriodRateState(stateCode);
     const members = Array.isArray(event.workers) ? event.workers : [];
 
-    const rawCommissionSharesByUser = distributePoolByHoursRule({
+    // distributePoolByHoursRule already rounds to cents internally — hours-
+    // prorated shares via largest-remainder against the pool, and genuine
+    // equal-split shares via ceiling so every member gets the same amount
+    // (growing the total by a cent or two rather than paying one member more
+    // than another). Re-reconciling the result to commissionPoolDollars here
+    // would undo that ceiling, so use the amounts as returned.
+    const commissionSharesByUser = distributePoolByHoursRule({
       totalAmount: Number(event.commissionPoolDollars || 0),
       members: members.flatMap((worker) => {
         const userId = (worker?.userId || "").toString();
@@ -139,13 +145,6 @@ export function computePayPeriodCommission({
       }),
       allShortShiftMode: shortShiftModeForDate(event.date),
     }).amountsById;
-    // Round to cents via largest-remainder so shares sum to exactly the
-    // commission pool instead of drifting a few cents from independent
-    // per-user rounding (see roundAmountsToCents / same fix in linked-commission.ts).
-    const commissionSharesByUser = roundAmountsToCents(
-      rawCommissionSharesByUser,
-      Number(event.commissionPoolDollars || 0)
-    );
 
     byEvent[eventId] = {};
 
