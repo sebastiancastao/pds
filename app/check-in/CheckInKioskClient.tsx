@@ -34,6 +34,7 @@ function getTimezoneForState(state: string | null | undefined): string {
 type WorkerStatus = "not_clocked_in" | "clocked_in" | "on_meal";
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
+const KIOSK_LOGOUT_BUTTON_DELAY_MS = 4 * 60 * 60 * 1000;
 const KIOSK_EVENT_REFRESH_MS = 10_000;
 const KIOSK_SHIFT_SUMMARY_REFRESH_MS = 10_000;
 // How long the "last known active event" fallback stays trustworthy once the
@@ -174,6 +175,7 @@ export default function CheckInKioskPage() {
   // Auth
   const [isAuthed, setIsAuthed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [showLogoutButton, setShowLogoutButton] = useState(false);
   const accessTokenRef = useRef<string | null>(null);
 
   // Code input
@@ -251,6 +253,14 @@ export default function CheckInKioskPage() {
   // ─── Auth & session keep-alive ──────────────────────────────────
   useEffect(() => {
     checkAuth();
+  }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setShowLogoutButton(true);
+    }, KIOSK_LOGOUT_BUTTON_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
   }, []);
 
   // Block the browser back button across all navigation mechanisms
@@ -1458,15 +1468,17 @@ export default function CheckInKioskPage() {
               {isSyncing && <span className="animate-spin ml-1">...</span>}
             </div>
           )}
-          <button
-            onClick={handleLogout}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold bg-white text-gray-600 border border-gray-300 shadow-sm hover:bg-gray-50 transition-all"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            Log Out
-          </button>
+          {showLogoutButton && (
+            <button
+              onClick={handleLogout}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold bg-white text-gray-600 border border-gray-300 shadow-sm hover:bg-gray-50 transition-all"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Log Out
+            </button>
+          )}
         </div>
       </div>
 
