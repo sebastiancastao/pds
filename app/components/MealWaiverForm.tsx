@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
 type WaiverType = '6_hour' | '10_hour' | '12_hour';
+type WaiverDecision = 'waived' | 'rejected';
 
 type MealWaiverFormProps = {
   stateName: string;
@@ -57,6 +58,8 @@ function MealWaiverFormContent({
   const [selectedType, setSelectedType] = useState<WaiverType>(allowedTypes[0]);
   const [employeeName, setEmployeeName] = useState('');
   const [position, setPosition] = useState('');
+  const [decision, setDecision] = useState<WaiverDecision>('waived');
+  const [rejectionReason, setRejectionReason] = useState('');
   const [acknowledges, setAcknowledges] = useState(false);
   const [signatureDate, setSignatureDate] = useState(getDefaultDate());
   const [signature, setSignature] = useState('');
@@ -99,6 +102,8 @@ function MealWaiverFormContent({
       setAcknowledges(false);
       setEmployeeName('');
       setPosition('');
+      setDecision('waived');
+      setRejectionReason('');
       setSignatureDate(getDefaultDate());
       setSignature('');
       clearCanvas();
@@ -123,6 +128,8 @@ function MealWaiverFormContent({
           if (data.waiver) {
             setEmployeeName(data.waiver.employee_name || '');
             setPosition(data.waiver.position || '');
+            setDecision(data.waiver.decision === 'rejected' ? 'rejected' : 'waived');
+            setRejectionReason(data.waiver.rejection_reason || '');
             setAcknowledges(data.waiver.acknowledges_terms || false);
             setSignatureDate(data.waiver.signature_date || getDefaultDate());
             const savedSignature = data.waiver.employee_signature || '';
@@ -231,6 +238,8 @@ function MealWaiverFormContent({
         position,
         signature_date: signatureDate,
         acknowledges_terms: acknowledges,
+        decision,
+        rejection_reason: decision === 'rejected' ? rejectionReason : undefined,
       });
 
       const response = await fetch('/api/form-signatures/save', {
@@ -297,6 +306,8 @@ function MealWaiverFormContent({
     }
   };
 
+  const isRejecting = decision === 'rejected';
+
   const handleSave = async () => {
     if (!employeeName.trim()) {
       alert('Please enter your full name');
@@ -304,7 +315,11 @@ function MealWaiverFormContent({
     }
 
     if (!acknowledges) {
-      alert('Please check the acknowledgment box');
+      alert(
+        isRejecting
+          ? 'Please check the box confirming you are declining this waiver'
+          : 'Please check the acknowledgment box'
+      );
       return false;
     }
 
@@ -338,6 +353,8 @@ function MealWaiverFormContent({
           signature_date: signatureDate,
           employee_signature: signature,
           acknowledges_terms: acknowledges,
+          decision,
+          rejection_reason: isRejecting ? rejectionReason.trim() : undefined,
         }),
       });
 
@@ -347,7 +364,7 @@ function MealWaiverFormContent({
       }
 
       await saveSignatureToDatabase(signature, session?.access_token);
-      alert('Meal waiver saved successfully!');
+      alert(isRejecting ? 'Meal waiver decline recorded successfully!' : 'Meal waiver saved successfully!');
       return true;
     } catch (error) {
       console.error('Save error:', error);
@@ -483,51 +500,131 @@ function MealWaiverFormContent({
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#1a1a1a', marginBottom: '8px' }}>{title}</h1>
           <p style={{ fontSize: '16px', color: '#666', marginBottom: '8px' }}>{stateName} hourly employees</p>
           <p style={{ fontSize: '14px', color: '#444' }}>
-            This web form captures your consent to waive a meal period when the shift length matches the selection above. Please read and sign below.
+            This web form captures your decision to either waive or keep a meal period when the shift length matches the selection above. Please read and sign below.
           </p>
         </div>
 
-        <div
-          style={{
-            backgroundColor: '#f9f9f9',
-            border: '1px solid #e0e0e0',
-            borderRadius: '6px',
-            padding: '24px',
-            marginBottom: '32px',
-            fontSize: '14px',
-            lineHeight: '1.6',
-            color: '#333',
-          }}
-        >
-          {allowedTypes.includes('6_hour') && !allowedTypes.includes('10_hour') ? (
-            <>
-              <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>6 Hour Meal Break Waiver</p>
-              <p style={{ marginBottom: '16px' }}>
-                I understand that my employer has provided me with an unpaid meal period of at least 30 minutes in length whenever I work more than 5 hours in a workday. Although I am entitled to take this meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 5 hours, but no more than 6 hours, I prefer and choose to voluntarily waive my 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
-              </p>
-              <p style={{ marginBottom: '16px' }}>
-                I understand that my waiver of the meal period is only permissible if my shift will be no more than 6 hours. I confirm that my employer has not encouraged me to skip my meal period at any time, and that I have the opportunity to take my uninterrupted 30-minute meal period on any day I wish to take it.
-              </p>
-            </>
-          ) : (
-            <>
-              <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>10-12 Hour Break Waiver</p>
-              <p style={{ marginBottom: '16px' }}>
-                I understand that when I work more than 10 hours in a workday, I am entitled to a second 30-minute unpaid meal period hours. Although I am entitled to take this second meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 10 hours, but less than 12 hours, I prefer and choose to voluntarily waive the second 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
-              </p>
-              <p style={{ marginBottom: '16px' }}>
-                I understand that my waiver of the second meal period is only permissible if I have properly taken my first 30-minute meal period of the workday. I understand that my waiver of the second meal period is only permissible if my shift will be less than 12 hours.
-              </p>
-            </>
-          )}
-          <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>General Terms</p>
-          <p style={{ marginBottom: '16px' }}>
-            I further acknowledge and understand that notwithstanding these waivers, on any day I choose to take a meal period even though my shift will be more than 5 hours but less than 6 hours, or more than 10 hours but no more than 12 hours, I may do so on that day by informing my supervisor of my choice to take a meal period.
-          </p>
-          <p style={{ marginBottom: '0' }}>
-            I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.
-          </p>
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+            Your Decision <span style={{ color: '#d32f2f' }}>*</span>
+          </label>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => {
+                setDecision('waived');
+                setAcknowledges(false);
+              }}
+              style={{
+                flex: '1 1 220px',
+                textAlign: 'left',
+                padding: '14px 16px',
+                borderRadius: '8px',
+                border: decision === 'waived' ? '2px solid #1976d2' : '1px solid #ddd',
+                backgroundColor: decision === 'waived' ? '#e3f2fd' : '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 'bold', color: '#1a1a1a', marginBottom: '4px' }}>
+                Waive this meal period
+              </div>
+              <div style={{ fontSize: '13px', color: '#555' }}>
+                I voluntarily give up this meal period.
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDecision('rejected');
+                setAcknowledges(false);
+              }}
+              style={{
+                flex: '1 1 220px',
+                textAlign: 'left',
+                padding: '14px 16px',
+                borderRadius: '8px',
+                border: decision === 'rejected' ? '2px solid #d32f2f' : '1px solid #ddd',
+                backgroundColor: decision === 'rejected' ? '#fdecea' : '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 'bold', color: '#1a1a1a', marginBottom: '4px' }}>
+                Decline / Reject this waiver
+              </div>
+              <div style={{ fontSize: '13px', color: '#555' }}>
+                I do NOT waive it — I will take my full meal period.
+              </div>
+            </button>
+          </div>
         </div>
+
+        {isRejecting ? (
+          <div
+            style={{
+              backgroundColor: '#fdecea',
+              border: '1px solid #f5c6c1',
+              borderRadius: '6px',
+              padding: '24px',
+              marginBottom: '32px',
+              fontSize: '14px',
+              lineHeight: '1.6',
+              color: '#333',
+            }}
+          >
+            <p style={{ marginBottom: '16px', fontWeight: 'bold', color: '#b71c1c' }}>
+              {typeLabel} — Declined
+            </p>
+            <p style={{ marginBottom: '16px' }}>
+              I do NOT waive my right to this meal period. I have elected to take my full, uninterrupted meal period as provided by company policy and applicable law.
+            </p>
+            <p style={{ marginBottom: '0' }}>
+              I understand that I may complete a new meal period waiver form at any time in the future if I choose to voluntarily waive this meal period instead.
+            </p>
+          </div>
+        ) : (
+          <div
+            style={{
+              backgroundColor: '#f9f9f9',
+              border: '1px solid #e0e0e0',
+              borderRadius: '6px',
+              padding: '24px',
+              marginBottom: '32px',
+              fontSize: '14px',
+              lineHeight: '1.6',
+              color: '#333',
+            }}
+          >
+            {allowedTypes.includes('6_hour') && !allowedTypes.includes('10_hour') ? (
+              <>
+                <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>6 Hour Meal Break Waiver</p>
+                <p style={{ marginBottom: '16px' }}>
+                  I understand that my employer has provided me with an unpaid meal period of at least 30 minutes in length whenever I work more than 5 hours in a workday. Although I am entitled to take this meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 5 hours, but no more than 6 hours, I prefer and choose to voluntarily waive my 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
+                </p>
+                <p style={{ marginBottom: '16px' }}>
+                  I understand that my waiver of the meal period is only permissible if my shift will be no more than 6 hours. I confirm that my employer has not encouraged me to skip my meal period at any time, and that I have the opportunity to take my uninterrupted 30-minute meal period on any day I wish to take it.
+                </p>
+              </>
+            ) : (
+              <>
+                <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>10-12 Hour Break Waiver</p>
+                <p style={{ marginBottom: '16px' }}>
+                  I understand that when I work more than 10 hours in a workday, I am entitled to a second 30-minute unpaid meal period hours. Although I am entitled to take this second meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 10 hours, but less than 12 hours, I prefer and choose to voluntarily waive the second 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
+                </p>
+                <p style={{ marginBottom: '16px' }}>
+                  I understand that my waiver of the second meal period is only permissible if I have properly taken my first 30-minute meal period of the workday. I understand that my waiver of the second meal period is only permissible if my shift will be less than 12 hours.
+                </p>
+              </>
+            )}
+            <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>General Terms</p>
+            <p style={{ marginBottom: '16px' }}>
+              I further acknowledge and understand that notwithstanding these waivers, on any day I choose to take a meal period even though my shift will be more than 5 hours but less than 6 hours, or more than 10 hours but no more than 12 hours, I may do so on that day by informing my supervisor of my choice to take a meal period.
+            </p>
+            <p style={{ marginBottom: '0' }}>
+              I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.
+            </p>
+          </div>
+        )}
 
         <div style={{ marginBottom: '32px' }}>
           <div style={{ marginBottom: '24px' }}>
@@ -599,8 +696,8 @@ function MealWaiverFormContent({
             style={{
               marginBottom: '24px',
               padding: '16px',
-              backgroundColor: '#fff3e0',
-              border: '2px solid #ff9800',
+              backgroundColor: isRejecting ? '#fdecea' : '#fff3e0',
+              border: isRejecting ? '2px solid #d32f2f' : '2px solid #ff9800',
               borderRadius: '6px',
             }}
           >
@@ -611,11 +708,43 @@ function MealWaiverFormContent({
                 onChange={(e) => setAcknowledges(e.target.checked)}
                 style={{ width: '20px', height: '20px', marginTop: '2px', cursor: 'pointer' }}
               />
-              <span style={{ fontSize: '14px', color: '#333', lineHeight: '1.5' }}>
-                <strong>I acknowledge and agree</strong> that I have read and understand this meal period waiver. I voluntarily waive the applicable meal period for the shift length shown above and understand I may revoke the waiver at any time.
-              </span>
+              {isRejecting ? (
+                <span style={{ fontSize: '14px', color: '#333', lineHeight: '1.5' }}>
+                  <strong>I confirm my decision to decline</strong> this meal period waiver. I am NOT giving up this meal period and will take my full, uninterrupted meal break for the shift length shown above.
+                </span>
+              ) : (
+                <span style={{ fontSize: '14px', color: '#333', lineHeight: '1.5' }}>
+                  <strong>I acknowledge and agree</strong> that I have read and understand this meal period waiver. I voluntarily waive the applicable meal period for the shift length shown above and understand I may revoke the waiver at any time.
+                </span>
+              )}
             </label>
           </div>
+
+          {isRejecting && (
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+                Reason (optional)
+              </label>
+              <textarea
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                placeholder="Optionally tell us why you're declining this waiver"
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  fontSize: '14px',
+                  border: '2px solid #ddd',
+                  borderRadius: '6px',
+                  outline: 'none',
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = '#d32f2f')}
+                onBlur={(e) => (e.currentTarget.style.borderColor = '#ddd')}
+              />
+            </div>
+          )}
 
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>

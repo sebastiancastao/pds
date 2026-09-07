@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { buildEmployeeInformationPdf } from "@/lib/employee-information-pdf";
 import { parsePayrollPacketVirtualStoragePath } from "@/lib/payroll-packet-custom-forms";
+import { fetchMealWaiversForUser, renderMealWaiversPdf, type MealWaiverRecord } from "@/lib/meal-waiver-pdf";
 
 export const dynamic = "force-dynamic";
 
@@ -143,6 +144,8 @@ export async function GET(
     const MIN_FORM_DATA_LENGTH = 1000;
     const forms = [];
     let hasEmployeeInformationForm = false;
+    let hasMealWaiver6HourForm = false;
+    let hasMealWaiver1012Form = false;
 
     for (const form of allForms || []) {
       const formName = form.form_name || "unknown";
@@ -157,6 +160,12 @@ export async function GET(
 
       if (normalizeFormKey(formName) === "employee-information" || isEmployeeInformationCustomForm) {
         hasEmployeeInformationForm = true;
+      }
+      if (normalizeFormKey(formName) === "meal-waiver-6hour") {
+        hasMealWaiver6HourForm = true;
+      }
+      if (normalizeFormKey(formName) === "meal-waiver-10-12") {
+        hasMealWaiver1012Form = true;
       }
 
       forms.push({
@@ -211,6 +220,51 @@ export async function GET(
           created_at: employeeInfo.updated_at || "",
           form_date: employeeInfo.updated_at ? employeeInfo.updated_at.slice(0, 10) : null,
         });
+      }
+    }
+
+    // Meal waivers are saved directly to the meal_waivers table (not pdf_form_progress)
+    // during onboarding, so synthesize them here the same way employee-information is
+    // synthesized above. This is what makes the accepted/declined meal waiver show up as
+    // its own onboarding form entry on the Employees page.
+    if (!hasMealWaiver6HourForm || !hasMealWaiver1012Form) {
+      const { waivers, latestUpdate } = await fetchMealWaiversForUser(userId);
+
+      if (waivers.length > 0) {
+        const sixHourWaivers = waivers.filter((w: MealWaiverRecord) => w.waiver_type === "6_hour");
+        const tenTwelveWaivers = waivers.filter(
+          (w: MealWaiverRecord) => w.waiver_type === "10_hour" || w.waiver_type === "12_hour"
+        );
+
+        if (!hasMealWaiver6HourForm && sixHourWaivers.length > 0) {
+          const pdf = await renderMealWaiversPdf(sixHourWaivers);
+          const updatedAt =
+            sixHourWaivers.find((w) => w.updated_at)?.updated_at || latestUpdate || "";
+          forms.unshift({
+            id: "meal-waiver-6hour-synthetic",
+            form_name: "meal-waiver-6hour",
+            display_name: getDisplayName("meal-waiver-6hour"),
+            form_data: pdf.toString("base64"),
+            updated_at: updatedAt,
+            created_at: updatedAt,
+            form_date: null,
+          });
+        }
+
+        if (!hasMealWaiver1012Form && tenTwelveWaivers.length > 0) {
+          const pdf = await renderMealWaiversPdf(tenTwelveWaivers);
+          const updatedAt =
+            tenTwelveWaivers.find((w) => w.updated_at)?.updated_at || latestUpdate || "";
+          forms.unshift({
+            id: "meal-waiver-10-12-synthetic",
+            form_name: "meal-waiver-10-12",
+            display_name: getDisplayName("meal-waiver-10-12"),
+            form_data: pdf.toString("base64"),
+            updated_at: updatedAt,
+            created_at: updatedAt,
+            form_date: null,
+          });
+        }
       }
     }
 

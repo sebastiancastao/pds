@@ -20,6 +20,8 @@ export default function MealWaiver10to12NYPage() {
   const [position, setPosition] = useState('');
   const [signatureDate, setSignatureDate] = useState(getDefaultDate());
   const [signature, setSignature] = useState('');
+  const [decision, setDecision] = useState<'waived' | 'rejected'>('waived');
+  const [rejectionReason, setRejectionReason] = useState('');
   const [acknowledged, setAcknowledged] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -57,6 +59,8 @@ export default function MealWaiver10to12NYPage() {
     setPosition('');
     setSignatureDate(getDefaultDate());
     setSignature('');
+    setDecision('waived');
+    setRejectionReason('');
     setAcknowledged(false);
     clearCanvas();
 
@@ -82,6 +86,8 @@ export default function MealWaiver10to12NYPage() {
           setFullName(data.waiver.employee_name || '');
           setPosition(data.waiver.position || '');
           setSignatureDate(data.waiver.signature_date || getDefaultDate());
+          setDecision(data.waiver.decision === 'rejected' ? 'rejected' : 'waived');
+          setRejectionReason(data.waiver.rejection_reason || '');
           setAcknowledged(Boolean(data.waiver.acknowledges_terms));
           const savedSignature = data.waiver.employee_signature || '';
           setSignature(savedSignature);
@@ -175,6 +181,8 @@ export default function MealWaiver10to12NYPage() {
         position: position.trim() || null,
         signature_date: signatureDate,
         acknowledges_terms: acknowledged,
+        decision,
+        rejection_reason: decision === 'rejected' ? rejectionReason : undefined,
       });
 
       const response = await fetch('/api/form-signatures/save', {
@@ -203,13 +211,15 @@ export default function MealWaiver10to12NYPage() {
     }
   };
 
+  const isRejecting = decision === 'rejected';
+
   const handleSave = async () => {
     if (!fullName.trim()) {
       alert('Please enter your printed name.');
       return false;
     }
     if (!acknowledged) {
-      alert('Please acknowledge the terms of this waiver.');
+      alert(isRejecting ? 'Please check the box confirming you are declining this waiver.' : 'Please acknowledge the terms of this waiver.');
       return false;
     }
     if (!signature) {
@@ -242,6 +252,8 @@ export default function MealWaiver10to12NYPage() {
           signature_date: signatureDate,
           employee_signature: signature,
           acknowledges_terms: acknowledged,
+          decision,
+          rejection_reason: isRejecting ? rejectionReason.trim() : undefined,
         }),
       });
 
@@ -252,7 +264,7 @@ export default function MealWaiver10to12NYPage() {
 
       await saveSignatureToDatabase(signature, session?.access_token);
 
-      alert('Meal waiver saved successfully.');
+      alert(isRejecting ? 'Meal waiver decline recorded successfully.' : 'Meal waiver saved successfully.');
       return true;
     } catch (error) {
       console.error('Save error:', error);
@@ -305,6 +317,68 @@ export default function MealWaiver10to12NYPage() {
           <p style={{ fontSize: '16px', color: '#666' }}>For Hourly Employees Working 10-12 Hours</p>
         </div>
 
+        <section>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+            Your Decision <span style={{ color: '#d32f2f' }}>*</span>
+          </label>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => { setDecision('waived'); setAcknowledged(false); }}
+              style={{
+                flex: '1 1 220px',
+                textAlign: 'left',
+                padding: '14px 16px',
+                borderRadius: '8px',
+                border: decision === 'waived' ? '2px solid #2563eb' : '1px solid #d1d5db',
+                backgroundColor: decision === 'waived' ? '#e3f2fd' : '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 'bold', color: '#1a1a1a', marginBottom: '4px' }}>Waive this meal period</div>
+              <div style={{ fontSize: '13px', color: '#555' }}>I voluntarily give up this meal period.</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setDecision('rejected'); setAcknowledged(false); }}
+              style={{
+                flex: '1 1 220px',
+                textAlign: 'left',
+                padding: '14px 16px',
+                borderRadius: '8px',
+                border: decision === 'rejected' ? '2px solid #d14343' : '1px solid #d1d5db',
+                backgroundColor: decision === 'rejected' ? '#fdecea' : '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 'bold', color: '#1a1a1a', marginBottom: '4px' }}>Decline / Reject this waiver</div>
+              <div style={{ fontSize: '13px', color: '#555' }}>I do NOT waive it — I will take my full meal period.</div>
+            </button>
+          </div>
+        </section>
+
+        {isRejecting ? (
+          <div
+            style={{
+              backgroundColor: '#fdecea',
+              border: '1px solid #f5c6c1',
+              borderRadius: '6px',
+              padding: '24px',
+              marginBottom: '32px',
+              fontSize: '14px',
+              lineHeight: '1.6',
+              color: '#333',
+            }}
+          >
+            <p style={{ marginBottom: '16px', fontWeight: 'bold', color: '#b71c1c' }}>10-12 Hour Break Waiver — Declined</p>
+            <p style={{ marginBottom: '16px' }}>
+              I do NOT waive my right to this meal period. I have elected to take my full, uninterrupted meal period as provided by company policy and applicable law.
+            </p>
+            <p style={{ marginBottom: '0' }}>
+              I understand that I may complete a new meal period waiver form at any time in the future if I choose to voluntarily waive this meal period instead.
+            </p>
+          </div>
+        ) : (
         <div
           style={{
             backgroundColor: '#f9f9f9',
@@ -332,11 +406,12 @@ export default function MealWaiver10to12NYPage() {
             I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.
           </p>
         </div>
+        )}
 
         <section
           style={{
-            backgroundColor: '#fff9f0',
-            border: '1px solid #f6c07b',
+            backgroundColor: isRejecting ? '#fdecea' : '#fff9f0',
+            border: isRejecting ? '1px solid #f5c6c1' : '1px solid #f6c07b',
             borderRadius: '8px',
             padding: '16px',
           }}
@@ -348,10 +423,39 @@ export default function MealWaiver10to12NYPage() {
               onChange={(e) => setAcknowledged(e.target.checked)}
               style={{ width: '20px', height: '20px', marginTop: '2px' }}
             />
-            <span style={{ color: '#7c2d12', fontSize: '14px' }}>
-              I acknowledge I have read and agree to the 10-12 hour meal period waiver statements above, and I understand I may revoke this waiver at any time.
-            </span>
+            {isRejecting ? (
+              <span style={{ color: '#7f1d1d', fontSize: '14px' }}>
+                I confirm my decision to decline this meal period waiver. I am NOT giving up this meal period and will take my full, uninterrupted meal break for the shift length covered by this waiver.
+              </span>
+            ) : (
+              <span style={{ color: '#7c2d12', fontSize: '14px' }}>
+                I acknowledge I have read and agree to the 10-12 hour meal period waiver statements above, and I understand I may revoke this waiver at any time.
+              </span>
+            )}
           </label>
+          {isRejecting && (
+            <div style={{ marginTop: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#111827' }}>
+                Reason (optional)
+              </label>
+              <textarea
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                placeholder="Optionally tell us why you're declining this waiver"
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  fontSize: '14px',
+                  border: '2px solid #d1d5db',
+                  borderRadius: '6px',
+                  outline: 'none',
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                }}
+              />
+            </div>
+          )}
         </section>
 
         <section

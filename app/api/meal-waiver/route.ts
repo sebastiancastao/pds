@@ -6,10 +6,16 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 const MEAL_WAIVERS_TABLE = 'meal_waivers';
 const MEAL_WAIVERS_MIGRATION_PATH = 'database/migrations/029_create_meal_waivers_table.sql';
+const MEAL_WAIVERS_DECISION_MIGRATION_PATH = 'database/migrations/062_add_meal_waiver_decision.sql';
 const missingTableMessage = `The "${MEAL_WAIVERS_TABLE}" table is not available yet. Run the migration at ${MEAL_WAIVERS_MIGRATION_PATH} (or otherwise create the table) before using the meal waiver endpoint.`;
+const missingDecisionColumnMessage = `The "${MEAL_WAIVERS_TABLE}" table is missing the "decision" column. Run the migration at ${MEAL_WAIVERS_DECISION_MIGRATION_PATH} before using the reject/decline flow.`;
 
 const isMissingTableError = (error: any) =>
   error?.code === 'PGRST205' && error?.message?.includes(MEAL_WAIVERS_TABLE);
+
+const isMissingDecisionColumnError = (error: any) =>
+  (error?.code === 'PGRST204' || error?.code === '42703') &&
+  error?.message?.toLowerCase()?.includes('decision');
 
 // GET: Retrieve meal waiver data
 export async function GET(request: NextRequest) {
@@ -81,8 +87,15 @@ export async function POST(request: NextRequest) {
       position,
       signature_date,
       employee_signature,
-      acknowledges_terms
+      acknowledges_terms,
+      decision: rawDecision,
+      rejection_reason
     } = body;
+
+    // Normalize decision: defaults to 'waived' for backward compatibility with the
+    // original accept-only flow. Any value other than 'rejected' is treated as 'waived'.
+    const decision = rawDecision === 'rejected' ? 'rejected' : 'waived';
+    const isRejecting = decision === 'rejected';
 
     // Validation
     if (!waiver_type || !employee_name || !signature_date || !employee_signature) {
@@ -91,7 +104,9 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    if (!acknowledges_terms) {
+    // Only the "waived" (accept) path requires the acknowledgment checkbox — declining
+    // the waiver doesn't require agreeing to give up the meal period.
+    if (!isRejecting && !acknowledges_terms) {
       return NextResponse.json({
         error: 'You must acknowledge the terms of the waiver'
       }, { status: 400 });
@@ -107,7 +122,9 @@ export async function POST(request: NextRequest) {
         position: position || null,
         signature_date,
         employee_signature,
-        acknowledges_terms
+        acknowledges_terms: isRejecting ? false : !!acknowledges_terms,
+        decision,
+        rejection_reason: isRejecting ? (rejection_reason || null) : null
       }, {
         onConflict: 'user_id,waiver_type'
       })
@@ -118,6 +135,9 @@ export async function POST(request: NextRequest) {
       console.error('[MEAL-WAIVER] Upsert error:', upsertError);
       if (isMissingTableError(upsertError)) {
         return NextResponse.json({ error: missingTableMessage }, { status: 500 });
+      }
+      if (isMissingDecisionColumnError(upsertError)) {
+        return NextResponse.json({ error: missingDecisionColumnMessage }, { status: 500 });
       }
       return NextResponse.json({ error: 'Failed to save meal waiver' }, { status: 500 });
     }
