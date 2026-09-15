@@ -40,6 +40,16 @@ type User = {
   has_download_records: boolean;
   has_vendor_onboarding_record: boolean;
   vendor_onboarding_completed: boolean | null;
+  meal_waivers: MealWaiverRecord[];
+};
+
+type MealWaiverDecision = "waived" | "rejected";
+
+type MealWaiverRecord = {
+  waiver_type: "6_hour" | "10_hour" | "12_hour" | string;
+  decision: MealWaiverDecision;
+  signature_date: string | null;
+  rejection_reason: string | null;
 };
 
 type LatestFormEdit = {
@@ -126,6 +136,28 @@ function formatDate(value?: string | null) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function getMealWaiver(user: User, type: "6_hour" | "10_12"): MealWaiverRecord | undefined {
+  const waivers = user.meal_waivers || [];
+  if (type === "6_hour") {
+    return waivers.find(w => w.waiver_type === "6_hour");
+  }
+  return waivers.find(w => w.waiver_type === "10_hour" || w.waiver_type === "12_hour");
+}
+
+function getMealWaiverBadgeStyles(decision?: MealWaiverDecision | null) {
+  switch (decision) {
+    case "waived":   return { backgroundColor: "#dcfce7", color: "#15803d" };
+    case "rejected": return { backgroundColor: "#dbeafe", color: "#1d4ed8" };
+    default:         return { backgroundColor: "#f3f4f6", color: "#6b7280" };
+  }
+}
+
+function formatMealWaiverDecision(decision?: MealWaiverDecision | null) {
+  if (decision === "waived") return "Waived";
+  if (decision === "rejected") return "Declined";
+  return "Not Submitted";
 }
 
 const EMPLOYEES_LIST_REFRESH_MS = 120000;
@@ -450,6 +482,8 @@ export default function HREmployeesPage() {
 
     const data = filteredUsers.map(user => {
       const latestEdit = latestFormEditsByUser[user.id];
+      const sixHourWaiver = getMealWaiver(user, "6_hour");
+      const tenTwelveHourWaiver = getMealWaiver(user, "10_12");
       return ({
       'ID': user.id,
       'Email': user.email,
@@ -470,6 +504,8 @@ export default function HREmployeesPage() {
       'Onboarding Completed': user.onboarding_completed_at ? new Date(user.onboarding_completed_at).toLocaleString() : '',
       'Background Check Completed': user.background_check_completed ? 'Yes' : 'No',
       'Background Check Completed At': user.background_check_completed_at ? new Date(user.background_check_completed_at).toLocaleString() : '',
+      '6-Hour Meal Waiver': formatMealWaiverDecision(sixHourWaiver?.decision),
+      '10/12-Hour Meal Waiver': formatMealWaiverDecision(tenTwelveHourWaiver?.decision),
       'Latest HR Form Edit': latestEdit?.formDisplayName || '',
       'Latest HR Form Edit Action': formatActionLabel(latestEdit?.action) || '',
       'Latest HR Form Edited By': latestEdit?.editorName || latestEdit?.editorEmail || '',
@@ -485,8 +521,8 @@ export default function HREmployeesPage() {
       { wch: 36 }, { wch: 30 }, { wch: 20 }, { wch: 20 }, { wch: 15 },
       { wch: 30 }, { wch: 15 }, { wch: 8 }, { wch: 10 }, { wch: 15 },
       { wch: 15 }, { wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 12 },
-      { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 }, { wch: 30 },
-      { wch: 18 }, { wch: 28 }, { wch: 24 },
+      { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 }, { wch: 18 },
+      { wch: 20 }, { wch: 30 }, { wch: 18 }, { wch: 28 }, { wch: 24 },
     ];
     worksheet['!cols'] = columnWidths;
 
@@ -787,6 +823,9 @@ export default function HREmployeesPage() {
                   Onboarding Status
                 </th>
                 <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                  Meal Waivers
+                </th>
+                <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
                   Latest HR Form Edit
                 </th>
                 <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
@@ -797,7 +836,7 @@ export default function HREmployeesPage() {
             <tbody>
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                  <td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
                     {searchTerm ? 'No employees found matching your search' : 'No employees found'}
                   </td>
                 </tr>
@@ -876,6 +915,31 @@ export default function HREmployeesPage() {
                           Not Submitted
                         </span>
                       )}
+                    </td>
+                    <td style={{ padding: '0.75rem' }}>
+                      <div style={{ display: 'grid', gap: '0.35rem' }}>
+                        {(['6_hour', '10_12'] as const).map((type) => {
+                          const waiver = getMealWaiver(user, type);
+                          const badgeStyle = getMealWaiverBadgeStyles(waiver?.decision);
+                          return (
+                            <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <span style={{ fontSize: '0.75rem', color: '#6b7280', minWidth: '58px' }}>
+                                {type === '6_hour' ? '6-Hour:' : '10/12-Hour:'}
+                              </span>
+                              <span style={{
+                                padding: '0.2rem 0.5rem',
+                                backgroundColor: badgeStyle.backgroundColor,
+                                color: badgeStyle.color,
+                                borderRadius: '0.25rem',
+                                fontSize: '0.8rem',
+                                fontWeight: '500'
+                              }}>
+                                {formatMealWaiverDecision(waiver?.decision)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </td>
                     <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
                       {latestFormEditsByUser[user.id] ? (

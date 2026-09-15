@@ -547,6 +547,11 @@ export default function EventDashboardPage() {
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   // Tips overrides per user: null = deleted (excluded from pool), number = manual override
   const [tipsOverrides, setTipsOverrides] = useState<Record<string, number | null>>({});
+  // Manual per-vendor tips-split override, keyed by user_id — the tips analog of
+  // commissionEvenSplitOverrides below. Key absent = auto (defer to the event's
+  // global tips_distribution_mode); true = forced into the equal-split bucket;
+  // false = forced into the hours-prorated bucket.
+  const [tipsEvenSplitOverrides, setTipsEvenSplitOverrides] = useState<Record<string, boolean>>({});
   const [commissionsOverrides, setCommissionsOverrides] = useState<Record<string, number | null>>({});
   const [editingCommissionsMemberId, setEditingCommissionsMemberId] = useState<string | null>(null);
   const [editingCommissionsValue, setEditingCommissionsValue] = useState<string>("");
@@ -3497,6 +3502,7 @@ export default function EventDashboardPage() {
       }
       const vendorRows: any[] = eventData?.vendorPayments || [];
       const overrides: Record<string, number | null> = {};
+      const evenSplitOverrides: Record<string, boolean> = {};
       for (const row of vendorRows) {
         const uid = (row.user_id || '').toString();
         if (!uid) continue;
@@ -3505,8 +3511,14 @@ export default function EventDashboardPage() {
         } else if (row.tips_override != null) {
           overrides[uid] = Number(row.tips_override);
         }
+        if (row.tips_even_split === true) {
+          evenSplitOverrides[uid] = true;
+        } else if (row.tips_even_split === false) {
+          evenSplitOverrides[uid] = false;
+        }
       }
       setTipsOverrides(overrides);
+      setTipsEvenSplitOverrides(evenSplitOverrides);
       setTipsOverridesLoaded(true);
     } catch (e) {
       // ignore
@@ -4581,7 +4593,7 @@ export default function EventDashboardPage() {
         const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
         const actualHours = getHoursForUser(uid);
         if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
-        return [{ id: uid, hours: actualHours }];
+        return [{ id: uid, hours: actualHours, forceEvenSplit: tipsEvenSplitOverrides[uid] }];
       }),
       mode: event?.tips_distribution_mode,
     });
@@ -4712,7 +4724,7 @@ export default function EventDashboardPage() {
     return buildTipsDistribution(Number(tips) || 0, (uid) =>
       getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
     );
-  }, [teamMembers, timesheetTotals, tipsOverrides, tips, event?.tips_distribution_mode]);
+  }, [teamMembers, timesheetTotals, tipsOverrides, tipsEvenSplitOverrides, tips, event?.tips_distribution_mode]);
 
   const liveTipsSharesByUser = liveTipsDistribution.amountsById;
 
@@ -4923,21 +4935,20 @@ export default function EventDashboardPage() {
       ? commissionOverride
       : rawCommissionAmount;
     const totalFinalCommissionBase = extAmtOnRegRate + commissionAmount;
+    // "Commission Pay" shows the real amount actually paid under the commission-
+    // vs-wage-floor rule (whichever of the pool share or the loaded-rate floor
+    // won — see rawTotalFinalCommission above), not the raw, un-floored pool
+    // share. Showing the bare pool share here (e.g. $152) when the floor won
+    // (e.g. $283) understated what the worker is actually paid and didn't add
+    // up against Gross Pay = Commission Pay + Variable Incentive + Tips + Rest + Other.
     const displayedCommissionPay =
       !trailersDivision && commissionOverride !== null && actualHours > 0
-        ? Number(distributedCommissionShare || 0)
+        ? totalFinalCommissionBase
         : 0;
-    const usesPoolShareBreakdown =
-      !trailersDivision &&
-      commissionOverride !== null &&
-      actualHours > 0;
-    const rawVariableIncentive = usesPoolShareBreakdown
-      ? Math.max(0, totalFinalCommissionBase - displayedCommissionPay)
-      : 0;
     // Manual "Variable Incentive" bonus entered on the Payment tab — a flat additive
-    // amount layered on top of the computed commission uplift above; never replaces it.
+    // amount layered on top of Commission Pay above; never replaces it.
     const manualVariableIncentive = Number(variableIncentives[uid] || 0);
-    const variableIncentive = rawVariableIncentive + manualVariableIncentive;
+    const variableIncentive = manualVariableIncentive;
     const totalFinalCommission = totalFinalCommissionBase + manualVariableIncentive;
 
     return {
@@ -5204,7 +5215,11 @@ export default function EventDashboardPage() {
           ? tipsOverride // manual override
           : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
-        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak;
+        // "Other" = manual Adjustments + Reimbursements entered on the Payment tab —
+        // must match the Gross Pay total shown on screen (see totalGrossPay in the
+        // Staff Schedule table below), which folds both into gross pay.
+        const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
+        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + otherAmount;
 
         return {
           userId: uid,
@@ -5223,6 +5238,7 @@ export default function EventDashboardPage() {
           tips: proratedTips,
           tipsOverride: tipsOverride !== undefined && tipsOverride !== null ? tipsOverride : undefined,
           tipsDeleted: tipsOverride === null,
+          tipsEvenSplit: tipsEvenSplitOverrides[uid],
           restBreak,
           totalPay,
         };
@@ -5311,7 +5327,9 @@ export default function EventDashboardPage() {
         });
         const restBreak = getRestBreakAmount(actualHours, eventState);
         const proratedTips = !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
-        const adjustment = adjustments[uid] || 0;
+        // "Other" on the Payment tab = Adjustments + Reimbursements combined; both must
+        // be included here so the emailed total matches the on-screen Gross Pay.
+        const adjustment = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
 
         const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + adjustment;
 
@@ -8096,6 +8114,43 @@ export default function EventDashboardPage() {
                         >
                           View Timesheet
                         </Link>
+                        {userRole === "exec" && hasSubmittedAttestation && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const { data: sess } = await supabase.auth.getSession();
+                                const token = sess?.session?.access_token;
+                                if (!token) return;
+                                const res = await fetch(
+                                  `/api/events/${eventId}/attestation-pdf?userId=${encodeURIComponent(uid)}`,
+                                  { headers: { Authorization: `Bearer ${token}` } }
+                                );
+                                if (!res.ok) {
+                                  console.warn("Attestation PDF unavailable", {
+                                    status: res.status,
+                                    userId: uid,
+                                  });
+                                  return;
+                                }
+                                const blob = await res.blob();
+                                const blobUrl = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = blobUrl;
+                                a.download = `attestation-${firstName}_${lastName}.pdf`;
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                URL.revokeObjectURL(blobUrl);
+                              } catch (err: any) {
+                                console.error("Failed to download attestation PDF", err);
+                              }
+                            }}
+                            className="text-purple-600 hover:text-purple-700 font-medium text-xs ml-2"
+                            title="Download submitted attestation PDF"
+                          >
+                            Attestation PDF
+                          </button>
+                        )}
                       </td>
                     </tr>
                     {/* One row per day — editable for exec/manager on non-event (special) timesheets.
@@ -9007,6 +9062,44 @@ export default function EventDashboardPage() {
                                         </button>
                                       </div>
                                     )}
+                                    {canEditTimesheets && !trailersDivision && actualHours > 0 && (() => {
+                                      const tipsSplitOverride = tipsEvenSplitOverrides[uid];
+                                      const tipsAutoIsEven = event?.tips_distribution_mode !== "prorated";
+                                      const tipsEffectiveIsEven = tipsSplitOverride === true ? true : tipsSplitOverride === false ? false : tipsAutoIsEven;
+                                      return (
+                                        <div className="flex flex-col gap-0.5">
+                                          <div className="flex items-center gap-1">
+                                            <button
+                                              onClick={() => setTipsEvenSplitOverrides(prev => ({ ...prev, [uid]: true }))}
+                                              className={`text-[10px] px-1.5 py-0.5 rounded border ${tipsEffectiveIsEven ? 'bg-blue-100 text-blue-700 border-blue-300 font-semibold' : 'text-gray-400 border-gray-200 hover:text-blue-600 hover:border-blue-300'}`}
+                                              title="Force this vendor into the equal-split tips bucket, part of the event split"
+                                            >
+                                              Even split
+                                            </button>
+                                            <button
+                                              onClick={() => setTipsEvenSplitOverrides(prev => ({ ...prev, [uid]: false }))}
+                                              className={`text-[10px] px-1.5 py-0.5 rounded border ${!tipsEffectiveIsEven ? 'bg-orange-100 text-orange-700 border-orange-300 font-semibold' : 'text-gray-400 border-gray-200 hover:text-orange-600 hover:border-orange-300'}`}
+                                              title="Force this vendor into the hours-prorated tips bucket"
+                                            >
+                                              Prorated
+                                            </button>
+                                          </div>
+                                          {tipsSplitOverride !== undefined && (
+                                            <button
+                                              onClick={() => setTipsEvenSplitOverrides(prev => {
+                                                const next = { ...prev };
+                                                delete next[uid];
+                                                return next;
+                                              })}
+                                              className="text-[9px] text-gray-400 hover:text-gray-600 underline self-start"
+                                              title={`Clear manual override and use the event's split setting (currently ${tipsAutoIsEven ? 'even split' : 'prorated'})`}
+                                            >
+                                              Reset to auto
+                                            </button>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
                                   </div>
                                 )}
                               </td>

@@ -27,6 +27,7 @@ interface PaymentData {
   travel_pay: number | null;
   tips: number | null;
   tips_deleted?: boolean | null;
+  tips_even_split?: boolean | null;
   total_pay: number | null;
 }
 
@@ -495,7 +496,7 @@ export default function PaystubGenerator() {
       ) {
         return [];
       }
-      return [{ id: workerId, hours: hoursWorked }];
+      return [{ id: workerId, hours: hoursWorked, forceEvenSplit: worker?.payment_data?.tips_even_split ?? undefined }];
     });
     const commissionDistribution = isCommissionShared
       ? {
@@ -2157,6 +2158,7 @@ export default function PaystubGenerator() {
             rest_break_pay: worker?.payment_data?.rest_break_pay ?? '',
             travel_pay: worker?.payment_data?.travel_pay ?? '',
             tips: worker?.payment_data?.tips ?? '',
+            tips_even_split: worker?.payment_data?.tips_even_split ?? null,
             total_pay: worker?.payment_data?.total_pay ?? '',
             adjustment_amount: worker?.adjustment_amount ?? '',
             event_net_sales: event?.event_payment?.net_sales ?? adjustedGross,

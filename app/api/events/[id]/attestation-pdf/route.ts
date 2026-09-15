@@ -86,6 +86,24 @@ function parseSignatureDataUrl(value: string): { format: "png" | "jpeg"; bytes: 
   catch { return null; }
 }
 
+// Manual timesheet corrections record the correcting exec's signature in the
+// entry's notes, e.g. "Manual edit by exec | Reason: clock not registering |
+// Signature: <uuid> | clientActionId:...". Parse that out so a manually
+// reconstructed clock-out (which never gets a live kiosk attestation prompt)
+// can show the real correction signature instead of "no attestation found".
+function parseManagerEditNote(notes: unknown): { signatureId: string; reason: string; role: string } | null {
+  const value = String(notes || "").trim();
+  const roleMatch = value.match(/^Manual edit by (\w+)/i);
+  const reasonMatch = value.match(/\| Reason: (.+?) \| Signature:/);
+  const sigMatch = value.match(/\| Signature: ([0-9a-f-]{36})/i);
+  if (!sigMatch) return null;
+  return {
+    signatureId: sigMatch[1],
+    reason: reasonMatch?.[1]?.trim() || "",
+    role: roleMatch?.[1] || "exec",
+  };
+}
+
 function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
   if (!text.trim()) return [""];
   const words = text.split(/\s+/);
@@ -152,7 +170,7 @@ export async function GET(
     let timeEntries: any[] = [];
     const withAttestationResult = await supabaseAdmin
       .from("time_entries")
-      .select("id, action, timestamp, attestation_accepted")
+      .select("id, action, timestamp, attestation_accepted, notes")
       .eq("user_id", vendorId)
       .eq("event_id", eventId)
       .order("timestamp", { ascending: true });
@@ -162,7 +180,7 @@ export async function GET(
     ) {
       const fallbackResult = await supabaseAdmin
         .from("time_entries")
-        .select("id, action, timestamp")
+        .select("id, action, timestamp, notes")
         .eq("user_id", vendorId)
         .eq("event_id", eventId)
         .order("timestamp", { ascending: true });
@@ -184,6 +202,7 @@ export async function GET(
       formId: string;
       timestampMs: number;
       attestationAccepted: boolean | null;
+      notes: string;
     }> = [];
 
     for (const entry of timeEntries || []) {
@@ -209,6 +228,7 @@ export async function GET(
             formId: `clock-out-${entryId}`,
             timestampMs: tsMs,
             attestationAccepted,
+            notes: String((entry as any)?.notes || ""),
           });
         }
         if (openMealStartMs !== null) {
@@ -279,6 +299,56 @@ export async function GET(
             );
           return directFormMatch || timeMatch;
         }) || null;
+    }
+
+    // Manually-reconstructed clock-outs (kiosk clock failed, so an exec re-typed
+    // the times) never get a live kiosk attestation prompt, so `att` above will
+    // never match. Fall back to the exec's own correction signature so the PDF
+    // shows the real signed record instead of "no attestation found".
+    let managerCorrection: {
+      signatureData: string | null;
+      signedAt: string | null;
+      editorName: string;
+      role: string;
+      reason: string;
+    } | null = null;
+    if (!att && !isRejectedAttestation && latestClockOut?.notes) {
+      const parsedNote = parseManagerEditNote(latestClockOut.notes);
+      if (parsedNote) {
+        const { data: sigRow } = await supabaseAdmin
+          .from("form_signatures")
+          .select("id, user_id, signature_data, signed_at")
+          .eq("id", parsedNote.signatureId)
+          .maybeSingle();
+        if (sigRow?.signature_data) {
+          let editorName = "Unknown";
+          const { data: editorProfile } = await supabaseAdmin
+            .from("profiles")
+            .select("first_name, last_name")
+            .eq("user_id", sigRow.user_id)
+            .maybeSingle();
+          const editorFirst = decryptName(editorProfile?.first_name, sigRow.user_id);
+          const editorLast = decryptName(editorProfile?.last_name, sigRow.user_id);
+          const fullName = [editorFirst, editorLast].filter(Boolean).join(" ").trim();
+          if (fullName) {
+            editorName = fullName;
+          } else {
+            const { data: editorUser } = await supabaseAdmin
+              .from("users")
+              .select("email")
+              .eq("id", sigRow.user_id)
+              .maybeSingle();
+            editorName = editorUser?.email || "Unknown";
+          }
+          managerCorrection = {
+            signatureData: sigRow.signature_data,
+            signedAt: sigRow.signed_at,
+            editorName,
+            role: parsedNote.role,
+            reason: parsedNote.reason,
+          };
+        }
+      }
     }
 
     const netWorkedMs = Math.max(0, workedMs - mealMs);
@@ -402,7 +472,20 @@ export async function GET(
     drawText("Attestation", { font: boldFont, size: 13 });
     y -= 4;
 
-    if (!att) {
+    if (!att && managerCorrection) {
+      drawText(`This clock-out was manually entered by ${managerCorrection.editorName} (${managerCorrection.role}) because the vendor's kiosk clock action did not register, so no live employee attestation was captured.`, {
+        size: 9, color: rgb(0.4, 0.4, 0.4),
+      });
+      if (managerCorrection.reason) {
+        drawText(`Reason given: ${managerCorrection.reason}`, { size: 9, color: rgb(0.4, 0.4, 0.4) });
+      }
+      y -= 4;
+      drawText(`Correction Signed At: ${managerCorrection.signedAt ? formatDateTime(managerCorrection.signedAt) : "--"}`, {
+        size: 9, color: rgb(0.35, 0.35, 0.35),
+      });
+      y -= 6;
+      await drawSignature(`${managerCorrection.role === "exec" ? "Exec" : "Manager"} Correction Signature:`, managerCorrection.signatureData || "");
+    } else if (!att) {
       drawText("No clock-out attestation found for this vendor.", { color: rgb(0.55, 0.1, 0.1) });
     } else {
       drawText(`I, ${vendorName}, hereby attest that:`, { font: boldFont, size: 10 });

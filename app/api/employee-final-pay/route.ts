@@ -191,6 +191,7 @@ export async function GET(req: NextRequest) {
         commission_deleted,
         commission_even_split,
         tips_deleted,
+        tips_even_split,
         users:user_id (
           division
         )
@@ -383,7 +384,7 @@ export async function GET(req: NextRequest) {
         ) {
           return [];
         }
-        return [{ id: paymentUserId, hours: actualHours }];
+        return [{ id: paymentUserId, hours: actualHours, forceEvenSplit: row?.tips_even_split ?? undefined }];
       });
       distributionByEvent[ev.id] = {
         commissionPoolDollars,

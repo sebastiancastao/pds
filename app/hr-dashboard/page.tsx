@@ -1443,7 +1443,7 @@ function HRDashboardContent() {
             const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
             const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
             if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
-            return [{ id: paymentUserId, hours: payrollHours }];
+            return [{ id: paymentUserId, hours: payrollHours, forceEvenSplit: payment.tips_even_split ?? undefined }];
           }),
           mode: eventInfo.tips_distribution_mode,
         }).amountsById;
@@ -1629,6 +1629,7 @@ function HRDashboardContent() {
               commissionEvenSplit: payment.commission_even_split ?? undefined,
               manualVariableIncentive,
               tips,
+              tipsEvenSplit: payment.tips_even_split ?? undefined,
               totalPay,
               adjustmentAmount,
               adjustmentNote: payment.adjustment_note ?? null,
@@ -5298,7 +5299,14 @@ function HRDashboardContent() {
                                       </td>
                                     </>
                                   )}
-                                  <td className="px-4 py-2 text-sm text-right text-orange-600">${formatVendorMoney(Number(payment.tips || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-orange-600">
+                                    ${formatVendorMoney(Number(payment.tips || 0))}
+                                    {payment.tipsEvenSplit !== undefined && (
+                                      <div className="text-[10px] font-normal text-purple-500" title="Manually overridden on the event-dashboard Payment tab">
+                                        {payment.tipsEvenSplit ? 'Even (manual)' : 'Prorated (manual)'}
+                                      </div>
+                                    )}
+                                  </td>
                                   {showVendorRestBreakColumn && (
                                     <td className="px-4 py-2 text-sm text-right text-green-600">{isHourlyEvent ? '—' : `$${formatVendorMoney(Number(payment.restBreak || 0))}`}</td>
                                   )}
@@ -5840,7 +5848,17 @@ function HRDashboardContent() {
                                                         </td>
                                                       </>
                                                     )}
-                                                    <td className="p-2 text-sm text-orange-600">${formatMoney3(tips)}</td>
+                                                    <td className="p-2 text-sm text-orange-600">
+                                                      ${formatMoney3(tips)}
+                                                      {p.tipsEvenSplit !== undefined && (
+                                                        <div
+                                                          className="text-[10px] font-normal normal-case text-purple-500"
+                                                          title="Manually overridden on the event-dashboard Payment tab"
+                                                        >
+                                                          {p.tipsEvenSplit ? 'Even split (manual)' : 'Prorated (manual)'}
+                                                        </div>
+                                                      )}
+                                                    </td>
                                                     {!hideRest && (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
                                                     )}

@@ -55,17 +55,25 @@ type DistributeTipsArgs = {
 };
 
 export function distributeTipsPool({ totalAmount, members, mode }: DistributeTipsArgs): PoolDistributionResult {
-  // shortShiftThresholdHours: 0 means every eligible member lands in
-  // distributePoolByHoursRule's pure equal-split branch under "equal" mode
-  // (no short-shift exception for tips — mode is the only lever), which
-  // already rounds to cents (see ceilEqualSplit) and reports the true
-  // distributedTotal, so no extra rounding pass is needed here.
+  // Always route through the threshold/override branch (never the flat top-level
+  // "hours" mode) so a per-member forceEvenSplit — the tips analog of commission's
+  // per-vendor Even/Prorated override — is always honored, on top of whichever
+  // bucket the event's global equal/prorated choice puts a member in by default:
+  //   - "equal" (default): threshold 0 means no member is in the prorated bucket
+  //     by default (member.hours < 0 is never true), so everyone lands in the
+  //     equal-split branch (ceilEqualSplit) unless forceEvenSplit === false pulls
+  //     them into the prorated bucket.
+  //   - "prorated": threshold Infinity means every member (hours are always finite
+  //     and > 0 here) is in the prorated bucket by default, unless forceEvenSplit
+  //     === true pulls them into the equal-split bucket.
+  // allShortShiftMode "hours" (the function default) makes the "everyone lands in
+  // the same bucket" case fall back to plain hours-proportional shares, matching
+  // the old top-level "hours" mode's math exactly when there's no override.
   return distributePoolByHoursRule({
     totalAmount,
     members,
-    // Even split is the default; only an explicit "prorated" opts into hours-based.
-    mode: mode === "prorated" ? "hours" : "equal",
-    shortShiftThresholdHours: 0,
+    mode: "equal",
+    shortShiftThresholdHours: mode === "prorated" ? Infinity : 0,
   });
 }
 

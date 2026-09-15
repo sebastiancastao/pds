@@ -211,7 +211,7 @@ export async function POST(
                 ` : ''}
                 ${Number(member.adjustment) !== 0 ? `
                 <div class="pay-item">
-                  <span class="pay-label">Adjustments</span>
+                  <span class="pay-label">Other (Adjustments/Reimbursements)</span>
                   <span class="pay-value ${Number(member.adjustment) >= 0 ? 'positive' : 'negative'}">
                     ${Number(member.adjustment) >= 0 ? '+' : ''}$${member.adjustment}
                   </span>

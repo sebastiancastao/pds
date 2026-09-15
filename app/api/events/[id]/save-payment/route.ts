@@ -194,6 +194,7 @@ export async function POST(
       tips: vp.tips || 0,
       tips_override: vp.tipsOverride ?? null,
       tips_deleted: vp.tipsDeleted === true,
+      tips_even_split: vp.tipsEvenSplit === true ? true : vp.tipsEvenSplit === false ? false : null,
       total_pay: vp.totalPay || 0,
       updated_at: new Date().toISOString(),
     }));

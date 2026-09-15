@@ -733,13 +733,15 @@ export async function GET(
 
     const { data: eventData, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('venue, city, state')
+      .select('venue, city, state, event_type')
       .eq('id', eventId)
       .maybeSingle();
 
     if (eventError) {
       console.error('Error loading event for team distance calculation:', eventError);
     }
+
+    const isNonEventTimesheet = String((eventData as any)?.event_type || '').trim().toLowerCase() === 'special';
 
     let venueCoordinates: { latitude: number; longitude: number } | null = null;
     if (eventData?.venue) {
@@ -907,17 +909,28 @@ export async function GET(
       }
     }
 
+    // Manually-edited entries record the correcting exec's signature in the notes,
+    // e.g. "Manual edit by exec | Reason: clock not registering | Signature: <uuid>".
+    // For non-event ("special") timesheets, the worker never gets a live kiosk
+    // attestation prompt for a manually reconstructed clock-out, so genuine
+    // clock_out_attestation matches never exist. Treat that exec signature as the
+    // attestation of record for those timesheets instead of showing them as
+    // perpetually "not submitted".
+    const MANAGER_EDIT_SIGNATURE_PATTERN = /^Manual edit by \w+.*\| Signature: ([0-9a-f-]{36})/i;
+    const hasManagerEditSignature = (notes: unknown): boolean =>
+      MANAGER_EDIT_SIGNATURE_PATTERN.test(String(notes || '').trim());
+
     let hasAttestationByUserId = new Map<string, boolean>();
     let latestClockOutByUserId = new Map<
       string,
-      { timestampMs: number | null; attestationAccepted: boolean | null }
+      { timestampMs: number | null; attestationAccepted: boolean | null; hasManagerEditSignature: boolean }
     >();
     if (teamUserIds.length > 0) {
       let clockOutRows: any[] | null = null;
       let clockOutError: any = null;
       const clockOutWithAttestationResult = await supabaseAdmin
         .from('time_entries')
-        .select('id, user_id, timestamp, attestation_accepted')
+        .select('id, user_id, timestamp, attestation_accepted, notes')
         .eq('event_id', eventId)
         .eq('action', 'clock_out')
         .in('user_id', teamUserIds);
@@ -928,7 +941,7 @@ export async function GET(
       ) {
         const fallbackClockOutResult = await supabaseAdmin
           .from('time_entries')
-          .select('id, user_id, timestamp')
+          .select('id, user_id, timestamp, notes')
           .eq('event_id', eventId)
           .eq('action', 'clock_out')
           .in('user_id', teamUserIds);
@@ -958,6 +971,7 @@ export async function GET(
           const rawAttestationAccepted = (row as any)?.attestation_accepted;
           const attestationAccepted =
             typeof rawAttestationAccepted === 'boolean' ? rawAttestationAccepted : null;
+          const rowHasManagerEditSignature = hasManagerEditSignature((row as any)?.notes);
           if (timestampMs !== null) clockOutMs.push(timestampMs);
 
           const existing = clockOutRowsByUser.get(userId) || [];
@@ -968,7 +982,11 @@ export async function GET(
           const previousMs = previousLatest?.timestampMs ?? Number.NEGATIVE_INFINITY;
           const currentMs = timestampMs ?? Number.NEGATIVE_INFINITY;
           if (!previousLatest || currentMs >= previousMs) {
-            latestClockOutByUserId.set(userId, { timestampMs, attestationAccepted });
+            latestClockOutByUserId.set(userId, {
+              timestampMs,
+              attestationAccepted,
+              hasManagerEditSignature: rowHasManagerEditSignature,
+            });
           }
         }
 
@@ -1072,10 +1090,19 @@ export async function GET(
       const latestClockOut = memberUserId
         ? latestClockOutByUserId.get(memberUserId)
         : undefined;
+      // Non-event ("special") timesheets that were hand-corrected by an exec never
+      // get a genuine kiosk clock_out_attestation match (the worker's clock action
+      // failed, which is why the exec had to re-enter the times). Fall back to the
+      // exec's own manual-edit signature so these don't sit as "not submitted"
+      // forever on the Timesheet tab.
+      const isManagerAttestedNonEvent =
+        isNonEventTimesheet &&
+        latestClockOut?.attestationAccepted !== false &&
+        Boolean(latestClockOut?.hasManagerEditSignature);
       const attestationStatus = memberUserId
         ? latestClockOut?.attestationAccepted === false
             ? 'rejected'
-            : hasAttestation
+            : hasAttestation || isManagerAttestedNonEvent
               ? 'submitted'
               : 'not_submitted'
         : 'not_submitted';

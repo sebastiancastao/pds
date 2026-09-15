@@ -319,7 +319,7 @@ export async function POST(req: NextRequest) {
         ) {
           return [];
         }
-        return [{ id: workerId, hours: workerHours }];
+        return [{ id: workerId, hours: workerHours, forceEvenSplit: w?.payment_data?.tips_even_split ?? undefined }];
       });
       const commissionDistribution = distributePoolByHoursRule({
         totalAmount: commissionPoolDollars,

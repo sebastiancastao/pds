@@ -165,7 +165,30 @@ export async function GET(request: NextRequest) {
       (onboardingStatuses || []).map((r: any) => [r.profile_id, r.onboarding_completed])
     );
 
-    // --- 6. Merge: auth users are the source of truth ---
+    // --- 6. Meal waivers (6-hour / 10-hour / 12-hour, waived or rejected) ---
+    const { data: mealWaiversData, error: mealWaiversError } = await supabaseAdmin
+      .from('meal_waivers')
+      .select('user_id, waiver_type, decision, signature_date, rejection_reason')
+      .limit(100000);
+
+    if (mealWaiversError) {
+      console.error('[USERS-ALL] Error fetching meal waivers:', mealWaiversError);
+    }
+
+    const mealWaiversByUserId = new Map<string, any[]>();
+    for (const row of mealWaiversData || []) {
+      const userId = String(row.user_id);
+      const list = mealWaiversByUserId.get(userId) || [];
+      list.push({
+        waiver_type: row.waiver_type,
+        decision: row.decision ?? 'waived',
+        signature_date: row.signature_date ?? null,
+        rejection_reason: row.rejection_reason ?? null,
+      });
+      mealWaiversByUserId.set(userId, list);
+    }
+
+    // --- 7. Merge: auth users are the source of truth ---
     const transformedUsers = authUsers.map((authUser: any) => {
       const pub = publicUserMap.get(authUser.id);
       const profile = profileByUserId.get(authUser.id);
@@ -215,6 +238,7 @@ export async function GET(request: NextRequest) {
         has_download_records: userIdsWithDownloads.has(authUser.id),
         has_vendor_onboarding_record: hasOnboardingRecord,
         vendor_onboarding_completed: vendorOnboardingCompleted,
+        meal_waivers: mealWaiversByUserId.get(authUser.id) ?? [],
       };
     }).sort((a: any, b: any) => {
       const nameA = `${a.first_name} ${a.last_name}`.trim() || a.email;
