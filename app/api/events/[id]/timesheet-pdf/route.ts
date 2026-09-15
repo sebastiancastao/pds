@@ -612,7 +612,12 @@ export async function GET(
     }
 
     if (clockOutRowsByUser.size > 0) {
-      let attestationQuery = supabaseAdmin
+      const allClockOutFormIds = Array.from(clockOutRowsByUser.values())
+        .flat()
+        .map((entry) => entry.formId)
+        .filter(Boolean);
+
+      let windowQuery = supabaseAdmin
         .from("form_signatures")
         .select("user_id, form_id, signed_at")
         .eq("form_type", "clock_out_attestation")
@@ -621,17 +626,38 @@ export async function GET(
       if (clockOutMs.length > 0) {
         const minMs = Math.min(...clockOutMs) - ATTESTATION_TIME_MATCH_WINDOW_MS;
         const maxMs = Math.max(...clockOutMs) + ATTESTATION_TIME_MATCH_WINDOW_MS;
-        attestationQuery = attestationQuery
+        windowQuery = windowQuery
           .gte("signed_at", new Date(minMs).toISOString())
           .lte("signed_at", new Date(maxMs).toISOString());
       }
 
-      const { data: attestationRows, error: attestationError } = await attestationQuery;
-      if (attestationError) {
-        return NextResponse.json({ error: attestationError.message }, { status: 500 });
+      // A genuine attestation is tied forever to its clock-out row's entry id
+      // (form_id = `clock-out-<entryId>`), which never changes even when an exec
+      // later corrects that clock-out's time. Look it up directly, in addition
+      // to the time-window query above — otherwise an edit that moves the
+      // clock-out timestamp outside the window makes a real attestation
+      // disappear from the printed timesheet PDF.
+      const [directResult, windowResult] = await Promise.all([
+        allClockOutFormIds.length > 0
+          ? supabaseAdmin
+              .from("form_signatures")
+              .select("user_id, form_id, signed_at")
+              .eq("form_type", "clock_out_attestation")
+              .in("user_id", allUserIds)
+              .in("form_id", allClockOutFormIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        windowQuery,
+      ]);
+      if (directResult.error) {
+        return NextResponse.json({ error: directResult.error.message }, { status: 500 });
+      }
+      if (windowResult.error) {
+        return NextResponse.json({ error: windowResult.error.message }, { status: 500 });
       }
 
-      for (const row of attestationRows || []) {
+      const attestationRows = [...(directResult.data || []), ...(windowResult.data || [])];
+
+      for (const row of attestationRows) {
         const userId = String((row as any)?.user_id || "").trim();
         if (!userId) continue;
 

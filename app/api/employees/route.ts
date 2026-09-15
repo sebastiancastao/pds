@@ -7,10 +7,8 @@ import { safeDecrypt } from "@/lib/encryption";
 import {
   isWithinRegion,
   calculateDistanceMiles,
-  getUserRegion,
   geocodeAddress,
   delay,
-  type Region,
 } from "@/lib/geocoding";
 
 export const dynamic = 'force-dynamic';
@@ -200,30 +198,24 @@ export async function GET(req: NextRequest) {
       .select("id, name, center_lat, center_lng, radius_miles")
       .eq("is_active", true);
     if (activeRegionsError) {
-      console.error("[EMPLOYEES] Failed to load regions for geo assignment:", activeRegionsError);
+      console.error("[EMPLOYEES] Failed to load regions:", activeRegionsError);
     }
 
-    const regionsForMatching: Region[] = (activeRegions || [])
-      .map((region: any) => {
-        const centerLat = toFiniteNumber(region.center_lat);
-        const centerLng = toFiniteNumber(region.center_lng);
-        const radiusMiles = toFiniteNumber(region.radius_miles);
-        if (!region?.id || centerLat == null || centerLng == null || radiusMiles == null) return null;
-        return {
-          id: region.id,
-          name: region.name || region.id,
-          center_lat: centerLat,
-          center_lng: centerLng,
-          radius_miles: radiusMiles,
-        } as Region;
-      })
-      .filter((region: Region | null): region is Region => region != null);
+    // Name lookup only - this list page must never compute or assign a region on its
+    // own. Region assignment is manual, via the employee detail page's Region field.
     const regionNameById = new Map<string, string>(
-      regionsForMatching.map((region) => [region.id, region.name])
+      (activeRegions || [])
+        .filter((region: any) => !!region?.id)
+        .map((region: any) => [region.id, region.name || region.id])
     );
 
-    // Geocode missing coordinates so region assignment works for exports even when lat/lng
-    // were never persisted for a user profile.
+    // Geocode missing coordinates so distance-based geo filtering (below) and exports
+    // work even when lat/lng were never persisted for a user profile. This does NOT
+    // assign a region - the profiles table has a DB trigger that recomputes region_id
+    // whenever latitude/longitude changes, so we explicitly restore each profile's
+    // prior region_id right after saving coordinates (see below) to prevent that
+    // trigger from silently reassigning a vendor's region just because someone viewed
+    // the /employees page.
     const usersNeedingGeocode = (users || []).filter((user: any) => {
       const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
       const latitude = toFiniteNumber(profile?.latitude);
@@ -274,6 +266,10 @@ export async function GET(req: NextRequest) {
             continue;
           }
 
+          // Preserve whatever region_id is already on the profile (including none) -
+          // this route must never change region assignment.
+          const preGeocodeRegionId: string | null = profile?.region_id ?? null;
+
           const { error: updateError } = await supabaseAdmin
             .from("profiles")
             .update({
@@ -288,6 +284,21 @@ export async function GET(req: NextRequest) {
               error: updateError.message,
             });
             continue;
+          }
+
+          // The profiles table auto-recomputes region_id whenever latitude/longitude
+          // changes (DB trigger). Restore the prior value in a follow-up update (which
+          // does not touch latitude/longitude, so the trigger is a no-op here) so
+          // simply viewing /employees can never reassign an employee's region.
+          const { error: restoreRegionError } = await supabaseAdmin
+            .from("profiles")
+            .update({ region_id: preGeocodeRegionId })
+            .eq("user_id", user.id);
+          if (restoreRegionError) {
+            console.error("[EMPLOYEES] Failed to restore region_id after geocode:", {
+              userId: user.id,
+              error: restoreRegionError.message,
+            });
           }
 
           profile.latitude = geocodeResult.latitude;
@@ -318,29 +329,17 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const regionBackfills = new Map<string, string>();
-    // Transform users into employee format and derive region_id from geocoded coordinates.
+    // Transform users into employee format. region_id/region_name always reflect the
+    // profile's actual (manually assigned) region - this list is never allowed to
+    // compute or override it from coordinates.
     let employees: Employee[] = (users || []).map((user: any) => {
       const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
       const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : "N/A";
       const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : "N/A";
       const city = toPlainText(profile?.city) || null;
       const state = toPlainText(profile?.state) || "N/A";
-      const latitude = toFiniteNumber(profile?.latitude);
-      const longitude = toFiniteNumber(profile?.longitude);
 
-      const cachedRegionId: string | null = profile?.region_id || null;
-      const matchedRegion =
-        latitude != null && longitude != null && regionsForMatching.length > 0
-          ? getUserRegion(latitude, longitude, regionsForMatching)
-          : null;
-
-      // Prefer live geocoded match when available, otherwise keep cached assignment.
-      const resolvedRegionId: string | null = matchedRegion?.id || cachedRegionId;
-
-      if (matchedRegion?.id && matchedRegion.id !== cachedRegionId) {
-        regionBackfills.set(user.id, matchedRegion.id);
-      }
+      const resolvedRegionId: string | null = profile?.region_id || null;
 
       const salaryRecord = salaryByUserId.get(user.id);
       return {
@@ -368,24 +367,6 @@ export async function GET(req: NextRequest) {
         customer_satisfaction: 0,
       };
     });
-
-    if (regionBackfills.size > 0) {
-      await Promise.all(
-        Array.from(regionBackfills.entries()).map(async ([userId, matchedRegionId]) => {
-          const { error: updateError } = await supabaseAdmin
-            .from("profiles")
-            .update({ region_id: matchedRegionId })
-            .eq("user_id", userId);
-          if (updateError) {
-            console.error("[EMPLOYEES] Failed to backfill region_id:", {
-              userId,
-              matchedRegionId,
-              error: updateError.message,
-            });
-          }
-        })
-      );
-    }
 
     console.log("[EMPLOYEES] 📦 Processed employees (after decryption):", employees.length);
 

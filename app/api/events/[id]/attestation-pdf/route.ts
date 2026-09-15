@@ -275,19 +275,50 @@ export async function GET(
     if (clockOutEntries.length > 0) {
       const minMs = Math.min(...clockOutEntries.map((row) => row.timestampMs)) - ATTESTATION_TIME_MATCH_WINDOW_MS;
       const maxMs = Math.max(...clockOutEntries.map((row) => row.timestampMs)) + ATTESTATION_TIME_MATCH_WINDOW_MS;
+      const clockOutFormIds = clockOutEntries.map((row) => row.formId).filter(Boolean);
+      const attestationSelect =
+        "id, user_id, signed_at, ip_address, is_valid, form_id, signature_data, signature_type";
 
-      const { data: attestations } = await supabaseAdmin
-        .from("form_signatures")
-        .select("id, user_id, signed_at, ip_address, is_valid, form_id, signature_data, signature_type")
-        .eq("form_type", "clock_out_attestation")
-        .eq("user_id", vendorId)
-        .gte("signed_at", new Date(minMs).toISOString())
-        .lte("signed_at", new Date(maxMs).toISOString())
-        .order("signed_at", { ascending: false })
-        .limit(25);
+      // A genuine attestation is tied forever to its clock-out row's entry id
+      // (form_id = `clock-out-<entryId>`), which never changes even when an exec
+      // later corrects that clock-out's time. Look it up directly, in addition to
+      // the time-window query below — otherwise an edit that moves the clock-out
+      // timestamp more than the match window away makes the real attestation
+      // invisible, and the PDF falls back to showing the exec's own correction
+      // signature as if it were the worker's attestation.
+      const [directResult, windowResult] = await Promise.all([
+        clockOutFormIds.length > 0
+          ? supabaseAdmin
+              .from("form_signatures")
+              .select(attestationSelect)
+              .eq("form_type", "clock_out_attestation")
+              .eq("user_id", vendorId)
+              .in("form_id", clockOutFormIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        supabaseAdmin
+          .from("form_signatures")
+          .select(attestationSelect)
+          .eq("form_type", "clock_out_attestation")
+          .eq("user_id", vendorId)
+          .gte("signed_at", new Date(minMs).toISOString())
+          .lte("signed_at", new Date(maxMs).toISOString())
+          .order("signed_at", { ascending: false })
+          .limit(25),
+      ]);
+
+      const seenAttestationIds = new Set<string>();
+      const attestations: any[] = [];
+      for (const row of [...(directResult.data || []), ...(windowResult.data || [])]) {
+        const rowId = String((row as any)?.id || "");
+        if (rowId) {
+          if (seenAttestationIds.has(rowId)) continue;
+          seenAttestationIds.add(rowId);
+        }
+        attestations.push(row);
+      }
 
       att =
-        (attestations || []).find((row: any) => {
+        attestations.find((row: any) => {
           const formId = String(row?.form_id || "").trim();
           const signedAtMs = Date.parse(String(row?.signed_at || ""));
           const directFormMatch = clockOutEntries.some((clockOut) => clockOut.formId === formId);

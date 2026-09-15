@@ -526,23 +526,45 @@ async function loadAttestationState(userId: string, entries: TimeEntryRow[]) {
 
   const minMs = Math.min(...clockOutEntries.map((entry) => entry.timestampMs)) - ATTESTATION_TIME_MATCH_WINDOW_MS;
   const maxMs = Math.max(...clockOutEntries.map((entry) => entry.timestampMs)) + ATTESTATION_TIME_MATCH_WINDOW_MS;
+  const clockOutFormIds = clockOutEntries.map((entry) => entry.formId).filter(Boolean);
 
-  const { data: attestationRows, error: attestationError } = await supabaseAdmin
-    .from("form_signatures")
-    .select("form_id, signed_at")
-    .eq("form_type", "clock_out_attestation")
-    .eq("user_id", userId)
-    .gte("signed_at", new Date(minMs).toISOString())
-    .lte("signed_at", new Date(maxMs).toISOString())
-    .order("signed_at", { ascending: false })
-    .limit(25);
+  // A genuine attestation is tied forever to its clock-out row's entry id
+  // (form_id = `clock-out-<entryId>`), which never changes even when an exec
+  // later corrects that clock-out's time. Look it up directly, in addition to
+  // the time-window query below — otherwise an edit that moves the clock-out
+  // timestamp outside the window would make a real attestation disappear from
+  // the worker's own timesheet view.
+  const [directResult, windowResult] = await Promise.all([
+    clockOutFormIds.length > 0
+      ? supabaseAdmin
+          .from("form_signatures")
+          .select("form_id, signed_at")
+          .eq("form_type", "clock_out_attestation")
+          .eq("user_id", userId)
+          .in("form_id", clockOutFormIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    supabaseAdmin
+      .from("form_signatures")
+      .select("form_id, signed_at")
+      .eq("form_type", "clock_out_attestation")
+      .eq("user_id", userId)
+      .gte("signed_at", new Date(minMs).toISOString())
+      .lte("signed_at", new Date(maxMs).toISOString())
+      .order("signed_at", { ascending: false })
+      .limit(25),
+  ]);
 
-  if (attestationError) {
-    throw new Error(attestationError.message);
+  if (directResult.error) {
+    throw new Error(directResult.error.message);
+  }
+  if (windowResult.error) {
+    throw new Error(windowResult.error.message);
   }
 
+  const attestationRows = [...(directResult.data || []), ...(windowResult.data || [])];
+
   const matchedAttestation =
-    (attestationRows || []).find((row: any) => {
+    attestationRows.find((row: any) => {
       const formId = String(row?.form_id || "").trim();
       const signedAtMs = Date.parse(String(row?.signed_at || ""));
       const directFormMatch = clockOutEntries.some((clockOut) => clockOut.formId === formId);

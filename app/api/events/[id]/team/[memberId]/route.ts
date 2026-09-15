@@ -279,7 +279,9 @@ export async function DELETE(
       );
 
       if (attestationEligibleClockOutRows.length > 0) {
-        let attestationQuery = supabaseAdmin
+        const eligibleFormIds = attestationEligibleClockOutRows.map((row) => row.formId).filter(Boolean);
+
+        let windowQuery = supabaseAdmin
           .from("form_signatures")
           .select("id, form_id, signed_at")
           .eq("form_type", "clock_out_attestation")
@@ -291,18 +293,40 @@ export async function DELETE(
         if (validClockOutMs.length > 0) {
           const minMs = Math.min(...validClockOutMs) - ATTESTATION_TIME_MATCH_WINDOW_MS;
           const maxMs = Math.max(...validClockOutMs) + ATTESTATION_TIME_MATCH_WINDOW_MS;
-          attestationQuery = attestationQuery
+          windowQuery = windowQuery
             .gte("signed_at", new Date(minMs).toISOString())
             .lte("signed_at", new Date(maxMs).toISOString());
         }
 
-        const { data: attestationRows, error: attestationError } = await attestationQuery;
+        // A genuine attestation is tied forever to its clock-out row's entry id
+        // (form_id = `clock-out-<entryId>`), which never changes even when an
+        // exec later corrects that clock-out's time. Look it up directly, in
+        // addition to the time-window query above — otherwise an edit that moves
+        // the clock-out timestamp outside the window would make a real
+        // attestation invisible here, wrongly allowing the uninvite this check
+        // exists to block.
+        const [directResult, windowResult] = await Promise.all([
+          eligibleFormIds.length > 0
+            ? supabaseAdmin
+                .from("form_signatures")
+                .select("id, form_id, signed_at")
+                .eq("form_type", "clock_out_attestation")
+                .eq("user_id", vendorId)
+                .in("form_id", eligibleFormIds)
+            : Promise.resolve({ data: [] as any[], error: null }),
+          windowQuery,
+        ]);
 
-        if (attestationError) {
-          return NextResponse.json({ error: attestationError.message }, { status: 500 });
+        if (directResult.error) {
+          return NextResponse.json({ error: directResult.error.message }, { status: 500 });
+        }
+        if (windowResult.error) {
+          return NextResponse.json({ error: windowResult.error.message }, { status: 500 });
         }
 
-        const hasAttestationForEvent = (attestationRows || []).some((row: any) => {
+        const attestationRows = [...(directResult.data || []), ...(windowResult.data || [])];
+
+        const hasAttestationForEvent = attestationRows.some((row: any) => {
           const formId = String(row?.form_id || "").trim();
           const signedAtMs = Date.parse(String(row?.signed_at || ""));
           const directFormMatch = attestationEligibleClockOutRows.some((clockOut) => clockOut.formId === formId);
