@@ -24,7 +24,8 @@ type FormKey =
   | 'handbook'
   | 'uniform-policy'
   | 'home-venue-assignment'
-  | 'attendance-scheduling-policy';
+  | 'attendance-scheduling-policy'
+  | 'smoking-vaping-policy';
 
 const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>> = {
   'adp-deposit': { file: 'ADP-Employee-Direct-Deposit-Form (1).pdf', downloadName: 'ADP_Direct_Deposit.pdf' },
@@ -42,6 +43,7 @@ const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>>
   'uniform-policy': { file: 'uniform-package-policy.pdf', downloadName: 'Uniform_Package_Dress_Code_Policy.pdf' },
   'home-venue-assignment': { file: 'home-venue-assignment.pdf', downloadName: 'Home_Venue_Assignment.pdf' },
   'attendance-scheduling-policy': { file: 'attendance-scheduling-policy.pdf', downloadName: 'PDS_Attendance_Scheduling_Policy.pdf' },
+  'smoking-vaping-policy': { file: 'smoking-vaping-policy.pdf', downloadName: 'PDS_Smoking_and_Vaping_Policy.pdf' },
 };
 
 const CA_STATE_TAX_FILE = { file: 'de4_State Tax Form.pdf', downloadName: 'State_Tax.pdf' };
@@ -85,6 +87,7 @@ const PLACEHOLDER_TITLES: Record<FormKey, string> = {
   'uniform-policy': 'Uniform Package / Dress Code Policy',
   'home-venue-assignment': 'Home Venue Assignment',
   'attendance-scheduling-policy': 'Part-Time Employee Attendance & Scheduling Policy',
+  'smoking-vaping-policy': 'Smoking & Vaping Policy',
 };
 
 const PLACEHOLDER_MESSAGE: Partial<Record<FormKey, string>> & { default: string } = {

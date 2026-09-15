@@ -79,6 +79,10 @@ export function getCustomFormPdfProxyPathFromStoragePath(storagePath?: string | 
     return `/api/payroll-packet-common/meal-period-rest-break-acknowledgement?state=${parsed.stateCode}`;
   }
 
+  if (parsed.formType === 'smoking-vaping-policy') {
+    return `/api/payroll-packet-common/smoking-vaping-policy?state=${parsed.stateCode}`;
+  }
+
   if (parsed.mode === 'packet') {
     return `/api/payroll-packet-${parsed.stateCode}/${parsed.rawFormType}`;
   }

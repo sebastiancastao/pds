@@ -17,7 +17,8 @@ export type KnownCustomFlatFormLayout =
   | 'attestation'
   | 'meal-break'
   | 'home-venue-letter'
-  | 'home-venue-acknowledgment';
+  | 'home-venue-acknowledgment'
+  | 'smoking-vaping-policy';
 
 type PdfRect = {
   x: number;
@@ -65,6 +66,19 @@ const HOME_VENUE_ACK_SIGNATURE_RECT: PdfRect = {
   height: 22,
 };
 
+// Coordinates measured directly from pdfs/smoking-vaping-policy.pdf (page 2, 612x792pt)
+// via pdfjs text/path extraction: the "Employee Signature" / "Date" underlines sit at
+// y=573.9 (x=66.6-302.5 and x=309.6-545.6), and the "Employee Name (Printed)" underline
+// sits at y=528.7 (x=66.6-302.5).
+const SMOKING_VAPING_SIGNATURE_RECT: PdfRect = {
+  x: 66.6,
+  y: 574,
+  width: 235.9,
+  height: 20,
+};
+const SMOKING_VAPING_DATE_LINE = { x1: 309.6, x2: 545.6, y: 573.9 };
+const SMOKING_VAPING_NAME_LINE = { x1: 66.6, x2: 302.5, y: 528.7 };
+
 function normalizeDescriptor(value?: string | null) {
   return (value || '')
     .toLowerCase()
@@ -93,6 +107,10 @@ export function getKnownCustomFlatFormLayout(
   const mentionsBreak = /\bbreak(?:time)?\b|\brest\b/.test(combined);
   if (mentionsMeal && mentionsBreak) {
     return 'meal-break';
+  }
+
+  if (/\bsmoking\b/.test(combined) && /\bvaping\b/.test(combined)) {
+    return 'smoking-vaping-policy';
   }
 
   return null;
@@ -355,6 +373,9 @@ function getSignatureTarget(
   if (layout === 'meal-break') {
     return { page, rect: MEAL_BREAK_SIGNATURE_RECT };
   }
+  if (layout === 'smoking-vaping-policy') {
+    return { page, rect: SMOKING_VAPING_SIGNATURE_RECT };
+  }
   return null;
 }
 
@@ -387,6 +408,12 @@ async function stampKnownLines(
   if (layout === 'meal-break') {
     drawTextOnPrintedLine(lastPage, font, employeeName, { x1: 215, x2: 347, y: 403 });
     drawTextOnPrintedLine(lastPage, font, dateText, { x1: 131, x2: 263, y: 352 });
+    return;
+  }
+
+  if (layout === 'smoking-vaping-policy') {
+    drawTextOnPrintedLine(lastPage, font, dateText, SMOKING_VAPING_DATE_LINE);
+    drawTextOnPrintedLine(lastPage, font, employeeName, SMOKING_VAPING_NAME_LINE);
     return;
   }
 

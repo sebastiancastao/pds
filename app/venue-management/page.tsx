@@ -12,6 +12,12 @@ type Venue = {
   full_address: string | null;
   latitude: number | null;
   longitude: number | null;
+  region_id: string | null;
+};
+
+type Region = {
+  id: string;
+  name: string;
 };
 
 type Manager = {
@@ -40,6 +46,7 @@ export default function VenueManagementPage() {
   const [venues, setVenues] = useState<Venue[]>([]);
   const [managers, setManagers] = useState<Manager[]>([]);
   const [assignments, setAssignments] = useState<VenueAssignment[]>([]);
+  const [regions, setRegions] = useState<Region[]>([]);
   const [userRole, setUserRole] = useState<string | null>(null);
 
   // Create venue modal state
@@ -49,6 +56,7 @@ export default function VenueManagementPage() {
     city: "",
     state: "",
     full_address: "",
+    region_id: "",
   });
 
   // Assign manager modal state
@@ -94,6 +102,22 @@ export default function VenueManagementPage() {
         if (venuesRes.ok) {
           const venuesData = await venuesRes.json();
           setVenues(venuesData.venues || []);
+        }
+
+        // Load regions (used by the venue region dropdown)
+        const regionsRes = await fetch("/api/regions", {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
+        if (regionsRes.ok) {
+          const regionsData = await regionsRes.json();
+          const activeRegions = (regionsData.regions || []).filter(
+            (r: any) => r.is_active !== false
+          );
+          setRegions(activeRegions);
+        } else {
+          console.error("Error loading regions:", await regionsRes.text());
         }
 
         // Load managers
@@ -171,8 +195,8 @@ export default function VenueManagementPage() {
 
   // Create venue
   const handleCreateVenue = async () => {
-    if (!newVenue.venue_name || !newVenue.city || !newVenue.state) {
-      alert("Please fill in all required fields");
+    if (!newVenue.venue_name || !newVenue.city || !newVenue.state || !newVenue.region_id) {
+      alert("Please fill in all required fields, including Region");
       return;
     }
 
@@ -192,7 +216,7 @@ export default function VenueManagementPage() {
         const result = await response.json();
         setVenues([...venues, result.venue]);
         setShowCreateVenue(false);
-        setNewVenue({ venue_name: "", city: "", state: "", full_address: "" });
+        setNewVenue({ venue_name: "", city: "", state: "", full_address: "", region_id: "" });
         alert("Venue created successfully!");
       } else {
         const error = await response.json();
@@ -314,8 +338,8 @@ export default function VenueManagementPage() {
 
   // Edit venue
   const handleEditVenue = async () => {
-    if (!editingVenue || !editingVenue.venue_name || !editingVenue.city || !editingVenue.state) {
-      alert("Please fill in all required fields");
+    if (!editingVenue || !editingVenue.venue_name || !editingVenue.city || !editingVenue.state || !editingVenue.region_id) {
+      alert("Please fill in all required fields, including Region");
       return;
     }
 
@@ -334,6 +358,7 @@ export default function VenueManagementPage() {
           city: editingVenue.city,
           state: editingVenue.state,
           full_address: editingVenue.full_address,
+          region_id: editingVenue.region_id,
         }),
       });
 
@@ -445,6 +470,15 @@ export default function VenueManagementPage() {
                     </p>
                     {venue.full_address && (
                       <p className="text-xs text-gray-500 mt-1">{venue.full_address}</p>
+                    )}
+                    {venue.region_id ? (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Region: {regions.find((r) => r.id === venue.region_id)?.name || "Unknown"}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-red-500 mt-1 font-medium">
+                        No region set — Team Selection Closed will fail for this venue
+                      </p>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
@@ -581,6 +615,27 @@ export default function VenueManagementPage() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Region *
+                  </label>
+                  <select
+                    value={newVenue.region_id}
+                    onChange={(e) => setNewVenue({ ...newVenue, region_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select a region</option>
+                    {regions.map((region) => (
+                      <option key={region.id} value={region.id}>
+                        {region.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Required so this venue's vendor lookups (e.g. Team Selection Closed) work correctly.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
                     Full Address (Optional)
                   </label>
                   <input
@@ -597,7 +652,7 @@ export default function VenueManagementPage() {
                 <button
                   onClick={() => {
                     setShowCreateVenue(false);
-                    setNewVenue({ venue_name: "", city: "", state: "", full_address: "" });
+                    setNewVenue({ venue_name: "", city: "", state: "", full_address: "", region_id: "" });
                   }}
                   className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
                 >
@@ -659,6 +714,27 @@ export default function VenueManagementPage() {
                     placeholder="CA"
                     maxLength={2}
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Region *
+                  </label>
+                  <select
+                    value={editingVenue.region_id || ""}
+                    onChange={(e) => setEditingVenue({ ...editingVenue, region_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select a region</option>
+                    {regions.map((region) => (
+                      <option key={region.id} value={region.id}>
+                        {region.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Required so this venue's vendor lookups (e.g. Team Selection Closed) work correctly.
+                  </p>
                 </div>
 
                 <div>

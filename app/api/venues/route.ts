@@ -71,11 +71,20 @@ export async function POST(request: NextRequest) {
     const venue_name = typeof body.venue_name === 'string' ? body.venue_name.trim() : body.venue_name;
     const city = typeof body.city === 'string' ? body.city.trim() : body.city;
     const state = typeof body.state === 'string' ? body.state.trim() : body.state;
+    // region_id is required so the venue is immediately usable by region-scoped
+    // vendor lookups (e.g. the event-dashboard "Team Selection Closed" flow,
+    // which hard-fails with a 422 when a venue has no region configured).
+    const region_id = typeof body.region_id === 'string' ? body.region_id.trim() : body.region_id;
 
     // Validation
     if (!venue_name || !city || !state) {
       return NextResponse.json({
         error: 'Missing required fields: venue_name, city, state'
+      }, { status: 400 });
+    }
+    if (!region_id) {
+      return NextResponse.json({
+        error: 'Region is required'
       }, { status: 400 });
     }
 
@@ -88,7 +97,8 @@ export async function POST(request: NextRequest) {
         state,
         full_address,
         latitude,
-        longitude
+        longitude,
+        region_id
       })
       .select()
       .single();
@@ -211,6 +221,9 @@ export async function PATCH(request: NextRequest) {
     const venue_name = typeof body.venue_name === 'string' ? body.venue_name.trim() : body.venue_name;
     const city = typeof body.city === 'string' ? body.city.trim() : body.city;
     const state = typeof body.state === 'string' ? body.state.trim() : body.state;
+    // region_id is required so the venue stays usable by region-scoped vendor
+    // lookups (e.g. the event-dashboard "Team Selection Closed" flow).
+    const region_id = typeof body.region_id === 'string' ? body.region_id.trim() : body.region_id;
 
     if (!id) {
       return NextResponse.json({ error: 'Venue ID is required' }, { status: 400 });
@@ -220,6 +233,11 @@ export async function PATCH(request: NextRequest) {
     if (!venue_name || !city || !state) {
       return NextResponse.json({
         error: 'Missing required fields: venue_name, city, state'
+      }, { status: 400 });
+    }
+    if (!region_id) {
+      return NextResponse.json({
+        error: 'Region is required'
       }, { status: 400 });
     }
 
@@ -232,7 +250,8 @@ export async function PATCH(request: NextRequest) {
         state,
         full_address,
         latitude,
-        longitude
+        longitude,
+        region_id
       })
       .eq('id', id)
       .select()
