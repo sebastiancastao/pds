@@ -149,7 +149,7 @@ function getMealWaiver(user: User, type: "6_hour" | "10_12"): MealWaiverRecord |
 function getMealWaiverBadgeStyles(decision?: MealWaiverDecision | null) {
   switch (decision) {
     case "waived":   return { backgroundColor: "#dcfce7", color: "#15803d" };
-    case "rejected": return { backgroundColor: "#dbeafe", color: "#1d4ed8" };
+    case "rejected": return { backgroundColor: "#fee2e2", color: "#b91c1c" };
     default:         return { backgroundColor: "#f3f4f6", color: "#6b7280" };
   }
 }
