@@ -1,7 +1,7 @@
 // app/hr/employees/[id]/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
@@ -64,6 +64,9 @@ type SickLeaveStatus = "pending" | "approved" | "denied";
 
 type SickLeaveEntry = {
   id: string;
+  event_id: string | null;
+  event_name: string | null;
+  event_date: string | null;
   start_date: string | null;
   end_date: string | null;
   duration_hours: number;
@@ -371,6 +374,15 @@ export default function EmployeeProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+  const [sickRequestHours, setSickRequestHours] = useState<string>("");
+  const [sickRequestEventId, setSickRequestEventId] = useState<string>("");
+  const [sickRequestReason, setSickRequestReason] = useState<string>("");
+  const [sickRequestDate, setSickRequestDate] = useState<string>(
+    () => new Date().toISOString().slice(0, 10)
+  );
+  const [submittingSickRequest, setSubmittingSickRequest] = useState(false);
+  const [sickRequestError, setSickRequestError] = useState("");
+  const [sickRequestSuccess, setSickRequestSuccess] = useState("");
   // Tracks an in-flight confirm/decline response for a team invitation (keyed by invitation id).
   const [respondingInvitationId, setRespondingInvitationId] = useState<string | null>(null);
   // Per-invitation feedback shown inline after a confirm/decline attempt (keyed by invitation id).
@@ -1094,6 +1106,37 @@ export default function EmployeeProfilePage() {
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
   const sickLeavePaysheets = sickLeaveSummary?.paysheets ?? [];
 
+  // Events the employee can attach a sick leave request to (deduped invitations,
+  // most recent event first)
+  const sickRequestEventOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: {
+      event_id: string;
+      event_date: string | null;
+      end_date: string | null;
+      label: string;
+    }[] = [];
+    for (const inv of eventInvitations) {
+      if (!inv.event_id || seen.has(inv.event_id)) continue;
+      seen.add(inv.event_id);
+      const datePart = inv.event_date ? ` (${formatEventDate(inv.event_date)})` : "";
+      options.push({
+        event_id: inv.event_id,
+        event_date: inv.event_date,
+        end_date: inv.end_date ?? null,
+        label: `${inv.event_name || "Unnamed event"}${datePart}`,
+      });
+    }
+    return options.sort((a, b) => (b.event_date || "").localeCompare(a.event_date || ""));
+  }, [eventInvitations]);
+
+  const selectedSickRequestEvent = sickRequestEventOptions.find(
+    (option) => option.event_id === sickRequestEventId
+  );
+  const sickRequestMinDate = selectedSickRequestEvent?.event_date ?? undefined;
+  const sickRequestMaxDate =
+    selectedSickRequestEvent?.end_date ?? selectedSickRequestEvent?.event_date ?? undefined;
+
   // Build calendar dot map
   const { calDots, calEventDetails, calRegionEventDetails } = useMemo(() => {
     const map = new Map<string, Set<"event" | "shift" | "sick" | "available" | "unavailable" | "region_event">>();
@@ -1148,6 +1191,149 @@ export default function EmployeeProfilePage() {
   const sickLeaveEarnedOnlyHours = sickLeaveAccruedHours - sickLeaveCarryOverHours;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
   const sickLeaveRequestCount = sickLeaveEntries.length;
+
+  const toSickLeaveEntry = (record: any): SickLeaveEntry | null => {
+    if (!record?.id) return null;
+    const duration = Number(record?.duration_hours ?? 0);
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+
+    return {
+      id: String(record.id),
+      event_id: record.event_id ? String(record.event_id) : null,
+      event_name: record.event_name ? String(record.event_name) : null,
+      event_date: record.event_date ? String(record.event_date) : null,
+      start_date: record.start_date ? String(record.start_date) : null,
+      end_date: record.end_date ? String(record.end_date) : null,
+      duration_hours: Number(duration.toFixed(2)),
+      status: String(record.status || "pending").toLowerCase(),
+      reason: record.reason ? String(record.reason) : null,
+      approved_at: record.approved_at ? String(record.approved_at) : null,
+      approved_by: record.approved_by ? String(record.approved_by) : null,
+      created_at: record.created_at ? String(record.created_at) : null,
+    };
+  };
+
+  const appendSickLeaveEntry = (entry: SickLeaveEntry) => {
+    setSummary((prev) => {
+      if (!prev) return prev;
+
+      const nextEntries = [entry, ...(prev.sick_leave?.entries || [])];
+      const nextTotalHours = Number(
+        ((prev.sick_leave?.total_hours || 0) + entry.duration_hours).toFixed(2)
+      );
+      const nextTotalDays = Number((nextTotalHours / 8).toFixed(2));
+      const nextBalanceHours = Number(
+        Math.max(0, (prev.sick_leave?.balance_hours || 0) - entry.duration_hours).toFixed(2)
+      );
+      const nextBalanceDays = Number((nextBalanceHours / 8).toFixed(2));
+
+      return {
+        ...prev,
+        sick_leave: {
+          ...prev.sick_leave,
+          entries: nextEntries,
+          total_hours: nextTotalHours,
+          total_days: nextTotalDays,
+          balance_hours: nextBalanceHours,
+          balance_days: nextBalanceDays,
+        },
+      };
+    });
+  };
+
+  const submitSickLeaveRequest = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setSickRequestError("");
+    setSickRequestSuccess("");
+
+    const parsedHours = Number(sickRequestHours);
+    if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+      setSickRequestError("Please enter a valid number of hours.");
+      return;
+    }
+
+    if (!sickRequestDate) {
+      setSickRequestError("Please choose a date.");
+      return;
+    }
+
+    if (!sickRequestEventId) {
+      setSickRequestError("Please select the event this sick leave applies to.");
+      return;
+    }
+
+    const trimmedSickRequestReason = sickRequestReason.trim();
+    if (!trimmedSickRequestReason) {
+      setSickRequestError("Please provide a reason for this sick leave request.");
+      return;
+    }
+
+    if (
+      (sickRequestMinDate && sickRequestDate < sickRequestMinDate) ||
+      (sickRequestMaxDate && sickRequestDate > sickRequestMaxDate)
+    ) {
+      setSickRequestError(
+        sickRequestMaxDate && sickRequestMaxDate !== sickRequestMinDate
+          ? `The date must fall within the selected event (${formatEventDate(sickRequestMinDate)} — ${formatEventDate(sickRequestMaxDate)}).`
+          : `The date must match the selected event (${formatEventDate(sickRequestMinDate)}).`
+      );
+      return;
+    }
+
+    setSubmittingSickRequest(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const res = await fetch("/api/sick-leaves/request", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
+        },
+        body: JSON.stringify({
+          hours: parsedHours,
+          date: sickRequestDate,
+          event_id: sickRequestEventId,
+          reason: trimmedSickRequestReason,
+          employee_id: employeeId,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      const insertedEntry = toSickLeaveEntry(data?.record);
+
+      if (!res.ok) {
+        if (insertedEntry) {
+          appendSickLeaveEntry(insertedEntry);
+          setSickRequestSuccess(
+            "Request saved, but notification email failed. Please contact HR if needed."
+          );
+          setSickRequestHours("");
+          setSickRequestEventId("");
+          setSickRequestReason("");
+          return;
+        }
+        throw new Error(data?.error || "Failed to submit sick leave request");
+      }
+
+      if (insertedEntry) {
+        appendSickLeaveEntry(insertedEntry);
+      }
+
+      setSickRequestSuccess("Sick leave request sent successfully.");
+      setSickRequestHours("");
+      setSickRequestEventId("");
+      setSickRequestReason("");
+    } catch (error: any) {
+      setSickRequestError(error?.message || "Failed to submit sick leave request");
+    } finally {
+      setSubmittingSickRequest(false);
+    }
+  };
 
   const createPdfBlobUrl = (base64Data: string) => {
     const byteCharacters = atob(base64Data);
@@ -2645,91 +2831,188 @@ export default function EmployeeProfilePage() {
                   {sickLeaveRequestCount} request{sickLeaveRequestCount === 1 ? "" : "s"}
                 </span>
               </div>
-              <div className="apple-card p-6 space-y-6">
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-xl p-6 border border-emerald-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-emerald-700">Total Hours Worked</div>
-                    <div className="text-3xl font-bold text-emerald-900">{formatHours(summary?.total_hours ?? 0)} hrs</div>
+              <div className="apple-card p-4 space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-100">
+                    <div className="text-xs font-medium text-emerald-700">Total Hours Worked</div>
+                    <div className="text-xl font-bold text-emerald-900">{formatHours(summary?.total_hours ?? 0)} hrs</div>
                   </div>
-                  <div className="bg-gradient-to-br from-violet-50 to-violet-100 rounded-xl p-6 border border-violet-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-violet-700">Carry Over</div>
-                    <div className="text-3xl font-bold text-violet-900">{formatHours(sickLeaveCarryOverHours)} hrs</div>
+                  <div className="bg-violet-50 rounded-lg p-3 border border-violet-100">
+                    <div className="text-xs font-medium text-violet-700">Carry Over</div>
+                    <div className="text-xl font-bold text-violet-900">{formatHours(sickLeaveCarryOverHours)} hrs</div>
                   </div>
-                  <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6 border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-indigo-700">Earned</div>
-                    <div className="text-3xl font-bold text-indigo-900">
-                      {formatHours(sickLeaveEarnedOnlyHours)} hrs
-                    </div>
+                  <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100">
+                    <div className="text-xs font-medium text-indigo-700">Earned</div>
+                    <div className="text-xl font-bold text-indigo-900">{formatHours(sickLeaveEarnedOnlyHours)} hrs</div>
                   </div>
-                  <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-xl p-6 border border-pink-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-pink-700">Used</div>
-                    <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
+                  <div className="bg-pink-50 rounded-lg p-3 border border-pink-100">
+                    <div className="text-xs font-medium text-pink-700">Used</div>
+                    <div className="text-xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
                   </div>
-                  <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-6 border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-amber-700">Balance</div>
-                    <div className="text-3xl font-bold text-amber-900">{formatHours(sickLeaveBalanceHours)} hrs</div>
+                  <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+                    <div className="text-xs font-medium text-amber-700">Balance</div>
+                    <div className="text-xl font-bold text-amber-900">{formatHours(sickLeaveBalanceHours)} hrs</div>
                   </div>
                 </div>
 
-                <div className="mt-6 flex flex-wrap gap-6 text-sm text-gray-500">
-                  <div>
-                    <p className="text-xs uppercase keeping-wide text-gray-400">Earned</p>
-                    <p className="text-lg font-semibold text-gray-900">
-                      {formatHours(sickLeaveEarnedOnlyHours)} hours
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Based on {formatHours(summary?.total_hours ?? 0)} total hours worked
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase keeping-wide text-gray-400">Available balance</p>
-                    <p className="text-lg font-semibold text-gray-900">
-                      {formatHours(sickLeaveBalanceHours)} hours
-                    </p>
-                  </div>
-                  <p className="text-xs text-gray-400 self-end">
-                    Employees earn 1 hour of sick leave per 30 hours worked.
-                  </p>
-                  <p className="text-xs text-amber-600 font-medium self-end">
-                    Maximum sick leave allowed is 48 hours per year.
-                  </p>
+                <p className="text-xs text-gray-400">1 hr earned per 30 hrs worked</p>
+                <p className="text-xs text-amber-600 font-medium">Maximum sick leave allowed is 48 hours per year.</p>
+
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+                  <p className="text-sm font-semibold text-blue-900 mb-2">Request Sick Leave</p>
+
+                  <form onSubmit={submitSickLeaveRequest} className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                    <div>
+                      <label
+                        htmlFor="sick-request-event"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Event
+                      </label>
+                      <select
+                        id="sick-request-event"
+                        required
+                        value={sickRequestEventId}
+                        onChange={(event) => {
+                          const nextEventId = event.target.value;
+                          setSickRequestEventId(nextEventId);
+                          const option = sickRequestEventOptions.find(
+                            (opt) => opt.event_id === nextEventId
+                          );
+                          if (option?.event_date) {
+                            setSickRequestDate(option.event_date.slice(0, 10));
+                          }
+                        }}
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      >
+                        <option value="" disabled>
+                          {sickRequestEventOptions.length === 0
+                            ? "No events assigned"
+                            : "Select an event"}
+                        </option>
+                        {sickRequestEventOptions.map((option) => (
+                          <option key={option.event_id} value={option.event_id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="sick-request-hours"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Sick Leave Hours
+                      </label>
+                      <input
+                        id="sick-request-hours"
+                        type="number"
+                        inputMode="decimal"
+                        min="0.25"
+                        max="24"
+                        step="0.25"
+                        required
+                        value={sickRequestHours}
+                        onChange={(event) => setSickRequestHours(event.target.value)}
+                        placeholder="0"
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="sick-request-date"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Date
+                      </label>
+                      <input
+                        id="sick-request-date"
+                        type="date"
+                        required
+                        min={sickRequestMinDate}
+                        max={sickRequestMaxDate}
+                        value={sickRequestDate}
+                        onChange={(event) => setSickRequestDate(event.target.value)}
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      />
+                      {sickRequestMinDate && (
+                        <p className="mt-1 text-[11px] text-blue-700">
+                          Event runs {formatEventDate(sickRequestMinDate)}
+                          {sickRequestMaxDate && sickRequestMaxDate !== sickRequestMinDate
+                            ? ` — ${formatEventDate(sickRequestMaxDate)}`
+                            : ""}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="md:col-span-4">
+                      <label
+                        htmlFor="sick-request-reason"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Reason
+                      </label>
+                      <textarea
+                        id="sick-request-reason"
+                        required
+                        rows={2}
+                        value={sickRequestReason}
+                        onChange={(event) => setSickRequestReason(event.target.value)}
+                        placeholder="Briefly describe the reason for this sick leave request"
+                        className="w-full resize-none rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="flex items-end md:col-span-4 md:justify-end">
+                      <button
+                        type="submit"
+                        disabled={submittingSickRequest}
+                        className="inline-flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300 md:w-auto md:px-8"
+                      >
+                        {submittingSickRequest ? "Sending..." : "Send Request"}
+                      </button>
+                    </div>
+                  </form>
+
+                  {sickRequestError && (
+                    <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700">
+                      {sickRequestError}
+                    </div>
+                  )}
+                  {sickRequestSuccess && (
+                    <div className="mt-2 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs text-green-700">
+                      {sickRequestSuccess}
+                    </div>
+                  )}
                 </div>
 
                 {sickLeaveEntries.length === 0 ? (
-                  <div className="text-center py-8 text-sm text-gray-500">
-                    No sick leave records have been logged for this employee yet.
+                  <div className="text-center py-4 text-sm text-gray-400">
+                    No sick leave records yet.
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-2">
                     {sickLeaveEntries.map((entry) => {
                       const normalizedStatus = (entry.status ?? "pending").toLowerCase() as SickLeaveStatus;
                       const statusClasses =
                         sickLeaveStatusStyles[normalizedStatus] ?? fallbackSickLeaveStatusStyle;
                       return (
-                        <div
-                          key={entry.id}
-                          className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div>
-                              <p className="text-xs text-gray-500">Dates</p>
-                              <p className="text-sm font-semibold text-gray-900">
-                                {formatDate(entry.start_date)} — {formatDate(entry.end_date)}
-                              </p>
-                            </div>
-                            <span
-                              className={`px-3 py-1 text-xs font-semibold capitalize keeping-wide border rounded-full ${statusClasses}`}
-                            >
-                              {entry.status}
-                            </span>
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
-                            <span>Hours: {formatHours(entry.duration_hours)}</span>
-                            {entry.reason && <span>Reason: {entry.reason}</span>}
-                            {entry.approved_at && (
-                              <span>Approved: {formatDate(entry.approved_at)}</span>
+                        <div key={entry.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center gap-4 text-gray-700">
+                            <span className="font-medium text-gray-900">{formatEventDate(entry.start_date)} — {formatEventDate(entry.end_date)}</span>
+                            <span className="text-gray-500">{formatHours(entry.duration_hours)} hrs</span>
+                            {entry.event_name && (
+                              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                {entry.event_name}
+                              </span>
                             )}
+                            {entry.reason && <span className="text-gray-400 text-xs">{entry.reason}</span>}
                           </div>
+                          <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${statusClasses}`}>
+                            {entry.status}
+                          </span>
                         </div>
                       );
                     })}
@@ -2737,38 +3020,25 @@ export default function EmployeeProfilePage() {
                 )}
 
                 {/* Sick Leave Pay Sheets */}
-                <div className="border-t border-gray-100 pt-6">
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Sick Leave Pay Sheets</h3>
+                <div className="border-t border-gray-100 pt-4">
+                  <p className="text-sm font-semibold text-gray-900 mb-2">Sick Leave Pay Sheets</p>
                   {sickLeavePaysheets.length === 0 ? (
-                    <div className="text-center py-6 text-sm text-gray-500">
-                      No sick leave pay sheets have been created for this employee yet.
+                    <div className="text-center py-3 text-sm text-gray-400">
+                      No sick leave pay sheets yet.
                     </div>
                   ) : (
-                    <div className="space-y-4">
+                    <div className="space-y-2">
                       {sickLeavePaysheets.map((ps) => (
-                        <div
-                          key={ps.id}
-                          className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div>
-                              <p className="text-xs text-gray-500">Payment Date</p>
-                              <p className="text-sm font-semibold text-gray-900">
-                                {formatDate(ps.payment_date)}
-                              </p>
-                            </div>
-                            <span
-                              className={`px-3 py-1 text-xs font-semibold capitalize keeping-wide border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}
-                            >
-                              {ps.status}
-                            </span>
+                        <div key={ps.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center gap-4 text-gray-700">
+                            <span className="font-medium text-gray-900">Payment date: {formatDate(ps.payment_date)}</span>
+                            <span className="text-gray-500">{formatHours(ps.hours)} hrs</span>
+                            <span className="text-gray-500">${ps.amount.toFixed(2)}</span>
+                            {ps.notes && <span className="text-gray-400 text-xs">{ps.notes}</span>}
                           </div>
-                          <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
-                            <span>Hours: {formatHours(ps.hours)}</span>
-                            <span>Rate: ${ps.rate.toFixed(2)}/hr</span>
-                            <span>Amount: ${ps.amount.toFixed(2)}</span>
-                            {ps.notes && <span>Notes: {ps.notes}</span>}
-                          </div>
+                          <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}>
+                            {ps.status}
+                          </span>
                         </div>
                       ))}
                     </div>

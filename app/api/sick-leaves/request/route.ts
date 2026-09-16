@@ -25,6 +25,19 @@ const REQUEST_RECIPIENTS = [
   "payroll@1pds.net",
 ];
 
+const HR_ROLES = new Set(["hr", "exec", "admin"]);
+
+async function hasHrAccess(userId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .single();
+
+  if (error) return false;
+  return HR_ROLES.has(String(data?.role || "").toLowerCase());
+}
+
 type UserWithProfile = {
   id: string;
   email: string | null;
@@ -93,6 +106,7 @@ function buildRequestEmailHtml(params: {
   durationHours: number;
   eventLabel: string;
   reason: string;
+  submittedByName?: string | null;
 }) {
   const dateLabel = new Date(`${params.sickDate}T00:00:00Z`).toLocaleDateString(
     "en-US",
@@ -114,7 +128,11 @@ function buildRequestEmailHtml(params: {
   </head>
   <body style="font-family: Arial, sans-serif; color: #111827;">
     <h2 style="margin: 0 0 12px 0;">Employee Sick Leave Request</h2>
-    <p style="margin: 0 0 16px 0;">A worker submitted a sick leave request from the employee portal.</p>
+    <p style="margin: 0 0 16px 0;">${
+      params.submittedByName
+        ? "An HR team member submitted a sick leave request on behalf of an employee."
+        : "A worker submitted a sick leave request from the employee portal."
+    }</p>
     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse: collapse;">
       <tr>
         <td style="padding: 6px 10px; color: #374151;">Employee</td>
@@ -124,6 +142,14 @@ function buildRequestEmailHtml(params: {
         <td style="padding: 6px 10px; color: #374151;">Email</td>
         <td style="padding: 6px 10px; font-weight: 600;">${params.employeeEmail || "Unknown"}</td>
       </tr>
+      ${
+        params.submittedByName
+          ? `<tr>
+        <td style="padding: 6px 10px; color: #374151;">Submitted By</td>
+        <td style="padding: 6px 10px; font-weight: 600;">${params.submittedByName} (HR)</td>
+      </tr>`
+          : ""
+      }
       <tr>
         <td style="padding: 6px 10px; color: #374151;">Event</td>
         <td style="padding: 6px 10px; font-weight: 600;">${params.eventLabel}</td>
@@ -163,6 +189,31 @@ export async function POST(req: NextRequest) {
     const durationHours = Number(durationHoursRaw.toFixed(2));
     const eventId = String(body?.event_id || "").trim();
     const reason = String(body?.reason || "").trim();
+    const requestedEmployeeId = String(body?.employee_id || "").trim();
+
+    // By default a worker files a sick leave request for themselves. HR can
+    // also file one on behalf of another employee from the HR employee
+    // detail page, in which case employee_id names the target employee and
+    // the caller must have HR access.
+    let targetUserId = authenticatedUserId;
+    let submittedOnBehalf = false;
+
+    if (requestedEmployeeId && requestedEmployeeId !== authenticatedUserId) {
+      if (!UUID_PATTERN.test(requestedEmployeeId)) {
+        return NextResponse.json({ error: "Invalid employee id" }, { status: 400 });
+      }
+
+      const authorizedForOthers = await hasHrAccess(authenticatedUserId);
+      if (!authorizedForOthers) {
+        return NextResponse.json(
+          { error: "You are not authorized to submit a sick leave request for another employee" },
+          { status: 403 }
+        );
+      }
+
+      targetUserId = requestedEmployeeId;
+      submittedOnBehalf = true;
+    }
 
     if (!sickDate) {
       return NextResponse.json(
@@ -246,13 +297,20 @@ export async function POST(req: NextRequest) {
           )
         `
       )
-      .eq("id", authenticatedUserId)
+      .eq("id", targetUserId)
       .maybeSingle();
 
     if (userError) {
       return NextResponse.json(
         { error: userError.message || "Failed to load employee profile" },
         { status: 500 }
+      );
+    }
+
+    if (!userRow) {
+      return NextResponse.json(
+        { error: "The employee to file this request for could not be found" },
+        { status: 400 }
       );
     }
 
@@ -265,10 +323,39 @@ export async function POST(req: NextRequest) {
     const employeeEmail = String(typedUser?.email || "").trim();
     const employeeName = `${firstName} ${lastName}`.trim() || employeeEmail || "Unknown Employee";
 
+    let submittedByName: string | null = null;
+    if (submittedOnBehalf) {
+      const { data: hrUserRow } = await supabaseAdmin
+        .from("users")
+        .select(
+          `
+            id,
+            email,
+            profiles (
+              first_name,
+              last_name
+            )
+          `
+        )
+        .eq("id", authenticatedUserId)
+        .maybeSingle();
+
+      const typedHrUser = (hrUserRow || null) as UserWithProfile | null;
+      const hrProfile = Array.isArray(typedHrUser?.profiles)
+        ? typedHrUser?.profiles[0]
+        : typedHrUser?.profiles;
+      const hrFirstName = safeDecryptName(hrProfile?.first_name);
+      const hrLastName = safeDecryptName(hrProfile?.last_name);
+      submittedByName =
+        `${hrFirstName} ${hrLastName}`.trim() ||
+        String(typedHrUser?.email || "").trim() ||
+        "HR";
+    }
+
     const { data: inserted, error: insertError } = await supabaseAdmin
       .from("sick_leaves")
       .insert({
-        user_id: authenticatedUserId,
+        user_id: targetUserId,
         event_id: eventRow.id,
         start_date: sickDate,
         end_date: sickDate,
@@ -317,6 +404,7 @@ export async function POST(req: NextRequest) {
       durationHours,
       eventLabel,
       reason,
+      submittedByName,
     });
 
     const emailResult = await sendEmail({
