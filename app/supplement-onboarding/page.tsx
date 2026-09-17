@@ -27,6 +27,7 @@ type Employee = {
 
 type Completion = {
   employeeId: string;
+  formId: string;
   formName: string;
   updatedAt: string;
 };
@@ -55,8 +56,6 @@ export default function SupplementOnboardingPage() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
-
-  const year = new Date().getFullYear();
 
   useEffect(() => { loadData(); }, []);
 
@@ -103,8 +102,12 @@ export default function SupplementOnboardingPage() {
         }).then(async r => {
           if (!r.ok) return;
           const d = await r.json();
-          const rows = (d.completions || []) as { userId: string; formName: string; updatedAt: string }[];
-          setCompletions(rows.map(r => ({ employeeId: r.userId, formName: r.formName, updatedAt: r.updatedAt })));
+          const rows = (d.completions || []) as { userId: string; formId: string | null; formName: string; updatedAt: string }[];
+          setCompletions(
+            rows
+              .filter((r): r is { userId: string; formId: string; formName: string; updatedAt: string } => !!r.formId)
+              .map(r => ({ employeeId: r.userId, formId: r.formId, formName: r.formName, updatedAt: r.updatedAt }))
+          );
         }),
         fetch('/api/supplement-onboarding/vendor-status', {
           headers: { Authorization: `Bearer ${session.access_token}` },
@@ -234,13 +237,13 @@ export default function SupplementOnboardingPage() {
     !!userFormAssignments[emp.id]?.has(form.id);
 
   const getCompleted = (emp: Employee) =>
-    getApplicableForms(emp).filter(f => completions.some(c => c.employeeId === emp.id && c.formName === `${f.title} ${year}`));
+    getApplicableForms(emp).filter(f => completions.some(c => c.employeeId === emp.id && c.formId === f.id));
 
   const getMissing = (emp: Employee) =>
-    getApplicableForms(emp).filter(f => !completions.some(c => c.employeeId === emp.id && c.formName === `${f.title} ${year}`));
+    getApplicableForms(emp).filter(f => !completions.some(c => c.employeeId === emp.id && c.formId === f.id));
 
   const getCompletedAt = (employeeId: string, form: CustomForm) =>
-    completions.find(c => c.employeeId === employeeId && c.formName === `${form.title} ${year}`)?.updatedAt ?? null;
+    completions.find(c => c.employeeId === employeeId && c.formId === form.id)?.updatedAt ?? null;
 
   const filteredEmployees = employees
     .filter(e => {

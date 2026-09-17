@@ -152,7 +152,17 @@ export async function GET(req: NextRequest) {
 
     const year = new Date().getFullYear();
     const activeForms: FormRow[] = (forms || []) as FormRow[];
-    const formNames = activeForms.map((form) => `${form.title} ${year}`);
+
+    // Submissions are saved under the canonical "custom-form-{id}" key
+    // (see app/employee/form/[id]/page.tsx). Older submissions made before
+    // that key existed were saved under the legacy "{title} {year}" key —
+    // check both so completions saved either way are picked up.
+    const formNameToId = new Map<string, string>();
+    for (const form of activeForms) {
+      formNameToId.set(`custom-form-${form.id}`, form.id);
+      formNameToId.set(`${form.title} ${year}`, form.id);
+    }
+    const formNames = Array.from(formNameToId.keys());
 
     let completionRows: CompletionRow[] = [];
     if (formNames.length > 0) {
@@ -171,7 +181,15 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      completionRows = (completions || []) as CompletionRow[];
+      // Normalize each row's form_name to the form's canonical id so that
+      // completions saved under either the canonical or legacy key are
+      // treated identically below.
+      completionRows = ((completions || []) as CompletionRow[])
+        .map((row) => {
+          const formId = formNameToId.get(row.form_name);
+          return formId ? { ...row, form_name: formId } : null;
+        })
+        .filter((row): row is CompletionRow => row !== null);
     }
 
     const { data: vendorStatusData, error: vendorStatusError } = await adminClient
@@ -220,10 +238,10 @@ export async function GET(req: NextRequest) {
       const fullName = `${firstName} ${lastName}`.trim() || 'N/A';
 
       const completedForms = activeForms.filter((form) =>
-        Boolean(userCompletions?.has(`${form.title} ${year}`))
+        Boolean(userCompletions?.has(form.id))
       );
       const missingForms = activeForms.filter(
-        (form) => !userCompletions?.has(`${form.title} ${year}`)
+        (form) => !userCompletions?.has(form.id)
       );
 
       const completedCount = completedForms.length;

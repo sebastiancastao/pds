@@ -51,8 +51,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ completions: [] });
     }
 
-    // Build the exact form_name values used when saving: "${title} ${year}"
-    const formNames = forms.map(f => `${f.title} ${year}`);
+    // Submissions are saved under the canonical "custom-form-{id}" key
+    // (see app/employee/form/[id]/page.tsx). Older submissions made before
+    // that key existed were saved under the legacy "{title} {year}" key —
+    // check both so completions saved either way are picked up.
+    const formNameToId = new Map<string, string>();
+    for (const f of forms) {
+      formNameToId.set(`custom-form-${f.id}`, f.id);
+      formNameToId.set(`${f.title} ${year}`, f.id);
+    }
+    const formNames = Array.from(formNameToId.keys());
 
     // Query pdf_form_progress directly — no PDF size filtering, exact name match
     const { data: rows, error: progressError } = await supabaseAdmin
@@ -65,11 +73,14 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      completions: (rows || []).map(r => ({
-        userId: r.user_id,
-        formName: r.form_name,
-        updatedAt: r.updated_at,
-      })),
+      completions: (rows || [])
+        .map(r => ({
+          userId: r.user_id,
+          formId: formNameToId.get(r.form_name) ?? null,
+          formName: r.form_name,
+          updatedAt: r.updated_at,
+        }))
+        .filter(r => r.formId !== null),
     });
   } catch (err: any) {
     console.error('[CUSTOM-FORMS COMPLETIONS]', err);
