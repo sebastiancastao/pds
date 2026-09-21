@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
+import { parseEmailInput } from '@/lib/email-list';
 
 type Audience = 'manual' | 'role' | 'region' | 'all';
 type BodyFormat = 'html' | 'text';
@@ -24,17 +25,18 @@ const getRegionIcon = (regionName?: string | null) => {
   return '\uD83D\uDCCD';
 };
 
-function parseEmailList(value: string): string[] {
-  return Array.from(
-    new Set(
-      value
-        .split(/[\s,;]+/g)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((e) => e.toLowerCase())
-    )
-  );
-}
+// Shown when a send fails partway, so the sender knows exactly who was missed.
+type SendReport = {
+  sentCount: number;
+  attempted: number;
+  undelivered: string[];
+};
+
+const PREVIEW_LIMIT = 8;
+const previewList = (items: string[]) =>
+  items.length > PREVIEW_LIMIT
+    ? `${items.slice(0, PREVIEW_LIMIT).join(', ')} and ${items.length - PREVIEW_LIMIT} more`
+    : items.join(', ');
 
 function AdminEmailPageContent() {
   const router = useRouter();
@@ -51,8 +53,10 @@ function AdminEmailPageContent() {
     // Pre-populate from ?to= query param (set by upload-emails page)
     if (typeof window !== 'undefined') {
       try {
+        // URLSearchParams already decodes the value; decoding again throws on a
+        // literal "%" and would silently drop the whole prefilled list.
         const params = new URLSearchParams(window.location.search);
-        return decodeURIComponent(params.get('to') || '');
+        return params.get('to') || '';
       } catch { return ''; }
     }
     return '';
@@ -71,9 +75,11 @@ function AdminEmailPageContent() {
 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [sendReport, setSendReport] = useState<SendReport | null>(null);
   const [success, setSuccess] = useState<{
     messageId?: string;
     recipientCount?: number;
+    skipped?: string[];
   } | null>(null);
 
   useEffect(() => {
@@ -148,10 +154,31 @@ function AdminEmailPageContent() {
     };
   }, [accessState]);
 
-  const manualRecipientCount = useMemo(() => {
-    if (!to.trim()) return 0;
-    return parseEmailList(to).length;
-  }, [to]);
+  // Parsed with the same rules as the API, so what is counted here is exactly
+  // what gets sent. Everything in a manual send goes out hidden in BCC, so the
+  // To and BCC lists are counted together.
+  const parsedTo = useMemo(() => parseEmailInput(to), [to]);
+  const parsedBcc = useMemo(() => parseEmailInput(bcc), [bcc]);
+
+  const manualRecipients = useMemo(
+    () =>
+      audience === 'manual'
+        ? Array.from(new Set([...parsedTo.valid, ...parsedBcc.valid]))
+        : [],
+    [audience, parsedTo, parsedBcc]
+  );
+  const manualRecipientCount = manualRecipients.length;
+
+  const invalidEntries = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(audience === 'manual' ? parsedTo.invalid : []),
+          ...parsedBcc.invalid,
+        ])
+      ),
+    [audience, parsedTo, parsedBcc]
+  );
 
   const bulkMode = audience !== 'manual' || manualRecipientCount > 25;
 
@@ -194,6 +221,7 @@ function AdminEmailPageContent() {
     e.preventDefault();
     setError('');
     setSuccess(null);
+    setSendReport(null);
 
     if (!subject.trim()) {
       setError('Subject is required.');
@@ -204,8 +232,12 @@ function AdminEmailPageContent() {
       return;
     }
 
-    if (audience === 'manual' && !to.trim()) {
-      setError('Recipient list is required.');
+    if (audience === 'manual' && manualRecipientCount === 0) {
+      setError(
+        invalidEntries.length > 0
+          ? `No valid email addresses found. Check: ${previewList(invalidEntries)}`
+          : 'Recipient list is required.'
+      );
       return;
     }
     if (audience === 'manual' && manualRecipientCount > MAX_BULK_EMAIL_RECIPIENTS) {
@@ -232,15 +264,12 @@ function AdminEmailPageContent() {
       form.set('audience', audience);
       if (audience === 'manual') {
         form.set('to', 'service@pdsportal.site');
-        const recipientList = parseEmailList(to);
-        const bccList = parseEmailList(bcc);
-        const mergedBcc = [...new Set([...recipientList, ...bccList])];
-        form.set('bcc', mergedBcc.join(', '));
+        form.set('bcc', manualRecipients.join(', '));
       } else {
         if (audience === 'role') form.set('role', targetRole);
         if (audience === 'region') form.set('region_id', selectedRegion);
         form.set('bcc_mode', 'true');
-        if (bcc.trim()) form.set('bcc', bcc);
+        if (parsedBcc.valid.length > 0) form.set('bcc', parsedBcc.valid.join(', '));
       }
       form.set('subject', subject.trim());
       form.set('body', body);
@@ -258,15 +287,39 @@ function AdminEmailPageContent() {
         body: form,
       });
 
-      const data = await res.json();
+      // A timeout or gateway error returns HTML, not JSON, so don't assume it.
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
+        if (!data) {
+          setError(
+            res.status === 413
+              ? 'The request was too large. Remove or shrink attachments and try again.'
+              : res.status === 502 || res.status === 503 || res.status === 504
+                ? 'The server timed out before the send finished. Some emails may already have been delivered, so check before sending again.'
+                : `Failed to send email (HTTP ${res.status}).`
+          );
+          return;
+        }
+
         setError(data?.error || 'Failed to send email.');
+        const undelivered: string[] = [
+          ...(Array.isArray(data?.failedRecipients) ? data.failedRecipients : []),
+          ...(Array.isArray(data?.notAttempted) ? data.notAttempted : []),
+        ];
+        if (undelivered.length > 0) {
+          setSendReport({
+            sentCount: Number(data?.sentCount) || 0,
+            attempted: Number(data?.attemptedRecipients) || undelivered.length,
+            undelivered,
+          });
+        }
         return;
       }
 
       setSuccess({
         messageId: data?.messageId,
         recipientCount: data?.recipientCount,
+        skipped: Array.isArray(data?.skippedInvalid) ? data.skippedInvalid : [],
       });
     } catch (err: any) {
       setError(err?.message || 'Network error.');
@@ -312,6 +365,31 @@ function AdminEmailPageContent() {
               {error && (
                 <div className="p-4 rounded bg-red-50 text-red-800 border border-red-200">
                   {error}
+                  {sendReport && (
+                    <div className="mt-3 text-sm">
+                      <div>
+                        Delivered to {sendReport.sentCount} of {sendReport.attempted}. Not delivered
+                        ({sendReport.undelivered.length}):{' '}
+                        <span className="font-mono break-all">
+                          {previewList(sendReport.undelivered)}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAudience('manual');
+                          setTo(sendReport.undelivered.join('\n'));
+                          setBcc('');
+                          setConfirmBulk(false);
+                          setError('');
+                          setSendReport(null);
+                        }}
+                        className="mt-2 bg-red-100 hover:bg-red-200 text-red-900 font-semibold px-3 py-1 rounded"
+                      >
+                        Load undelivered addresses to retry
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -321,6 +399,13 @@ function AdminEmailPageContent() {
                   {success.messageId ? (
                     <div className="text-sm mt-1">
                       Message ID: <span className="font-mono">{success.messageId}</span>
+                    </div>
+                  ) : null}
+                  {success.skipped && success.skipped.length > 0 ? (
+                    <div className="text-sm mt-2 text-yellow-900 bg-yellow-50 border border-yellow-200 rounded p-2">
+                      Skipped {success.skipped.length} invalid entr
+                      {success.skipped.length === 1 ? 'y' : 'ies'}:{' '}
+                      <span className="font-mono break-all">{previewList(success.skipped)}</span>
                     </div>
                   ) : null}
                 </div>
@@ -429,7 +514,13 @@ function AdminEmailPageContent() {
                       To (comma, space, or newline separated)
                     </label>
                     <div className="flex items-center gap-2">
-                      <div className="text-xs text-gray-500">
+                      <div
+                        className={`text-xs ${
+                          manualRecipientCount > MAX_BULK_EMAIL_RECIPIENTS
+                            ? 'text-red-600 font-semibold'
+                            : 'text-gray-500'
+                        }`}
+                      >
                         {manualRecipientCount} recipient(s) / {MAX_BULK_EMAIL_RECIPIENTS} max
                       </div>
                       <button
@@ -446,22 +537,41 @@ function AdminEmailPageContent() {
                     value={to}
                     onChange={(e) => setTo(e.target.value)}
                     className="w-full border rounded px-3 py-2 h-28 font-mono text-sm"
-                    placeholder="name@example.com\nanother@example.com"
+                    placeholder={'name@example.com, another@example.com\nthird@example.com'}
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    You can paste straight from Excel, Outlook or Gmail. Names, quotes, brackets and
+                    duplicates are cleaned up automatically. All recipients are sent as BCC.
+                  </p>
                 </div>
               )}
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  BCC (optional)
-                </label>
-                <input
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    BCC (optional)
+                  </label>
+                  {parsedBcc.valid.length > 0 && (
+                    <div className="text-xs text-gray-500">
+                      {parsedBcc.valid.length} BCC address(es)
+                    </div>
+                  )}
+                </div>
+                <textarea
                   value={bcc}
                   onChange={(e) => setBcc(e.target.value)}
-                  className="w-full border rounded px-3 py-2 font-mono text-sm"
-                  placeholder="bcc1@example.com, bcc2@example.com"
+                  className="w-full border rounded px-3 py-2 h-20 font-mono text-sm"
+                  placeholder={'bcc1@example.com, bcc2@example.com'}
                 />
               </div>
+
+              {invalidEntries.length > 0 && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-900">
+                  {invalidEntries.length} entr{invalidEntries.length === 1 ? 'y is' : 'ies are'} not
+                  valid email addresses and will be skipped:{' '}
+                  <span className="font-mono break-all">{previewList(invalidEntries)}</span>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                 <div>
@@ -497,6 +607,7 @@ function AdminEmailPageContent() {
                       setConfirmBulk(false);
                       setAttachments([]);
                       setSuccess(null);
+                      setSendReport(null);
                       setError('');
                     }}
                     className="bg-gray-100 hover:bg-gray-200 text-gray-800 font-semibold py-2 px-3 rounded"

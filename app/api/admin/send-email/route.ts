@@ -5,8 +5,13 @@ import { createClient } from "@supabase/supabase-js";
 import type { Attachment } from "resend";
 import { sendEmail } from "@/lib/email";
 import { getVenueBccEmails } from "@/lib/venue-bcc";
+import { parseEmailInput } from "@/lib/email-list";
 
 export const runtime = "nodejs";
+// A 5,600-recipient blast is ~115 sequential provider calls plus throttle
+// delays, which is far past the platform default. The send loop also stops
+// itself before this limit (see SEND_TIME_BUDGET_MS) so it can still respond.
+export const maxDuration = 300;
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,27 +37,21 @@ const MAX_RATE_LIMIT_RETRY_COUNT = 5;
 const DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS = 1200;
 const MIN_RATE_LIMIT_RETRY_BASE_DELAY_MS = 250;
 const MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS = 20000;
+// Stop starting new batches after this long so the response is still returned
+// (with the unsent addresses listed) instead of the function being killed.
+const SEND_TIME_BUDGET_MS = 270_000;
+// Give up on the rest of the list after this many batches in a row deliver
+// nothing, which points at a systemic problem (bad key, unverified domain).
+const MAX_CONSECUTIVE_FAILED_BATCHES = 3;
+// When a batch is rejected for a bad address, it is split in half repeatedly
+// to isolate the offender. This caps how many splits one request may spend.
+const MAX_ISOLATION_SPLITS = 60;
 
 type Audience = "manual" | "role" | "region" | "all";
 type BodyFormat = "html" | "text";
 
 // Always BCC'd on every email sent from /admin-email-team
 const ALWAYS_BCC = ["jenvillar@1pds.net"];
-
-function parseEmailList(value: string): string[] {
-  return Array.from(
-    new Set(
-      String(value || "")
-        .split(/[\s,;]+/g)
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
-    )
-  );
-}
-
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
 
 function escapeHtml(input: string): string {
   return input
@@ -85,6 +84,18 @@ function getRetryDelayMs(baseDelayMs: number, attempt: number): number {
 function isRateLimitError(message?: string) {
   const text = String(message || "").toLowerCase();
   return text.includes("429") || text.includes("rate limit") || text.includes("too many");
+}
+
+// The provider rejects a whole send when any single address in it is
+// malformed, and reports that as a 422 validation error about the recipients.
+function isRecipientValidationError(message?: string) {
+  const text = String(message || "").toLowerCase();
+  if (isRateLimitError(text)) return false;
+  return (
+    text.includes("422") ||
+    /invalid[^.]*(email|address|recipient|`?(to|bcc|cc)`? field)/.test(text) ||
+    /email address[^.]*(format|valid)/.test(text)
+  );
 }
 
 async function getAuthedUser(req: NextRequest) {
@@ -149,12 +160,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid bodyFormat" }, { status: 400 });
     }
 
+    // Entries that looked like addresses but were malformed. They are skipped
+    // (never sent to the provider) and reported back to the caller.
+    const skippedInvalid = new Set<string>();
+    const takeValid = (parsed: { valid: string[]; invalid: string[] }) => {
+      parsed.invalid.forEach((entry) => skippedInvalid.add(entry));
+      return parsed.valid;
+    };
+
     let to: string[] = [];
     if (audience === "manual") {
-      to = parseEmailList(String(form.get("to") || ""));
-      if (!to.length) {
-        return NextResponse.json({ error: "Recipient list is required." }, { status: 400 });
-      }
+      to = takeValid(parseEmailInput(String(form.get("to") || "")));
     } else if (audience === "role") {
       const role = String(form.get("role") || "").trim().toLowerCase();
       if (!role) {
@@ -165,7 +181,7 @@ export async function POST(req: NextRequest) {
         .select("email")
         .eq("role", role);
       if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
-      to = parseEmailList((usersByRole || []).map((u: any) => u.email || "").join(","));
+      to = takeValid(parseEmailInput((usersByRole || []).map((u: any) => u.email || "").join(",")));
     } else if (audience === "region") {
       const regionId = String(form.get("region_id") || "").trim();
       if (!regionId) {
@@ -177,20 +193,31 @@ export async function POST(req: NextRequest) {
         .select("email, profiles!inner(region_id)")
         .eq("profiles.region_id", regionId);
       if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
-      to = parseEmailList((usersByRegion || []).map((u: any) => u.email || "").join(","));
+      to = takeValid(parseEmailInput((usersByRegion || []).map((u: any) => u.email || "").join(",")));
     } else {
       const { data: allUsers, error: usersErr } = await supabaseAdmin
         .from("users")
         .select("email");
       if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
-      to = parseEmailList((allUsers || []).map((u: any) => u.email || "").join(","));
+      to = takeValid(parseEmailInput((allUsers || []).map((u: any) => u.email || "").join(",")));
     }
 
-    to = to.filter(isValidEmail);
-    const bcc = parseEmailList(bccRaw).filter(isValidEmail);
+    const bcc = takeValid(parseEmailInput(bccRaw));
 
-    if (!to.length) {
-      return NextResponse.json({ error: "No valid recipients found." }, { status: 400 });
+    // A manual send may carry everyone in BCC and leave "To" empty.
+    if (!to.length && !(audience === "manual" && bcc.length)) {
+      const skippedPreview = Array.from(skippedInvalid).slice(0, 5).join(", ");
+      return NextResponse.json(
+        {
+          error: skippedInvalid.size
+            ? `No valid email addresses found. Check these entries: ${skippedPreview}${skippedInvalid.size > 5 ? ", ..." : ""}`
+            : audience === "manual"
+              ? "Recipient list is required."
+              : "No valid recipients found.",
+          skippedInvalid: Array.from(skippedInvalid),
+        },
+        { status: 400 }
+      );
     }
     const maxRecipientsPerRequest = resolveIntSetting(
       process.env.MAX_BULK_EMAIL_RECIPIENTS || process.env.MAX_RECIPIENTS_PER_REQUEST,
@@ -198,7 +225,9 @@ export async function POST(req: NextRequest) {
       1,
       ABSOLUTE_MAX_RECIPIENTS_PER_REQUEST
     );
-    if (to.length > maxRecipientsPerRequest) {
+    // Everyone ends up hidden in BCC, so the cap applies to To and BCC together.
+    const requestedRecipientCount = new Set([...to, ...bcc]).size;
+    if (requestedRecipientCount > maxRecipientsPerRequest) {
       return NextResponse.json(
         { error: `Too many recipients. Max allowed is ${maxRecipientsPerRequest} per request.` },
         { status: 400 }
@@ -301,19 +330,21 @@ export async function POST(req: NextRequest) {
       Math.min(RESEND_TOTAL_RECIPIENT_LIMIT - 1 - globalBccCount, batchSize)
     );
 
-    type SendPlan = { to: string[]; bcc?: string[]; sentInc: number };
-    const sends: SendPlan[] = [];
+    const chunks: string[][] = [];
     for (let i = 0; i < bccPool.length; i += perSendBccCap) {
-      const sendBcc = bccPool.slice(i, i + perSendBccCap);
-      sends.push({ to: [FIXED_TO], bcc: sendBcc, sentInc: sendBcc.length });
+      chunks.push(bccPool.slice(i, i + perSendBccCap));
     }
     // Fallback: the only recipient was the fixed `To` itself.
-    if (sends.length === 0) {
-      sends.push({ to: [FIXED_TO], sentInc: 0 });
+    if (chunks.length === 0) {
+      chunks.push([]);
     }
 
     let sentCount = 0;
     const messageIds: string[] = [];
+    const failedRecipients: string[] = [];
+    const failureReasons = new Set<string>();
+    const notAttempted: string[] = [];
+    let isolationSplitsLeft = MAX_ISOLATION_SPLITS;
     const basePayload = {
       subject,
       html,
@@ -321,45 +352,99 @@ export async function POST(req: NextRequest) {
       attachments: attachments.length ? attachments : undefined,
     };
 
-    for (let i = 0; i < sends.length; i++) {
-      const plan = sends[i];
+    // One provider call, retried with backoff when it is rate limited.
+    const sendChunk = async (recipients: string[]) => {
       let result: Awaited<ReturnType<typeof sendEmail>> | null = null;
-
       for (let attempt = 0; attempt <= rateLimitRetryCount; attempt += 1) {
-        result = await sendEmail({
-          ...basePayload,
-          to: plan.to,
-          bcc: plan.bcc && plan.bcc.length ? plan.bcc : undefined,
-        });
-
-        if (result.success) {
-          break;
+        try {
+          result = await sendEmail({
+            ...basePayload,
+            to: [FIXED_TO],
+            bcc: recipients.length ? recipients : undefined,
+          });
+        } catch (err: any) {
+          result = { success: false, error: err?.message || "Failed to send email." };
         }
 
-        if (!isRateLimitError(result.error) || attempt >= rateLimitRetryCount) {
-          break;
-        }
+        if (result.success) break;
+        if (!isRateLimitError(result.error) || attempt >= rateLimitRetryCount) break;
 
         await sleep(getRetryDelayMs(retryBaseDelayMs, attempt));
       }
+      return result as NonNullable<typeof result>;
+    };
 
-      if (!result?.success) {
-        return NextResponse.json(
-          {
-            error: result?.error || "Failed to send email.",
-            sentCount,
-            attemptedRecipients: to.length,
-          },
-          { status: 500 }
-        );
+    // Sends `recipients` as one batch. If the provider rejects it because of a
+    // bad address, the batch is split in half and each half retried, so one bad
+    // address costs only itself instead of the other ~49 in its batch.
+    const deliver = async (recipients: string[]): Promise<void> => {
+      const result = await sendChunk(recipients);
+      if (result.success) {
+        sentCount += recipients.length;
+        if (result.messageId) messageIds.push(result.messageId);
+        return;
       }
 
-      sentCount += plan.sentInc;
-      if (result.messageId) messageIds.push(result.messageId);
+      const reason = result.error || "Failed to send email.";
+      if (
+        recipients.length > 1 &&
+        isolationSplitsLeft > 0 &&
+        isRecipientValidationError(reason)
+      ) {
+        isolationSplitsLeft -= 1;
+        const mid = Math.ceil(recipients.length / 2);
+        await deliver(recipients.slice(0, mid));
+        await deliver(recipients.slice(mid));
+        return;
+      }
 
-      if (i < sends.length - 1 && batchDelayMs > 0) {
+      failureReasons.add(reason);
+      failedRecipients.push(...(recipients.length ? recipients : [FIXED_TO]));
+    };
+
+    const deadline = Date.now() + SEND_TIME_BUDGET_MS;
+    let consecutiveFailedBatches = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      if (
+        consecutiveFailedBatches >= MAX_CONSECUTIVE_FAILED_BATCHES ||
+        Date.now() > deadline
+      ) {
+        for (const rest of chunks.slice(i)) notAttempted.push(...rest);
+        if (consecutiveFailedBatches < MAX_CONSECUTIVE_FAILED_BATCHES) {
+          failureReasons.add("Stopped early to stay within the server time limit.");
+        }
+        break;
+      }
+
+      const sentBefore = sentCount;
+      await deliver(chunks[i]);
+      consecutiveFailedBatches =
+        sentCount > sentBefore || chunks[i].length === 0 ? 0 : consecutiveFailedBatches + 1;
+
+      if (i < chunks.length - 1 && batchDelayMs > 0) {
         await sleep(batchDelayMs);
       }
+    }
+
+    const skippedList = Array.from(skippedInvalid);
+    const undelivered = [...failedRecipients, ...notAttempted];
+
+    if (undelivered.length > 0) {
+      const reasons = Array.from(failureReasons).join(" | ");
+      return NextResponse.json(
+        {
+          error: sentCount > 0
+            ? `Sent to ${sentCount} of ${bccPool.length} recipients. ${undelivered.length} not delivered${reasons ? `: ${reasons}` : "."}`
+            : reasons || "Failed to send email.",
+          partial: sentCount > 0,
+          sentCount,
+          attemptedRecipients: bccPool.length,
+          failedRecipients,
+          notAttempted,
+          skippedInvalid: skippedList,
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
@@ -367,8 +452,9 @@ export async function POST(req: NextRequest) {
       messageId: messageIds[0],
       messageIds,
       recipientCount: sentCount,
-      batches: sends.length,
+      batches: chunks.length,
       bccCount: mergedBcc.length,
+      skippedInvalid: skippedList,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unhandled server error" }, { status: 500 });
