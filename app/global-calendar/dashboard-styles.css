@@ -712,3 +712,16 @@
     max-width: calc(100vw - 1.5rem);
   }
 }
+
+/* Vendor card: vendor still has onboarding forms pending */
+.apple-vendor-card.apple-vendor-card-pending-forms {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  box-shadow: inset 4px 0 0 #dc2626;
+}
+
+.apple-vendor-card.apple-vendor-card-pending-forms:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+  box-shadow: inset 4px 0 0 #dc2626, 0 2px 8px rgba(220, 38, 38, 0.12);
+}

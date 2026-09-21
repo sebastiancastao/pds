@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { TimesheetProposalView } from "@/components/TimesheetEditTimes";
+import type { TimesheetEditProposal } from "@/lib/timesheet-edit-requests";
 import { supabase } from "@/lib/supabase";
 
 type EditRequest = {
@@ -22,6 +24,7 @@ type EditRequest = {
   requesterEmail: string | null;
   requesterRole: string | null;
   requestReason: string;
+  requestedChanges: TimesheetEditProposal | null;
   status: string;
   reviewNotes: string | null;
   reviewedBy: string | null;
@@ -457,6 +460,10 @@ function TimesheetEditRequestsPageInner() {
                         {request.requestReason}
                       </div>
                     </div>
+
+                    {request.requestedChanges && (
+                      <TimesheetProposalView proposal={request.requestedChanges} />
+                    )}
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">

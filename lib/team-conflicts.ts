@@ -3,6 +3,17 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 /** Team statuses that hold a vendor's spot on an event. */
 export const ACTIVE_TEAM_STATUSES = ["confirmed", "pending_confirmation", "pending"] as const;
 
+/**
+ * True when an event_teams status is an outstanding invite the vendor has not
+ * answered yet. Invite pickers label these "Pending" (not "Invited" on the
+ * current event, not "Busy" for a same-day booking on another event). An
+ * unknown/missing status is not pending.
+ */
+export function isPendingTeamStatus(status: string | null | undefined): boolean {
+  const normalized = String(status || "").toLowerCase();
+  return normalized === "pending_confirmation" || normalized === "pending";
+}
+
 export type SameDayConflict = {
   vendorId: string;
   eventId: string;

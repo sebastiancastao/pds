@@ -7,6 +7,7 @@ import { safeDecrypt } from "@/lib/encryption";
 import { geocodeAddress } from "@/lib/geocoding";
 import { findSameDayConflicts, type SameDayConflict } from "@/lib/team-conflicts";
 import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
+import { getPendingCustomFormsByUser, describePendingForms } from "@/lib/vendor-forms-status";
 
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
@@ -494,6 +495,22 @@ export async function GET(
       .map((id) => vendorById.get(id))
       .filter(Boolean);
 
+    // Unfinished supplemental (custom) forms per vendor. Only looked up when the caller
+    // asks for it (the Create Team modal) because it costs several queries.
+    const includePendingForms = searchParams.get('include_pending_forms') === '1';
+    const pendingFormsByUser = includePendingForms
+      ? await getPendingCustomFormsByUser(supabaseAdmin, filteredVendors.map((v: any) => v.id))
+      : new Map<string, string[]>();
+    const pendingFormsFields = (vendorId: string) => {
+      if (!includePendingForms) return {};
+      const pending = describePendingForms(pendingFormsByUser.get(String(vendorId)));
+      return {
+        pendingForms: pending.count > 0,
+        pendingFormsCount: pending.count,
+        pendingFormTitles: pending.titles,
+      };
+    };
+
     // Calculate distances and sort by proximity
     const vendorsWithDistance = filteredVendors
       .map((vendor: any) => {
@@ -546,6 +563,7 @@ export async function GET(
           confirmedElsewhere: sameDayConflicts.has(vendor.id),
           conflictEventName: sameDayConflicts.get(vendor.id)?.eventName ?? null,
           conflictStatus: sameDayConflicts.get(vendor.id)?.status ?? null,
+          ...pendingFormsFields(vendor.id),
         };
       })
       .sort((a: any, b: any) => {

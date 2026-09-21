@@ -44,6 +44,45 @@ type Employee = {
   customer_satisfaction?: number | null;
 };
 
+// Personal data HR can edit (profile columns), as returned by /api/hr/employees/[id]/personal-data
+type PersonalData = {
+  first_name: string;
+  last_name: string;
+  phone: string;
+  address: string;
+  city: string;
+  state: string;
+  zip_code: string;
+  region_id: string | null;
+  region_name: string | null;
+};
+
+// Form draft: same fields, but region_id is "" when no region is selected
+type PersonalDraft = Omit<PersonalData, "region_id" | "region_name"> & { region_id: string };
+
+const PERSONAL_DRAFT_FIELDS: { key: keyof Omit<PersonalDraft, "region_id">; label: string; placeholder?: string; span?: 2 }[] = [
+  { key: "first_name", label: "First name" },
+  { key: "last_name", label: "Last name" },
+  { key: "phone", label: "Phone", placeholder: "(555) 555-5555" },
+  { key: "address", label: "Street address", span: 2 },
+  { key: "city", label: "City" },
+  { key: "state", label: "State", placeholder: "CA" },
+  { key: "zip_code", label: "ZIP code", placeholder: "90210" },
+];
+
+function personalDraftFrom(data: PersonalData): PersonalDraft {
+  return {
+    first_name: data.first_name,
+    last_name: data.last_name,
+    phone: data.phone,
+    address: data.address,
+    city: data.city,
+    state: data.state,
+    zip_code: data.zip_code,
+    region_id: data.region_id ?? "",
+  };
+}
+
 
 type TimeEntry = {
   id: string;
@@ -345,6 +384,15 @@ const I9_LIST_C = [
   'Employment Authorization Document issued by DHS',
 ];
 
+// Sections for the documents uploaded from /admin/upload-emails, in display order.
+// A file with no category (everything uploaded before categories existed) is "general".
+type UploadedDocCategory = "general" | "receipts" | "hr_documents";
+const UPLOADED_DOC_CATEGORIES: { value: UploadedDocCategory; label: string }[] = [
+  { value: "general", label: "General" },
+  { value: "receipts", label: "Receipts" },
+  { value: "hr_documents", label: "HR Documents" },
+];
+
 export default function EmployeeProfilePage() {
   const params = useParams<{ id: string }>();
   const employeeId = params?.id;
@@ -443,7 +491,18 @@ export default function EmployeeProfilePage() {
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<AssignedVenue | null>(null);
-  const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
+  const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string; isPdf?: boolean; audience?: "hr" | "all"; category?: UploadedDocCategory }[]>([]);
+
+  // Personal information (HR-editable profile fields)
+  const [personalData, setPersonalData] = useState<PersonalData | null>(null);
+  const [personalDataLoading, setPersonalDataLoading] = useState(true);
+  const [personalDataError, setPersonalDataError] = useState<string | null>(null);
+  const [personalEditing, setPersonalEditing] = useState(false);
+  const [personalDraft, setPersonalDraft] = useState<PersonalDraft | null>(null);
+  const [personalSaving, setPersonalSaving] = useState(false);
+  const [personalSaveError, setPersonalSaveError] = useState("");
+  const [personalSaveSuccess, setPersonalSaveSuccess] = useState("");
+  const [personalRegionOptions, setPersonalRegionOptions] = useState<{ id: string; name: string }[]>([]);
 
   const [emailInbox, setEmailInbox] = useState<EmailLogEntry[]>([]);
   const [emailInboxLoading, setEmailInboxLoading] = useState(false);
@@ -615,11 +674,138 @@ export default function EmployeeProfilePage() {
       const headers: Record<string, string> = session?.access_token
         ? { Authorization: `Bearer ${session.access_token}` }
         : {};
-      fetch(`/api/admin/upload-emails?images=${employee.id}`, { headers, cache: "no-store" })
+      // view=hr: every file for this employee, including the HR-only ones
+      fetch(`/api/admin/upload-emails?images=${employee.id}&view=hr`, { headers, cache: "no-store" })
         .then((r) => r.ok ? r.json() : { images: [] })
         .then((d) => setUploadedEmails(d.images ?? []));
     });
   }, [employee?.id, refreshTick]);
+
+  // Personal information: reset when the viewed employee changes...
+  useEffect(() => {
+    setPersonalData(null);
+    setPersonalDataError(null);
+    setPersonalDataLoading(true);
+    setPersonalEditing(false);
+    setPersonalDraft(null);
+    setPersonalSaveError("");
+    setPersonalSaveSuccess("");
+  }, [employeeId]);
+
+  // ...and (re)load it. The periodic refresh only replaces the saved values; an
+  // in-progress draft is kept separately so it is never overwritten mid-edit.
+  useEffect(() => {
+    if (!employeeId) return;
+    let cancelled = false;
+    const loadPersonalData = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/hr/employees/${employeeId}/personal-data`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: "no-store",
+        });
+        const body = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) throw new Error(body.error || `Failed to load personal information (${res.status})`);
+        setPersonalData(body.data as PersonalData);
+        setPersonalDataError(null);
+      } catch (e: any) {
+        if (!cancelled) setPersonalDataError(e?.message || "Failed to load personal information");
+      } finally {
+        if (!cancelled) setPersonalDataLoading(false);
+      }
+    };
+    loadPersonalData();
+    return () => {
+      cancelled = true;
+    };
+  }, [employeeId, refreshTick]);
+
+  // Region choices for the personal information form
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/regions", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { regions: [] }))
+      .then((d) => {
+        if (cancelled) return;
+        const list = Array.isArray(d.regions) ? d.regions : [];
+        setPersonalRegionOptions(list.map((r: { id: string; name: string }) => ({ id: r.id, name: r.name })));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const startPersonalEdit = () => {
+    if (!personalData) return;
+    setPersonalDraft(personalDraftFrom(personalData));
+    setPersonalSaveError("");
+    setPersonalSaveSuccess("");
+    setPersonalEditing(true);
+  };
+
+  const cancelPersonalEdit = () => {
+    setPersonalEditing(false);
+    setPersonalDraft(null);
+    setPersonalSaveError("");
+  };
+
+  const savePersonalEdit = async () => {
+    if (!personalDraft || !personalData) return;
+    setPersonalSaving(true);
+    setPersonalSaveError("");
+    setPersonalSaveSuccess("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/employees/${employeeId}/personal-data`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          first_name: personalDraft.first_name,
+          last_name: personalDraft.last_name,
+          phone: personalDraft.phone,
+          address: personalDraft.address,
+          city: personalDraft.city,
+          state: personalDraft.state,
+          zip_code: personalDraft.zip_code,
+          region_id: personalDraft.region_id || null,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Failed to save (${res.status})`);
+
+      const saved = body.data as PersonalData;
+      setPersonalData(saved);
+      // Keep the profile card at the top of the page in step with what was saved
+      setEmployee((prev) =>
+        prev
+          ? {
+              ...prev,
+              first_name: saved.first_name,
+              last_name: saved.last_name,
+              phone: saved.phone || null,
+              city: saved.city || null,
+              state: saved.state || null,
+              region_id: saved.region_id,
+              region_name: saved.region_name,
+            }
+          : prev
+      );
+      setPersonalEditing(false);
+      setPersonalDraft(null);
+      const changedCount = Array.isArray(body.changed) ? body.changed.length : 0;
+      setPersonalSaveSuccess(changedCount === 0 ? "No changes to save." : "Personal information saved.");
+      window.setTimeout(() => setPersonalSaveSuccess(""), 4000);
+    } catch (e: any) {
+      setPersonalSaveError(e?.message || "Failed to save personal information");
+    } finally {
+      setPersonalSaving(false);
+    }
+  };
 
   // Fetch the employee's email inbox (every app-generated email sent to them)
   useEffect(() => {
@@ -2535,6 +2721,157 @@ export default function EmployeeProfilePage() {
               </div>
             </section>
 
+            {/* Personal Information (HR-editable) */}
+            <section className="mb-8">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Personal Information</h2>
+                {personalData && !personalEditing && (
+                  <button
+                    type="button"
+                    onClick={startPersonalEdit}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Edit
+                  </button>
+                )}
+              </div>
+
+              <div className="apple-card p-6">
+                {personalSaveSuccess && (
+                  <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-700">
+                    {personalSaveSuccess}
+                  </div>
+                )}
+
+                {!personalData && personalDataLoading && (
+                  <div className="flex items-center gap-3 text-sm text-gray-500">
+                    <div className="apple-spinner" />
+                    Loading personal information…
+                  </div>
+                )}
+
+                {!personalData && !personalDataLoading && personalDataError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                    Could not load personal information: {personalDataError}
+                  </div>
+                )}
+
+                {personalData && !(personalEditing && personalDraft) && (
+                  <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {PERSONAL_DRAFT_FIELDS.map((field) => (
+                      <div key={field.key} className={field.span === 2 ? "sm:col-span-2" : undefined}>
+                        <dt className="text-xs font-semibold uppercase keeping-wide text-gray-500">{field.label}</dt>
+                        <dd className="mt-1 text-sm text-gray-900 break-words">{personalData[field.key] || "—"}</dd>
+                      </div>
+                    ))}
+                    <div>
+                      <dt className="text-xs font-semibold uppercase keeping-wide text-gray-500">Region</dt>
+                      <dd className="mt-1 text-sm text-gray-900 break-words">{personalData.region_name || "—"}</dd>
+                    </div>
+                  </dl>
+                )}
+
+                {personalData && personalEditing && personalDraft && (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void savePersonalEdit();
+                    }}
+                  >
+                    <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {PERSONAL_DRAFT_FIELDS.map((field) => (
+                        <div key={field.key} className={field.span === 2 ? "sm:col-span-2" : undefined}>
+                          <label
+                            htmlFor={`personal-${field.key}`}
+                            className="mb-1 block text-xs font-semibold uppercase keeping-wide text-gray-600"
+                          >
+                            {field.label}
+                          </label>
+                          <input
+                            id={`personal-${field.key}`}
+                            type={field.key === "phone" ? "tel" : "text"}
+                            inputMode={field.key === "zip_code" ? "numeric" : undefined}
+                            maxLength={field.key === "state" ? 2 : field.key === "zip_code" ? 10 : 200}
+                            required={field.key === "first_name" || field.key === "last_name" || field.key === "state"}
+                            disabled={personalSaving}
+                            value={personalDraft[field.key]}
+                            placeholder={field.placeholder}
+                            onChange={(event) => {
+                              const raw = event.target.value;
+                              const value = field.key === "state" ? raw.toUpperCase() : raw;
+                              setPersonalDraft((prev) => (prev ? { ...prev, [field.key]: value } : prev));
+                            }}
+                            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none disabled:opacity-60"
+                          />
+                        </div>
+                      ))}
+
+                      <div>
+                        <label
+                          htmlFor="personal-region"
+                          className="mb-1 block text-xs font-semibold uppercase keeping-wide text-gray-600"
+                        >
+                          Region
+                        </label>
+                        <select
+                          id="personal-region"
+                          disabled={personalSaving}
+                          value={personalDraft.region_id}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setPersonalDraft((prev) => (prev ? { ...prev, region_id: value } : prev));
+                          }}
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none disabled:opacity-60"
+                        >
+                          <option value="">No region</option>
+                          {personalData.region_id &&
+                            !personalRegionOptions.some((r) => r.id === personalData.region_id) && (
+                              <option value={personalData.region_id}>{personalData.region_name || "Current region"}</option>
+                            )}
+                          {personalRegionOptions.map((region) => (
+                            <option key={region.id} value={region.id}>
+                              {region.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <p className="mt-3 text-xs text-gray-500">
+                      Region is normally assigned from the address coordinates. Choosing one here overrides it until the coordinates are next recalculated. Email cannot be edited here.
+                    </p>
+
+                    {personalSaveError && (
+                      <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                        {personalSaveError}
+                      </div>
+                    )}
+
+                    <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={cancelPersonalEdit}
+                        disabled={personalSaving}
+                        className="rounded-lg px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={personalSaving}
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {personalSaving ? "Saving…" : "Save changes"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </section>
+
             <KnowYourRightsNoticeSection state={employee?.state ?? undefined} />
 
             {/* Personal Calendar */}
@@ -3895,25 +4232,54 @@ export default function EmployeeProfilePage() {
             </div>
           )}
 
-          {/* Uploaded Emails */}
+          {/* Uploaded Documents, grouped by the category chosen at upload time */}
           {uploadedEmails.length > 0 && (
             <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100">
-                <h2 className="text-base font-semibold text-gray-900">Uploaded Emails</h2>
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+                <h2 className="text-base font-semibold text-gray-900">Uploaded Documents</h2>
+                <span className="text-xs text-gray-400">
+                  {uploadedEmails.length} file{uploadedEmails.length !== 1 ? "s" : ""}
+                </span>
               </div>
-              <div className="p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                {uploadedEmails.map((img) => (
-                  <a key={img.name} href={img.url} target="_blank" rel="noopener noreferrer"
-                    className="group block rounded-xl overflow-hidden border border-gray-100 hover:shadow-md transition-shadow">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.url} alt={img.name} className="w-full h-32 object-cover" />
-                    <div className="px-2 py-1.5 bg-gray-50">
-                      <p className="text-xs text-gray-500">
-                        {new Date(img.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                      </p>
+              <div className="divide-y divide-gray-100">
+                {UPLOADED_DOC_CATEGORIES.map((cat) => {
+                  const docs = uploadedEmails.filter((d) => (d.category ?? "general") === cat.value);
+                  if (docs.length === 0) return null;
+                  return (
+                    <div key={cat.value} className="p-6">
+                      <h3 className="text-sm font-semibold text-gray-700 mb-3">
+                        {cat.label}
+                        <span className="ml-2 text-xs font-normal text-gray-400">{docs.length}</span>
+                      </h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                        {docs.map((img) => (
+                          <a key={img.name} href={img.url} target="_blank" rel="noopener noreferrer"
+                            className="group block rounded-xl overflow-hidden border border-gray-100 hover:shadow-md transition-shadow">
+                            {img.isPdf ? (
+                              <div className="w-full h-32 flex flex-col items-center justify-center gap-1 bg-gray-100">
+                                <svg className="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <span className="text-xs font-semibold text-red-600 tracking-wide">PDF</span>
+                              </div>
+                            ) : (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={img.url} alt={img.name} className="w-full h-32 object-cover" />
+                            )}
+                            <div className="px-2 py-1.5 bg-gray-50 flex items-center justify-between gap-2">
+                              <p className="text-xs text-gray-500">
+                                {new Date(img.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                              </p>
+                              {img.audience === "hr" && (
+                                <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">HR only</span>
+                              )}
+                            </div>
+                          </a>
+                        ))}
+                      </div>
                     </div>
-                  </a>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}

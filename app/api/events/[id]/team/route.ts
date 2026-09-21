@@ -7,6 +7,7 @@ import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { findSameDayConflicts } from "@/lib/team-conflicts";
 import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
+import { getPendingCustomFormsByUser, describePendingForms } from "@/lib/vendor-forms-status";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import crypto from "crypto";
 
@@ -1088,6 +1089,22 @@ export async function GET(
       }
     }
 
+    // Unfinished supplemental (custom) forms per team member. Only looked up when the
+    // caller asks for it (the Create Team modal); other consumers of this route skip the cost.
+    const includePendingForms = new URL(req.url).searchParams.get('include_pending_forms') === '1';
+    const pendingFormsByUser = includePendingForms
+      ? await getPendingCustomFormsByUser(supabaseAdmin, teamUserIds)
+      : new Map<string, string[]>();
+    const pendingFormsFields = (memberId: string) => {
+      if (!includePendingForms || !memberId) return {};
+      const pending = describePendingForms(pendingFormsByUser.get(memberId));
+      return {
+        pendingForms: pending.count > 0,
+        pendingFormsCount: pending.count,
+        pendingFormTitles: pending.titles,
+      };
+    };
+
     // Decrypt sensitive profile data and fallback to employee_information.phone when needed
     const decryptedTeamMembers = teamMembers?.map((member: any) => {
       if (!member?.users) return member;
@@ -1150,6 +1167,7 @@ export async function GET(
         isOutOfVenue: memberUserId ? outOfVenueVendorIds.has(memberUserId) : false,
         has_attestation: hasSubmittedAttestation,
         attestation_status: attestationStatus,
+        ...pendingFormsFields(memberUserId),
         users: {
           ...member.users,
           profiles: {

@@ -444,6 +444,16 @@ export default function VenueManagementPage() {
                 Vendor Assignments
               </button>
             </Link>
+            <Link href="/venue-data">
+              <button className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium text-sm">
+                Venue Data
+              </button>
+            </Link>
+            <Link href="/venue-dashboard">
+              <button className="apple-button apple-button-secondary">
+                Venue Dashboard
+              </button>
+            </Link>
             <Link href="/global-calendar">
               <button className="apple-button apple-button-secondary">
                 ← Back to Calendar

@@ -1675,6 +1675,8 @@ export async function POST(req: NextRequest) {
       let totalTips = 0;
       let totalCommission = 0;
       let totalRestBreak = 0;
+      // Number of shifts in the period that earned rest break pay (shown on the Earnings table).
+      let totalRestBreakCount = 0;
       let totalOther = 0;
       let totalAdjustmentMealPremium = 0;
       let totalAdjustmentReimbursement = 0;
@@ -1928,6 +1930,7 @@ export async function POST(req: NextRequest) {
         totalVariableIncentive += displayVariableIncentive;
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
+        if (restBreak > 0) totalRestBreakCount += 1;
         totalOther += other;
         totalAdjustmentMealPremium += adjustmentMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;
@@ -2261,7 +2264,9 @@ export async function POST(req: NextRequest) {
         { label: "Commission", color: black, rate: effectiveRate, hours: commissionHoursForEarnings, thisPeriod: totalCommissionRounded, ytd: ytdCommission },
         { label: "Variable Incentive", color: black, rate: round2(variableRateForEarnings), hours: commissionHoursForEarnings, thisPeriod: totalVariableIncentiveRounded, ytd: ytdVariableIncentive },
         { label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
-        { label: "Rest Break Pay", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
+        // Hours column holds the number of rest breaks paid this period (a count, not hours).
+        // Keep the label unchanged: /pdf-reader and the LLM extractor match "Rest Break Pay" followed by numbers.
+        { label: "Rest Break Pay", color: black, rate: 0, hours: totalRestBreakCount, hoursAsCount: true, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
         { label: "Bonus", color: black, rate: 0, hours: 0, thisPeriod: totalOtherRounded, ytd: ytdOther },
         { label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
         { label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
@@ -2280,7 +2285,7 @@ export async function POST(req: NextRequest) {
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
         if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
-        if (row.hours > 0) drawTopText(Number(row.hours).toFixed(2), earningsHoursValueX, row.y, { size: 8 });
+        if (row.hours > 0) drawTopText(Number(row.hours).toFixed((row as any).hoursAsCount ? 0 : 2), earningsHoursValueX, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
         if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
       }

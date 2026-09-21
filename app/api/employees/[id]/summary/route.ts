@@ -1,5 +1,7 @@
 // app/api/employees/[id]/summary/route.ts
 export const dynamic = 'force-dynamic';
+// Timesheet lock and edit request status must reflect approvals immediately.
+export const fetchCache = 'force-no-store';
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
@@ -295,7 +297,8 @@ export async function GET(
       first_name: firstName,
       last_name: lastName,
       email: employeeEmail,
-      phone: profile.phone,
+      // phone is stored encrypted; safeDecrypt passes legacy plaintext values through
+      phone: profile.phone ? safeDecrypt(profile.phone) : profile.phone,
       city: profile.city,
       state: profile.state,
       profile_photo_url: null, // Binary data not exposed as URL

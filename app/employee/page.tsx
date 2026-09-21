@@ -93,6 +93,19 @@ export default function EmployeeFormsPage() {
           </button>
         </div>
 
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6 flex items-center justify-between gap-4">
+          <div>
+            <p className="font-semibold text-gray-900">Sexual Harassment Prevention Training</p>
+            <p className="text-sm text-gray-500 mt-1">Required by California. Free online course from the state.</p>
+          </div>
+          <button
+            onClick={() => router.push('/sexual-harassment-training')}
+            className="shrink-0 text-sm font-semibold px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+          >
+            Open
+          </button>
+        </div>
+
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700 mb-6">
             {error}

@@ -13,12 +13,45 @@ type UserOption = {
   lastName: string;
 };
 
+// "hr" = only on /hr/employees/[id]; "all" = also on the employee's own /employees/[id]
+type Audience = 'hr' | 'all';
+
+const AUDIENCE_OPTIONS: { value: Audience; title: string; where: string; hint: string }[] = [
+  {
+    value: 'hr',
+    title: 'HR only',
+    where: '/hr/employees',
+    hint: 'Only HR sees it on the employee profile.',
+  },
+  {
+    value: 'all',
+    title: 'HR and employee',
+    where: '/hr/employees and /employees',
+    hint: 'The employee also sees it on their own page.',
+  },
+];
+
+// Which section of /hr/employees/[id] the document is listed under
+type Category = 'general' | 'receipts' | 'hr_documents';
+
+const CATEGORY_OPTIONS: { value: Category; title: string; hint: string }[] = [
+  { value: 'general', title: 'General', hint: 'Emails and anything else.' },
+  { value: 'receipts', title: 'Receipts', hint: 'Receipts and proof of purchase.' },
+  { value: 'hr_documents', title: 'HR Documents', hint: 'Forms, letters and records.' },
+];
+
+const categoryTitle = (value: Category | undefined) =>
+  CATEGORY_OPTIONS.find((o) => o.value === (value ?? 'general'))?.title ?? 'General';
+
 type UploadRecord = {
   userId: string;
   userName: string;
   url: string;
   name: string;
   createdAt: string;
+  audience: Audience;
+  category?: Category;
+  isPdf: boolean;
 };
 
 export default function UploadImagesPage() {
@@ -27,6 +60,11 @@ export default function UploadImagesPage() {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
+  // Default to the narrower option so a document is never shown to the employee by accident.
+  const [audience, setAudience] = useState<Audience>('hr');
+  const [uploadedAudience, setUploadedAudience] = useState<Audience>('hr');
+  const [category, setCategory] = useState<Category>('general');
+  const [uploadedCategory, setUploadedCategory] = useState<Category>('general');
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +77,7 @@ export default function UploadImagesPage() {
   // User picker
   const [allUsers, setAllUsers] = useState<UserOption[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
   const [selectedUser, setSelectedUser] = useState<UserOption | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -64,16 +103,22 @@ export default function UploadImagesPage() {
   useEffect(() => {
     async function init() {
       setUsersLoading(true);
+      setUsersError(null);
       try {
         const headers = await getAuthHeader();
         const [usersRes] = await Promise.all([
-          fetch('/api/admin/upload-emails', { headers }),
+          fetch('/api/admin/upload-emails', { headers, cache: 'no-store' }),
           fetchHistory(headers),
         ]);
         if (usersRes.ok) {
           const data = await usersRes.json();
           setAllUsers(data.users ?? []);
+        } else {
+          const data = await usersRes.json().catch(() => null);
+          setUsersError(data?.error || `Could not load users (HTTP ${usersRes.status}).`);
         }
+      } catch (e: any) {
+        setUsersError(`Could not load users: ${e?.message || 'network error'}`);
       } finally {
         setUsersLoading(false);
       }
@@ -124,6 +169,8 @@ export default function UploadImagesPage() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('userId', selectedUser.id);
+      formData.append('audience', audience);
+      formData.append('category', category);
       const res = await fetch('/api/admin/upload-emails', {
         method: 'POST',
         headers: authHeader,
@@ -132,6 +179,8 @@ export default function UploadImagesPage() {
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Upload failed'); return; }
       setUploadedUrl(data.url);
+      setUploadedAudience(audience);
+      setUploadedCategory(category);
       fetchHistory(authHeader);
     } catch (e: any) {
       setError(`Network error: ${e?.message || 'Please try again.'}`);
@@ -193,10 +242,10 @@ export default function UploadImagesPage() {
             ← Back
           </button>
           <h1 style={{ fontSize: '1.875rem', fontWeight: 700, color: '#1d1d1f', margin: 0, letterSpacing: '-0.02em' }}>
-            Upload Image
+            Upload Document
           </h1>
           <p style={{ color: '#6e6e73', marginTop: '0.375rem', fontSize: '0.9375rem' }}>
-            Select a user and upload an image to assign it to them.
+            Select a user, choose who can see it, and upload an image or PDF.
           </p>
         </div>
 
@@ -258,8 +307,8 @@ export default function UploadImagesPage() {
                   </div>
                   <div style={{ maxHeight: 260, overflowY: 'auto' }}>
                     {filteredUsers.length === 0 ? (
-                      <div style={{ padding: '0.875rem 1rem', color: '#6e6e73', fontSize: '0.9375rem' }}>
-                        No users found
+                      <div style={{ padding: '0.875rem 1rem', color: usersError ? '#d70015' : '#6e6e73', fontSize: '0.9375rem' }}>
+                        {usersLoading ? 'Loading users…' : usersError ?? 'No users found'}
                       </div>
                     ) : filteredUsers.map((u) => (
                       <button
@@ -302,10 +351,104 @@ export default function UploadImagesPage() {
             </div>
           </div>
 
-          {/* Step 2 — Upload image */}
+          {/* Step 2 — Where it is visible */}
+          <div style={{ padding: '1rem 1.5rem', ...sectionBorder }}>
+            <p style={{ fontWeight: 700, color: '#1d1d1f', margin: '0 0 0.625rem', fontSize: '0.9375rem' }}>
+              2 — Visible On
+            </p>
+            <div
+              role="radiogroup"
+              aria-label="Where this document is visible"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.625rem' }}
+            >
+              {AUDIENCE_OPTIONS.map((opt) => {
+                const active = audience === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setAudience(opt.value)}
+                    style={{
+                      textAlign: 'left', cursor: 'pointer', outline: 'none',
+                      padding: '0.75rem 0.875rem', borderRadius: '0.75rem',
+                      border: `1.5px solid ${active ? '#007AFF' : 'rgba(0,0,0,0.12)'}`,
+                      background: active ? 'rgba(0,122,255,0.07)' : 'white',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{
+                        width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                        border: `2px solid ${active ? '#007AFF' : 'rgba(0,0,0,0.25)'}`,
+                        background: active ? 'radial-gradient(#007AFF 45%, transparent 50%)' : 'transparent',
+                      }} />
+                      <span style={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.9375rem' }}>{opt.title}</span>
+                    </div>
+                    <div style={{ fontSize: '0.8125rem', color: '#007AFF', marginTop: '0.35rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                      {opt.where}
+                    </div>
+                    <div style={{ fontSize: '0.8125rem', color: '#6e6e73', marginTop: '0.2rem' }}>
+                      {opt.hint}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Step 3 — Category on /hr/employees */}
+          <div style={{ padding: '1rem 1.5rem', ...sectionBorder }}>
+            <p style={{ fontWeight: 700, color: '#1d1d1f', margin: '0 0 0.25rem', fontSize: '0.9375rem' }}>
+              3 — Category
+            </p>
+            <p style={{ color: '#6e6e73', margin: '0 0 0.625rem', fontSize: '0.8125rem' }}>
+              Sets the section it is listed under on the employee page at /hr/employees.
+            </p>
+            <div
+              role="radiogroup"
+              aria-label="Document category"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.625rem' }}
+            >
+              {CATEGORY_OPTIONS.map((opt) => {
+                const active = category === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setCategory(opt.value)}
+                    style={{
+                      textAlign: 'left', cursor: 'pointer', outline: 'none',
+                      padding: '0.75rem 0.875rem', borderRadius: '0.75rem',
+                      border: `1.5px solid ${active ? '#007AFF' : 'rgba(0,0,0,0.12)'}`,
+                      background: active ? 'rgba(0,122,255,0.07)' : 'white',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{
+                        width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                        border: `2px solid ${active ? '#007AFF' : 'rgba(0,0,0,0.25)'}`,
+                        background: active ? 'radial-gradient(#007AFF 45%, transparent 50%)' : 'transparent',
+                      }} />
+                      <span style={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.9375rem' }}>{opt.title}</span>
+                    </div>
+                    <div style={{ fontSize: '0.8125rem', color: '#6e6e73', marginTop: '0.35rem' }}>
+                      {opt.hint}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Step 4 — Upload file */}
           <div style={{ padding: '1rem 1.5rem' }}>
             <p style={{ fontWeight: 700, color: '#1d1d1f', margin: '0 0 0.75rem', fontSize: '0.9375rem' }}>
-              2 — Upload Image
+              4 — Upload File
             </p>
 
             {/* Drop zone */}
@@ -325,11 +468,13 @@ export default function UploadImagesPage() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff"
+                  accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff,application/pdf,.pdf"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
                   style={{ display: 'none' }}
                 />
-                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🖼️</div>
+                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>
+                  {file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) ? '📄' : '🖼️'}
+                </div>
                 {file ? (
                   <>
                     <p style={{ fontWeight: 600, color: '#1d1d1f', margin: 0 }}>{file.name}</p>
@@ -339,9 +484,9 @@ export default function UploadImagesPage() {
                   </>
                 ) : (
                   <>
-                    <p style={{ fontWeight: 600, color: '#1d1d1f', margin: 0 }}>Drop image or click to browse</p>
+                    <p style={{ fontWeight: 600, color: '#1d1d1f', margin: 0 }}>Drop file or click to browse</p>
                     <p style={{ color: '#6e6e73', margin: '0.2rem 0 0', fontSize: '0.8125rem' }}>
-                      PNG, JPG, WEBP, BMP, GIF, TIFF — max 4 mb
+                      PDF, PNG, JPG, WEBP, BMP, GIF, TIFF — max 4 mb
                     </p>
                   </>
                 )}
@@ -357,6 +502,9 @@ export default function UploadImagesPage() {
                 color: '#1d7a34', fontWeight: 600, fontSize: '0.9375rem',
               }}>
                 ✓ Uploaded for {selectedUser?.firstName} {selectedUser?.lastName}
+                <div style={{ fontWeight: 400, fontSize: '0.8125rem', marginTop: '0.2rem' }}>
+                  Visible on {AUDIENCE_OPTIONS.find((o) => o.value === uploadedAudience)?.where} under {categoryTitle(uploadedCategory)}
+                </div>
               </div>
             )}
 
@@ -431,12 +579,29 @@ export default function UploadImagesPage() {
                   background: '#f5f5f7', borderRadius: '0.875rem', overflow: 'hidden',
                   display: 'flex', flexDirection: 'column',
                 }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={rec.url}
-                    alt={rec.name}
-                    style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
-                  />
+                  {rec.isPdf ? (
+                    <a
+                      href={rec.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open PDF"
+                      style={{
+                        height: 140, display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center', gap: '0.35rem',
+                        background: '#ececf1', textDecoration: 'none',
+                      }}
+                    >
+                      <span style={{ fontSize: '2.25rem', lineHeight: 1 }}>📄</span>
+                      <span style={{ fontWeight: 700, color: '#dc2626', fontSize: '0.8125rem', letterSpacing: '0.04em' }}>PDF</span>
+                    </a>
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={rec.url}
+                      alt={rec.name}
+                      style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
+                    />
+                  )}
                   <div style={{ padding: '0.625rem 0.75rem', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem' }}>
                     <div>
                       <div style={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.8125rem', lineHeight: 1.3 }}>
@@ -447,6 +612,23 @@ export default function UploadImagesPage() {
                           year: 'numeric', month: 'short', day: 'numeric',
                         })}
                       </div>
+                      <span style={{
+                        display: 'inline-block', marginTop: '0.35rem',
+                        fontSize: '0.6875rem', fontWeight: 600, borderRadius: '0.375rem',
+                        padding: '0.1rem 0.45rem',
+                        background: rec.audience === 'hr' ? 'rgba(255,149,0,0.14)' : 'rgba(52,199,89,0.14)',
+                        color: rec.audience === 'hr' ? '#b36b00' : '#1d7a34',
+                      }}>
+                        {rec.audience === 'hr' ? 'HR only' : 'HR + Employee'}
+                      </span>
+                      <span style={{
+                        display: 'inline-block', marginTop: '0.35rem', marginLeft: '0.35rem',
+                        fontSize: '0.6875rem', fontWeight: 600, borderRadius: '0.375rem',
+                        padding: '0.1rem 0.45rem',
+                        background: 'rgba(0,122,255,0.12)', color: '#0060cc',
+                      }}>
+                        {categoryTitle(rec.category)}
+                      </span>
                     </div>
                     <button
                       onClick={() => handleDelete(`${rec.userId}/${rec.name}`)}

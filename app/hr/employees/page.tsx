@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import TimesheetEditReviewQueue from "@/components/TimesheetEditReviewQueue";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -629,6 +630,9 @@ export default function HREmployeesPage() {
           </button>
         </div>
       </div>
+
+      {/* Timesheet edit permission requests waiting on a reviewer */}
+      <TimesheetEditReviewQueue />
 
       {/* Recent Helpdesk Tickets */}
       <div style={{

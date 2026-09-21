@@ -9,7 +9,9 @@ import { supabase } from "@/lib/supabase";
 import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
 import { safeDecrypt } from "@/lib/encryption";
 import { getVenueAbbreviation } from "@/lib/utils";
+import { isPendingTeamStatus } from "@/lib/team-conflicts";
 import "./dashboard-styles.css";
+import PendingFormsList from "@/components/PendingFormsList";
 
 type EventItem = {
   id: string;
@@ -50,6 +52,9 @@ type Vendor = {
   hasCoordinates?: boolean;
   recently_responded?: boolean;
   has_submitted_availability?: boolean;
+  pending_forms?: boolean;
+  pending_forms_count?: number;
+  pending_form_titles?: string[];
   availability_responded_at?: string | null;
   availability_scope_start?: string | null;
   availability_scope_end?: string | null;
@@ -930,7 +935,7 @@ export default function DashboardPage() {
       // Use geographic filtering when a specific region is selected
       // This ensures vendors are filtered by geographic boundaries (radius from region center)
       const useGeoFilter = regionId !== "all";
-      const url = `/api/all-vendors${regionId !== "all" ? `?region_id=${regionId}${useGeoFilter ? '&geo_filter=true' : ''}` : ""}`;
+      const url = `/api/all-vendors?include_pending_forms=1${regionId !== "all" ? `&region_id=${regionId}${useGeoFilter ? '&geo_filter=true' : ''}` : ""}`;
       console.log('[DASHBOARD] ð¡ Fetching vendors from:', url, { useGeoFilter, userRole, regionId });
 
       // Fetch ALL vendors from the database directly, not filtered by venue
@@ -1126,6 +1131,7 @@ export default function DashboardPage() {
       if (regionId && regionId !== "all") {
         params.append("region_id", regionId);
       }
+      params.append("include_pending_forms", "1");
       const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
       console.log('[DASHBOARD-TEAM] Fetching available vendors from:', url, { regionId });
 
@@ -1163,7 +1169,7 @@ export default function DashboardPage() {
     // Load existing team members and merge with available vendors
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${event.id}/team`, {
+      const res = await fetch(`/api/events/${event.id}/team?include_pending_forms=1`, {
         method: "GET",
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
@@ -1184,6 +1190,9 @@ export default function DashboardPage() {
           },
           distance: null,
           status: member.status, // Include status to show confirmation state
+          pendingForms: Boolean(member.pendingForms),
+          pendingFormsCount: member.pendingFormsCount ?? 0,
+          pendingFormTitles: member.pendingFormTitles ?? [],
           isExistingMember: true // Flag to show they're already on the team
         }));
 
@@ -1245,7 +1254,7 @@ export default function DashboardPage() {
       // Re-load and preserve existing team members
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch(`/api/events/${selectedEvent.id}/team`, {
+        const res = await fetch(`/api/events/${selectedEvent.id}/team?include_pending_forms=1`, {
           method: "GET",
           headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         });
@@ -1264,6 +1273,9 @@ export default function DashboardPage() {
             },
             distance: null,
             status: member.status,
+            pendingForms: Boolean(member.pendingForms),
+            pendingFormsCount: member.pendingFormsCount ?? 0,
+            pendingFormTitles: member.pendingFormTitles ?? [],
             isExistingMember: true,
           }));
 
@@ -1523,6 +1535,15 @@ export default function DashboardPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                 </svg>
                 Planning Calendar
+              </Link>
+              <Link
+                href="/sexual-harassment-training"
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                Harassment Training
               </Link>
               <button
                 onClick={() => setShowHelpDeskModal(true)}
@@ -2253,7 +2274,7 @@ export default function DashboardPage() {
                       </div>
                     )}
                     {filteredAndSortedVendors.map((v) => (
-                      <div key={v.id} className="apple-vendor-card" onClick={() => toggleVendorSelection(v.id)}>
+                      <div key={v.id} className={`apple-vendor-card${v.pending_forms ? " apple-vendor-card-pending-forms" : ""}`} onClick={() => toggleVendorSelection(v.id)}>
                         <input
                           type="checkbox"
                           checked={selectedVendors.has(v.id)}
@@ -2285,6 +2306,9 @@ export default function DashboardPage() {
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
                             <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                              {v.pending_forms && (
+                                <div className="px-2 py-0.5 text-xs bg-red-100 text-red-700 rounded-md font-medium">Pending forms{v.pending_forms_count ? ` (${v.pending_forms_count})` : ""}</div>
+                              )}
                               {v.recently_responded && (
                                 <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
                               )}
@@ -2315,6 +2339,7 @@ export default function DashboardPage() {
                             </div>
                           )}
                           </div>
+                          <PendingFormsList titles={v.pending_form_titles} count={v.pending_forms_count} />
                           <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
                               <>
@@ -2529,7 +2554,7 @@ export default function DashboardPage() {
                       const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : null;
 
                       return (
-                        <div key={v.id} className="apple-vendor-card" onClick={() => !(v as any).isExistingMember && !(v as any).confirmedElsewhere && toggleTeamMember(v.id)}>
+                        <div key={v.id} className={`apple-vendor-card${(v as any).pendingForms ? " apple-vendor-card-pending-forms" : ""}`} onClick={() => !(v as any).isExistingMember && !(v as any).confirmedElsewhere && toggleTeamMember(v.id)}>
                           {!(v as any).isExistingMember && !(v as any).confirmedElsewhere ? (
                             <input
                               type="checkbox"
@@ -2565,15 +2590,28 @@ export default function DashboardPage() {
                                 {firstName} {lastName}
                               </div>
                               <div className="flex items-center gap-2 flex-wrap justify-end">
+                                {(v as any).pendingForms && (
+                                  <div className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded-md font-medium">Pending forms{(v as any).pendingFormsCount ? ` (${(v as any).pendingFormsCount})` : ""}</div>
+                                )}
                                 {(v as any).confirmedElsewhere && (
-                                  <div className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded-md font-medium">
-                                    Busy
-                                  </div>
+                                  isPendingTeamStatus((v as any).conflictStatus) ? (
+                                    <div
+                                      className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded-md font-medium"
+                                      title={(v as any).conflictEventName ? `Invited to ${(v as any).conflictEventName} - awaiting confirmation` : "Invited to another event - awaiting confirmation"}
+                                    >
+                                      Pending
+                                    </div>
+                                  ) : (
+                                    <div className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded-md font-medium">
+                                      Busy
+                                    </div>
+                                  )
                                 )}
                                 {(v as any).isExistingMember && (
-                                  <div className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-md font-medium">
+                                  <div className={`px-2 py-1 text-xs rounded-md font-medium ${isPendingTeamStatus((v as any).status) ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-700'}`}>
                                     {(v as any).status === 'confirmed' ? 'Confirmed' :
                                      (v as any).status === 'declined' ? 'Declined' :
+                                     isPendingTeamStatus((v as any).status) ? 'Pending' :
                                      'Invited'}
                                   </div>
                                 )}
@@ -2614,6 +2652,7 @@ export default function DashboardPage() {
                             </div>
                           )}
                           </div>
+                          <PendingFormsList titles={(v as any).pendingFormTitles} count={(v as any).pendingFormsCount} />
                           <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
                               <>

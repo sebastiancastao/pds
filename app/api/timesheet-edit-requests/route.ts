@@ -4,8 +4,24 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
 import { sendEmail } from "@/lib/email";
+import {
+  ACTIVE_TIMESHEET_EDIT_STATUSES,
+  OPEN_TIMESHEET_EDIT_STATUSES,
+  TIMESHEET_EDIT_REASON_MAX_LENGTH,
+  TIMESHEET_TIME_FIELDS,
+  type TimesheetEditProposal,
+  canRequesterWithdraw,
+  canTransitionTimesheetEditRequest,
+  formatClock12h,
+  isTimesheetEditReviewer,
+  isTimesheetEditStatus,
+  parseTimesheetEditProposal,
+} from "@/lib/timesheet-edit-requests";
 
 export const dynamic = "force-dynamic";
+// Approvals must be visible right away. Next.js would otherwise serve cached
+// Supabase responses from its fetch Data Cache.
+export const fetchCache = "force-no-store";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -17,17 +33,6 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const PRIVILEGED_ROLES = new Set([
-  "admin",
-  "exec",
-  "hr",
-  "manager",
-  "supervisor",
-  "supervisor2",
-  "supervisor3",
-]);
-
-const OPEN_REQUEST_STATUSES = ["submitted", "in_review"] as const;
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const TIMESHEET_EDIT_REQUEST_NOTIFICATION_RECIPIENTS = [
   "portal@1pds.net",
@@ -54,6 +59,7 @@ type EditRequestRow = {
   requested_by: string;
   requester_role: string | null;
   request_reason: string;
+  requested_changes: TimesheetEditProposal | null;
   status: string;
   review_notes: string | null;
   reviewed_by: string | null;
@@ -91,6 +97,48 @@ function dedupeEmails(values: Array<string | null | undefined>) {
         .filter(Boolean)
     )
   );
+}
+
+// Table of the times a requester wants, for the notification email. Every value
+// was validated as HH:MM or a real date, so nothing here needs HTML escaping.
+function renderProposalEmailHtml(proposal: TimesheetEditProposal | null) {
+  if (!proposal) return "";
+
+  const rows = TIMESHEET_TIME_FIELDS.filter(
+    (field) => proposal.requested[field.key] || proposal.previous?.[field.key]
+  )
+    .map((field) => {
+      const before = proposal.previous ? proposal.previous[field.key] : "";
+      const after = proposal.requested[field.key];
+      const changed = before !== after;
+      const cell = "padding:8px 12px;border-top:1px solid #e2e8f0;font-size:14px;";
+      return (
+        `<tr${changed ? ' style="background:#fffbeb;"' : ""}>` +
+        `<td style="${cell}color:#64748b;">${field.label}</td>` +
+        `<td style="${cell}color:#0f172a;">${formatClock12h(before)}</td>` +
+        `<td style="${cell}color:#0f172a;${changed ? "font-weight:700;" : ""}">${formatClock12h(after)}</td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  const dayNote = proposal.workDate
+    ? `<p style="margin:0 0 8px 0;color:#64748b;font-size:12px;">Work day: ${proposal.workDate}</p>`
+    : "";
+
+  return `
+              <div style="margin-top:24px;">
+                <p style="margin:0 0 8px 0;color:#334155;font-size:14px;font-weight:700;">Requested Times</p>
+                ${dayNote}
+                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid #e2e8f0;border-radius:8px;background:#ffffff;">
+                  <tr style="background:#f8fafc;">
+                    <td style="padding:8px 12px;font-size:12px;color:#64748b;font-weight:700;">Field</td>
+                    <td style="padding:8px 12px;font-size:12px;color:#64748b;font-weight:700;">Current</td>
+                    <td style="padding:8px 12px;font-size:12px;color:#64748b;font-weight:700;">Requested</td>
+                  </tr>
+                  ${rows}
+                </table>
+              </div>`;
 }
 
 async function getAuthedUser(req: NextRequest) {
@@ -294,40 +342,46 @@ async function loadTimesheetStatus(userId: string, eventId: string) {
   return (signatureRows || []).length > 0 ? ("submitted" as const) : ("not_submitted" as const);
 }
 
-async function requirePrivilegedRequester(req: NextRequest) {
+async function requireAuthedViewer(req: NextRequest) {
   const user = await getAuthedUser(req);
   if (!user?.id) {
     return { error: NextResponse.json({ error: "Not authenticated." }, { status: 401 }) };
   }
 
   const requester = await loadUserSummary(user.id);
-  if (!PRIVILEGED_ROLES.has(requester.role)) {
-    return {
-      error: NextResponse.json(
-        { error: "You do not have permission to review timesheet edit requests." },
-        { status: 403 }
-      ),
-    };
-  }
-
-  return { user, requester };
+  return { user, requester, canReview: isTimesheetEditReviewer(requester.role) };
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const auth = await requirePrivilegedRequester(req);
+    const auth = await requireAuthedViewer(req);
     if (auth.error) return auth.error;
 
     const { searchParams } = new URL(req.url);
     const statusFilter = String(searchParams.get("status") || "open").trim().toLowerCase();
     const requestId = String(searchParams.get("requestId") || "").trim();
+    const userIdFilter = String(searchParams.get("userId") || "").trim();
+    const viewer = {
+      id: auth.requester.id,
+      role: auth.requester.role,
+      canReview: auth.canReview,
+    };
+
+    // Reviewers can read every request. Everyone else may only read the
+    // requests filed for their own timesheets.
+    if (!auth.canReview && userIdFilter !== auth.requester.id) {
+      return NextResponse.json(
+        { error: "You do not have permission to review timesheet edit requests." },
+        { status: 403 }
+      );
+    }
     const limitRaw = Number(searchParams.get("limit") || "200");
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 500) : 200;
 
     let query = supabaseAdmin
       .from("timesheet_edit_requests")
       .select(
-        "id, event_id, user_id, requested_by, requester_role, request_reason, status, review_notes, reviewed_by, reviewed_at, created_at, updated_at"
+        "id, event_id, user_id, requested_by, requester_role, request_reason, requested_changes, status, review_notes, reviewed_by, reviewed_at, created_at, updated_at"
       )
       .order("created_at", { ascending: false })
       .limit(limit);
@@ -336,10 +390,24 @@ export async function GET(req: NextRequest) {
       query = query.eq("id", requestId);
     }
 
+    if (userIdFilter) {
+      query = query.eq("user_id", userIdFilter);
+    }
+
     if (statusFilter === "open") {
-      query = query.in("status", ["submitted", "in_review"]);
+      query = query.in("status", [...OPEN_TIMESHEET_EDIT_STATUSES]);
+    } else if (statusFilter === "active") {
+      query = query.in("status", [...ACTIVE_TIMESHEET_EDIT_STATUSES]);
     } else if (statusFilter !== "all") {
-      query = query.eq("status", statusFilter);
+      // A single status or a comma separated list, e.g. "submitted,approved".
+      const requestedStatuses = statusFilter
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (requestedStatuses.length === 0 || !requestedStatuses.every(isTimesheetEditStatus)) {
+        return NextResponse.json({ error: "Invalid status filter." }, { status: 400 });
+      }
+      query = query.in("status", requestedStatuses);
     }
 
     const { data, error } = await query;
@@ -349,7 +417,7 @@ export async function GET(req: NextRequest) {
 
     const rows = (data || []) as EditRequestRow[];
     if (rows.length === 0) {
-      return NextResponse.json({ requests: [] });
+      return NextResponse.json({ requests: [], viewer });
     }
 
     const eventIds = [...new Set(rows.map((row) => row.event_id).filter(Boolean))];
@@ -409,6 +477,7 @@ export async function GET(req: NextRequest) {
     };
 
     return NextResponse.json({
+      viewer,
       requests: rows.map((row) => {
         const event = eventsById.get(row.event_id) || null;
         const workerUser = usersById.get(row.user_id) || null;
@@ -432,6 +501,7 @@ export async function GET(req: NextRequest) {
           requesterEmail: requesterUser?.email ? String(requesterUser.email) : null,
           requesterRole: row.requester_role,
           requestReason: row.request_reason,
+          requestedChanges: row.requested_changes ?? null,
           status: row.status,
           reviewNotes: row.review_notes,
           reviewedBy: row.reviewed_by,
@@ -464,9 +534,21 @@ export async function POST(req: NextRequest) {
     if (!eventId || !targetUserId || !requestReason) {
       return NextResponse.json({ error: "Event, worker, and request reason are required." }, { status: 400 });
     }
+    if (requestReason.length > TIMESHEET_EDIT_REASON_MAX_LENGTH) {
+      return NextResponse.json(
+        { error: `The request reason must be ${TIMESHEET_EDIT_REASON_MAX_LENGTH} characters or fewer.` },
+        { status: 400 }
+      );
+    }
+
+    const parsedProposal = parseTimesheetEditProposal(body?.requestedChanges);
+    if (!parsedProposal.ok) {
+      return NextResponse.json({ error: parsedProposal.error }, { status: 400 });
+    }
+    const proposal = parsedProposal.value;
 
     const requester = await loadUserSummary(user.id);
-    if (user.id !== targetUserId && !PRIVILEGED_ROLES.has(requester.role)) {
+    if (user.id !== targetUserId && !isTimesheetEditReviewer(requester.role)) {
       return NextResponse.json(
         { error: "You do not have permission to request edits for this timesheet." },
         { status: 403 }
@@ -502,7 +584,8 @@ export async function POST(req: NextRequest) {
       .select("id, status, request_reason, created_at")
       .eq("event_id", eventId)
       .eq("user_id", targetUserId)
-      .in("status", [...OPEN_REQUEST_STATUSES])
+      // An approved, unused permission also blocks a duplicate request.
+      .in("status", [...ACTIVE_TIMESHEET_EDIT_STATUSES])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -532,6 +615,7 @@ export async function POST(req: NextRequest) {
         requested_by: requester.id,
         requester_role: requester.role,
         request_reason: requestReason,
+        requested_changes: proposal,
         status: "submitted",
       })
       .select("id, status, request_reason, created_at")
@@ -595,6 +679,7 @@ export async function POST(req: NextRequest) {
                   ${requestReason.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br />")}
                 </div>
               </div>
+              ${renderProposalEmailHtml(proposal)}
               <div style="margin-top:28px;text-align:center;">
                 <a href="${reviewUrl}" style="display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:8px;font-size:14px;font-weight:700;">Open Event Dashboard</a>
                 <p style="margin:12px 0 0 0;color:#64748b;font-size:12px;">${reviewUrl}</p>
@@ -652,7 +737,7 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    const auth = await requirePrivilegedRequester(req);
+    const auth = await requireAuthedViewer(req);
     if (auth.error) return auth.error;
 
     const body = await req.json().catch(() => null);
@@ -668,10 +753,16 @@ export async function PATCH(req: NextRequest) {
     if (!allowedStatuses.has(nextStatus)) {
       return NextResponse.json({ error: "Invalid status." }, { status: 400 });
     }
+    if (reviewNotes.length > TIMESHEET_EDIT_REASON_MAX_LENGTH) {
+      return NextResponse.json(
+        { error: `Review notes must be ${TIMESHEET_EDIT_REASON_MAX_LENGTH} characters or fewer.` },
+        { status: 400 }
+      );
+    }
 
     const { data: existingRequest, error: loadError } = await supabaseAdmin
       .from("timesheet_edit_requests")
-      .select("id, status")
+      .select("id, status, user_id, requested_by")
       .eq("id", requestId)
       .maybeSingle();
 
@@ -682,22 +773,56 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Request not found." }, { status: 404 });
     }
 
-    const payload: Record<string, unknown> = {
-      status: nextStatus,
-      review_notes: reviewNotes || null,
-      reviewed_by: auth.user.id,
-      reviewed_at: new Date().toISOString(),
-    };
+    // Reviewers can take any allowed step. The person who filed the request, or
+    // the worker it is for, can only withdraw it while it is still waiting.
+    const isParty =
+      existingRequest.requested_by === auth.user.id || existingRequest.user_id === auth.user.id;
+    const isWithdrawal = nextStatus === "cancelled" && canRequesterWithdraw(existingRequest.status);
+    if (!auth.canReview && !(isParty && isWithdrawal)) {
+      return NextResponse.json(
+        { error: "You do not have permission to review timesheet edit requests." },
+        { status: 403 }
+      );
+    }
 
+    if (!canTransitionTimesheetEditRequest(existingRequest.status, nextStatus)) {
+      return NextResponse.json(
+        { error: `A ${existingRequest.status} request cannot be changed to ${nextStatus}.` },
+        { status: 409 }
+      );
+    }
+
+    const withdrawnByRequester = !auth.canReview;
+    const payload: Record<string, unknown> = withdrawnByRequester
+      ? {
+          status: nextStatus,
+          review_notes: reviewNotes || "Withdrawn by the requester.",
+        }
+      : {
+          status: nextStatus,
+          review_notes: reviewNotes || null,
+          reviewed_by: auth.user.id,
+          reviewed_at: new Date().toISOString(),
+        };
+
+    // Only update while the request is still in the status we validated, so two
+    // reviewers acting at the same time cannot overwrite each other.
     const { data: updatedRequest, error: updateError } = await supabaseAdmin
       .from("timesheet_edit_requests")
       .update(payload)
       .eq("id", requestId)
+      .eq("status", existingRequest.status)
       .select("id, status, review_notes, reviewed_at, reviewed_by, updated_at")
-      .single();
+      .maybeSingle();
 
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
+    }
+    if (!updatedRequest?.id) {
+      return NextResponse.json(
+        { error: "This request was just updated by someone else. Refresh and try again." },
+        { status: 409 }
+      );
     }
 
     return NextResponse.json({

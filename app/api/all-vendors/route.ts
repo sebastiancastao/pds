@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { safeDecrypt } from "@/lib/encryption";
+import { getPendingCustomFormsByUser, describePendingForms } from "@/lib/vendor-forms-status";
 import {
   isWithinRegion,
   calculateDistanceMiles,
@@ -11,6 +12,7 @@ import {
   delay
 } from "@/lib/geocoding";
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -431,6 +433,22 @@ export async function GET(req: NextRequest) {
       console.log('[ALL-VENDORS] 📊 Vendors by region_id:', regionCounts);
     }
 
+    // Unfinished supplemental (custom) forms per vendor. Only looked up when the caller
+    // asks for it (the Availability Request modal) because it costs several queries.
+    const includePendingForms = searchParams.get('include_pending_forms') === '1';
+    const pendingFormsByUser = includePendingForms
+      ? await getPendingCustomFormsByUser(supabaseAdmin, (vendors ?? []).map((v: any) => v.id))
+      : new Map<string, string[]>();
+    const pendingFormsFields = (vendorId: string) => {
+      if (!includePendingForms) return {};
+      const pending = describePendingForms(pendingFormsByUser.get(String(vendorId)));
+      return {
+        pending_forms: pending.count > 0,
+        pending_forms_count: pending.count,
+        pending_form_titles: pending.titles,
+      };
+    };
+
     // Process vendors and decrypt sensitive data
     let processedVendors = (vendors ?? [])
       .map((vendor: any) => {
@@ -465,6 +483,7 @@ export async function GET(req: NextRequest) {
           role: vendor.role,
           division: vendor.division,
           is_active: vendor.is_active,
+          ...pendingFormsFields(vendor.id),
           recently_responded: recentResponderSet.has(vendor.id),
           has_submitted_availability: latestAvailabilityByVendor.has(vendor.id),
           availability_responded_at: latestAvailability?.respondedAt || null,

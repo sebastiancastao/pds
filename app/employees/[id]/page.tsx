@@ -5,6 +5,13 @@ import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState 
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
+import {
+  TIMESHEET_EDIT_PANEL_ID,
+  TimesheetEditPermissionsPanel,
+  TimesheetEditRequestModal,
+  type TimesheetEditRequestTarget,
+} from "@/components/TimesheetEditPermissions";
+import { useTimesheetEditRequests } from "@/lib/timesheet-edit-requests-client";
 import { supabase } from "@/lib/supabase";
 import {
   isCaTempAgreementCustomFormTitle,
@@ -460,7 +467,7 @@ export default function WorkerProfilePage() {
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<{ id: string; venue_name: string; city: string | null; state: string | null } | null>(null);
-  const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
+  const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string; isPdf?: boolean }[]>([]);
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
   const [sickRequestEventId, setSickRequestEventId] = useState<string>("");
   const [sickRequestReason, setSickRequestReason] = useState<string>("");
@@ -521,6 +528,26 @@ export default function WorkerProfilePage() {
     className = "inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
   ) => {
     if (!eventId) return null;
+    // The worker can ask for their own timesheet to be reopened, and reviewers
+    // can ask on the worker behalf.
+    const canRequestTimesheetEdit = isOwnProfile || timesheetEdits.viewer?.canReview === true;
+    const requestEditButton = (label: string) =>
+      canRequestTimesheetEdit && employeeId ? (
+        <button
+          type="button"
+          onClick={() =>
+            setTimesheetEditTarget({
+              eventId,
+              eventName,
+              workerId: employeeId,
+              workerName: employee ? `${employee.first_name} ${employee.last_name}`.trim() : null,
+            })
+          }
+          className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
+        >
+          {label}
+        </button>
+      ) : null;
     if (attestationStatus !== "not_submitted") {
       if (editRequestStatus === "approved") {
         return (
@@ -550,17 +577,33 @@ export default function WorkerProfilePage() {
             {attestationStatus === "submitted" ? "Attested" : "Rejected"}
           </span>
           {editRequestStatus === "submitted" || editRequestStatus === "in_review" ? (
-            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
-              Edit Requested
-            </span>
+            <>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
+                Edit Requested
+              </span>
+              {timesheetEdits.viewer?.canReview && (
+                <a
+                  href={`#${TIMESHEET_EDIT_PANEL_ID}`}
+                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 bg-white text-amber-800 hover:bg-amber-50 transition-colors"
+                >
+                  Review
+                </a>
+              )}
+            </>
           ) : editRequestStatus === "rejected" ? (
-            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
-              Edit Request Rejected
-            </span>
+            <>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+                Edit Request Rejected
+              </span>
+              {requestEditButton("Request Again")}
+            </>
           ) : (
-            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-slate-50 text-slate-600">
-              Locked
-            </span>
+            <>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-slate-50 text-slate-600">
+                Locked
+              </span>
+              {requestEditButton("Request Edit")}
+            </>
           )}
         </div>
       );
@@ -824,6 +867,17 @@ export default function WorkerProfilePage() {
   const [refreshTick, setRefreshTick] = useState(0);
   const lastLoadedAtRef = useRef(0);
 
+  // Timesheet edit permission workflow: every request filed for this employee,
+  // plus the viewer role so the page knows whether they can review.
+  const timesheetEdits = useTimesheetEditRequests({
+    userId: employeeId,
+    status: "all",
+    limit: 100,
+    refreshKey: refreshTick,
+    enabled: !!employeeId,
+  });
+  const [timesheetEditTarget, setTimesheetEditTarget] = useState<TimesheetEditRequestTarget | null>(null);
+
   const [paystubHistory, setPaystubHistory] = useState<PaystubDistributionEntry[]>([]);
   const [paystubHistoryLoading, setPaystubHistoryLoading] = useState(false);
   const [paystubHistoryError, setPaystubHistoryError] = useState<string | null>(null);
@@ -974,7 +1028,8 @@ export default function WorkerProfilePage() {
       const headers: Record<string, string> = session?.access_token
         ? { Authorization: `Bearer ${session.access_token}` }
         : {};
-      fetch(`/api/admin/upload-emails?images=${employee.id}`, { headers, cache: "no-store" })
+      // view=employee: only files the admin chose to share with the employee (not HR-only ones)
+      fetch(`/api/admin/upload-emails?images=${employee.id}&view=employee`, { headers, cache: "no-store" })
         .then((r) => r.ok ? r.json() : { images: [] })
         .then((d) => setUploadedEmails(d.images ?? []));
     });
@@ -3976,6 +4031,24 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
+            {/* Timesheet edit permissions: request, review, revoke. Statuses shown on the
+                Events Recap rows above come from the same requests. */}
+            <TimesheetEditPermissionsPanel
+              requests={timesheetEdits.requests}
+              viewer={timesheetEdits.viewer}
+              loading={timesheetEdits.loading}
+              error={timesheetEdits.error}
+              onChanged={() => setRefreshTick((current) => current + 1)}
+            />
+            <TimesheetEditRequestModal
+              target={timesheetEditTarget}
+              onClose={() => setTimesheetEditTarget(null)}
+              onSubmitted={() => {
+                setTimesheetEditTarget(null);
+                setRefreshTick((current) => current + 1);
+              }}
+            />
+
             {/* Invitation Cancellation Requests — filed from the row above, held pending
                 until a privileged reviewer approves/rejects them here. */}
             {(cancellationRequestsLoading || cancellationRequests.length > 0) && (
@@ -5215,10 +5288,19 @@ export default function WorkerProfilePage() {
                 {uploadedEmails.map((img) => (
                   <a key={img.name} href={img.url} target="_blank" rel="noopener noreferrer"
                     className="group block rounded-xl overflow-hidden border border-gray-100 hover:shadow-md transition-shadow">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.url} alt={img.name}
-                      className="w-full h-32 object-cover"
-                    />
+                    {img.isPdf ? (
+                      <div className="w-full h-32 flex flex-col items-center justify-center gap-1 bg-gray-100">
+                        <svg className="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <span className="text-xs font-semibold text-red-600 tracking-wide">PDF</span>
+                      </div>
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={img.url} alt={img.name}
+                        className="w-full h-32 object-cover"
+                      />
+                    )}
                     <div className="px-2 py-1.5 bg-gray-50">
                       <p className="text-xs text-gray-500">
                         {new Date(img.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}

@@ -11,6 +11,9 @@ import { computeDailyBreakdownList, sumDailyBreakdown } from "@/lib/daily-overti
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
+import { isPendingTeamStatus } from "@/lib/team-conflicts";
+import SignaturePad, { type SignaturePadHandle } from "@/components/SignaturePad";
+import PendingFormsList, { PENDING_FORMS_BAR_STYLE } from "@/components/PendingFormsList";
 
 type EventItem = {
   id: string;
@@ -57,6 +60,21 @@ type Venue = {
 };
 
 type TabType = "edit" | "sales" | "merchandise" | "team" | "locations" | "timesheet" | "hr";
+
+type TimesheetSignoff = {
+  id: string;
+  signedByName: string | null;
+  note: string | null;
+  signatureData: string;
+  signedAt: string;
+};
+
+const formatSignoffTimestamp = (iso: string | null | undefined): string => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+};
 
 type EventLocation = {
   id: string;
@@ -122,11 +140,16 @@ type TeamVendorOption = {
   status?: string | null;
   isExistingMember?: boolean;
   confirmedElsewhere?: boolean;
+  conflictEventName?: string | null;
+  conflictStatus?: string | null;
   partialAvailability?: boolean;
   availableFrom?: string | null;
   availableTo?: string | null;
   region_id?: string | null;
   isOutOfVenue?: boolean;
+  pendingForms?: boolean;
+  pendingFormsCount?: number;
+  pendingFormTitles?: string[];
   profiles?: {
     first_name?: string | null;
     last_name?: string | null;
@@ -291,6 +314,8 @@ export default function EventDashboardPage() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
+  // Managers and exec can sign off the timesheet; the signature unlocks Sales for everyone.
+  const canSignTimesheet = userRole === "exec" || userRole === "manager";
   const canManageLocations =
     userRole === "exec" ||
     userRole === "admin" ||
@@ -593,6 +618,15 @@ export default function EventDashboardPage() {
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
 
+  // Manager sign-off on the timesheet. Non-exec users can't edit Sales until it is signed.
+  const [timesheetSignoffStatus, setTimesheetSignoffStatus] = useState<"unknown" | "signed" | "unsigned">("unknown");
+  const [timesheetSignoff, setTimesheetSignoff] = useState<TimesheetSignoff | null>(null);
+  const [signoffNote, setSignoffNote] = useState("");
+  const [signoffSignatureEmpty, setSignoffSignatureEmpty] = useState(true);
+  const [submittingSignoff, setSubmittingSignoff] = useState(false);
+  const [signoffError, setSignoffError] = useState("");
+  const signoffPadRef = useRef<SignaturePadHandle | null>(null);
+
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
@@ -641,7 +675,9 @@ export default function EventDashboardPage() {
       return !span?.firstIn || !span?.lastOut;
     });
   }, [timesheetLoaded, sortedTeamMembers, timesheetSpans]);
-  const salesReadOnly = (salesLocked && userRole !== "exec") || submitting;
+  // Nobody can edit Sales, exec included, until the timesheet has been signed off.
+  const salesAwaitingSignoff = timesheetSignoffStatus !== "signed";
+  const salesReadOnly = (salesLocked && userRole !== "exec") || salesAwaitingSignoff || submitting;
 
   // Show the third meal columns only when at least one person has a third meal
   // or a row is currently being edited (so the editor can add one if needed).
@@ -1369,6 +1405,99 @@ export default function EventDashboardPage() {
     return token;
   }, []);
 
+  // --- Manager timesheet sign-off (gates the Sales tab for non-exec users) ---
+  useEffect(() => {
+    // Sign-off belongs to one event; forget it if the page switches events.
+    setTimesheetSignoffStatus("unknown");
+    setTimesheetSignoff(null);
+    setSignoffError("");
+  }, [eventId]);
+
+  const loadTimesheetSignoff = useCallback(async () => {
+    if (!eventId) return;
+    setSignoffError("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/timesheet-signoff?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSignoffError(data?.error || "Could not verify the timesheet sign-off.");
+        return;
+      }
+      setTimesheetSignoffStatus(data?.signed ? "signed" : "unsigned");
+      setTimesheetSignoff(data?.signoff || null);
+    } catch {
+      setSignoffError("Network error verifying the timesheet sign-off.");
+    }
+  }, [eventId, getSessionToken]);
+
+  // Fetch the status where it is needed: everyone on the Sales tab (to know if it is
+  // unlocked) and signers on the Timesheet tab (to see or submit the sign-off card).
+  useEffect(() => {
+    if (!eventId || !userRole) return;
+    if (timesheetSignoffStatus === "signed") return;
+    const needsSignoffStatus =
+      activeTab === "sales" || (activeTab === "timesheet" && canSignTimesheet);
+    if (!needsSignoffStatus) return;
+    void loadTimesheetSignoff();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, eventId, userRole, loadTimesheetSignoff]);
+
+  const submitTimesheetSignoff = async () => {
+    if (!eventId || !canSignTimesheet || submittingSignoff) return;
+    const signature = signoffPadRef.current?.toDataURL() ?? "";
+    if (!signature) {
+      setSignoffError("Please draw your signature before submitting.");
+      return;
+    }
+    setSubmittingSignoff(true);
+    setSignoffError("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/timesheet-signoff`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ note: signoffNote.trim(), signature }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setTimesheetSignoffStatus("signed");
+        setTimesheetSignoff(data?.signoff || null);
+        setSignoffNote("");
+        setSignoffSignatureEmpty(true);
+        return;
+      }
+      if (res.status === 409) {
+        // Another manager signed first; show that sign-off instead.
+        await loadTimesheetSignoff();
+        return;
+      }
+      setSignoffError(data?.error || "Failed to submit the signature.");
+    } catch {
+      setSignoffError("Network error submitting the signature.");
+    } finally {
+      setSubmittingSignoff(false);
+    }
+  };
+
+  const goToTimesheetSignoff = () => {
+    setActiveTab("timesheet");
+    // The sign-off card mounts with the Timesheet tab; scroll once it is in the DOM.
+    window.setTimeout(() => {
+      document.getElementById("timesheet-signoff")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 250);
+  };
+
   const loadCommissionLinkCandidates = useCallback(async () => {
     if (!eventId) return;
     setLoadingCommissionLinkCandidates(true);
@@ -1591,6 +1720,9 @@ export default function EventDashboardPage() {
       status: String(member?.status || ""),
       isExistingMember: true,
       isOutOfVenue: Boolean(member?.isOutOfVenue),
+      pendingForms: Boolean(member?.pendingForms),
+      pendingFormsCount: member?.pendingFormsCount ?? 0,
+      pendingFormTitles: member?.pendingFormTitles ?? [],
       profiles: {
         first_name: String(member?.users?.profiles?.first_name || ""),
         last_name: String(member?.users?.profiles?.last_name || ""),
@@ -1627,6 +1759,7 @@ export default function EventDashboardPage() {
       const token = await getSessionToken();
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") params.append("region_id", regionId);
+      params.append("include_pending_forms", "1");
       const availableUrl = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
 
       const [availableRes, teamRes] = await Promise.all([
@@ -1634,7 +1767,7 @@ export default function EventDashboardPage() {
           method: "GET",
           headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         }),
-        fetch(`/api/events/${eventId}/team`, {
+        fetch(`/api/events/${eventId}/team?include_pending_forms=1`, {
           method: "GET",
           headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         }),
@@ -1684,6 +1817,7 @@ export default function EventDashboardPage() {
       const token = await getSessionToken();
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") params.append("region_id", regionId);
+      params.append("include_pending_forms", "1");
       const url = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
 
       const res = await fetch(url, {
@@ -1862,6 +1996,7 @@ export default function EventDashboardPage() {
       const token = await getSessionToken();
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") params.append("region_id", regionId);
+      params.append("include_pending_forms", "1");
       const url = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, {
         method: "GET",
@@ -3771,6 +3906,11 @@ export default function EventDashboardPage() {
       return;
     }
 
+    if (timesheetSignoffStatus !== "signed") {
+      setMessage("Sales are locked until a manager signs the timesheet.");
+      return;
+    }
+
     setSubmitting(true);
     setMessage("");
 
@@ -4065,6 +4205,62 @@ export default function EventDashboardPage() {
     const outMm = String(totalMinutes % 60).padStart(2, "0");
     return `${outHh}:${outMm}`;
   };
+
+  // ── Meal-timing alerts (timesheet table) ────────────────────────────────────────
+  // Orange = warning, red = late. Both meals are measured from admin time:
+  //   Meal 1 start  : orange at 4h, red at 5h
+  //   Meal 2 start  : orange at 9h, red at 10h
+  type MealAlert = { level: "orange" | "red"; reason: string } | null;
+  const MEAL_ALERT_MAX_GAP_MINUTES = 16 * 60;
+
+  const hhmmToMinutes = (hhmm: string): number | null => {
+    if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return null;
+    const [hh, mm] = hhmm.split(":").map((value) => Number(value));
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    return hh * 60 + mm;
+  };
+
+  // Minutes from `from` to `to` on the wall clock, wrapping past midnight for overnight
+  // shifts. A gap over 16h means `to` is really *before* `from` (bad data), so no alert.
+  const minutesBetweenHHMM = (from: string, to: string): number | null => {
+    const start = hhmmToMinutes(from);
+    const end = hhmmToMinutes(to);
+    if (start === null || end === null) return null;
+    let diff = end - start;
+    if (diff < 0) diff += 24 * 60;
+    return diff > MEAL_ALERT_MAX_GAP_MINUTES ? null : diff;
+  };
+
+  const formatElapsedHM = (minutes: number): string =>
+    `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+
+  const evaluateMealElapsed = (
+    elapsedMinutes: number | null,
+    orangeHours: number,
+    redHours: number,
+    mealName: string,
+    sinceLabel: string
+  ): MealAlert => {
+    if (elapsedMinutes === null) return null;
+    const level =
+      elapsedMinutes >= redHours * 60 ? "red" : elapsedMinutes >= orangeHours * 60 ? "orange" : null;
+    if (!level) return null;
+    return {
+      level,
+      reason: `${mealName} started ${formatElapsedHM(elapsedMinutes)} ${sinceLabel} (${
+        level === "red" ? redHours : orangeHours
+      }h+)`,
+    };
+  };
+
+  const getMealTimingAlerts = (
+    adminTime: string,
+    meal1Start: string,
+    meal2Start: string
+  ): { meal1: MealAlert; meal2: MealAlert } => ({
+    meal1: evaluateMealElapsed(minutesBetweenHHMM(adminTime, meal1Start), 4, 5, "Meal 1", "after admin time"),
+    meal2: evaluateMealElapsed(minutesBetweenHHMM(adminTime, meal2Start), 9, 10, "Meal 2", "after admin time"),
+  });
 
   const getEventTzAbbr = (iso?: string | null): string => {
     const d = iso
@@ -5909,6 +6105,33 @@ export default function EventDashboardPage() {
                   </div>
                 )}
 
+                {salesAwaitingSignoff && (
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    <span>
+                      {timesheetSignoffStatus !== "unknown"
+                        ? "Sales is read-only until a manager signs the timesheet."
+                        : signoffError || "Checking timesheet sign-off…"}
+                    </span>
+                    {timesheetSignoffStatus === "unknown" && signoffError ? (
+                      <button
+                        type="button"
+                        onClick={() => void loadTimesheetSignoff()}
+                        className="rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                      >
+                        Retry
+                      </button>
+                    ) : timesheetSignoffStatus === "unsigned" && canSignTimesheet ? (
+                      <button
+                        type="button"
+                        onClick={goToTimesheetSignoff}
+                        className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+                      >
+                        Go to sign-off
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Total Collected ($)</label>
@@ -5982,38 +6205,6 @@ export default function EventDashboardPage() {
                           salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
                         }`}
                       />
-                    </div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <span className="text-xs text-gray-500">Split:</span>
-                      <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-                        <button
-                          type="button"
-                          disabled={salesReadOnly || savingTipsDistributionMode}
-                          onClick={() => handleUpdateTipsDistributionMode("prorated")}
-                          title="Split tips proportionally by hours worked"
-                          className={`px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                            event?.tips_distribution_mode === "prorated"
-                              ? "bg-blue-600 text-white"
-                              : "bg-white text-gray-600 hover:bg-gray-50"
-                          }`}
-                        >
-                          Prorated
-                        </button>
-                        <button
-                          type="button"
-                          disabled={salesReadOnly || savingTipsDistributionMode}
-                          onClick={() => handleUpdateTipsDistributionMode("equal")}
-                          title="Split tips evenly among eligible staff"
-                          className={`px-3 py-1 text-xs font-medium transition-colors border-l border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed ${
-                            event?.tips_distribution_mode !== "prorated"
-                              ? "bg-blue-600 text-white"
-                              : "bg-white text-gray-600 hover:bg-gray-50"
-                          }`}
-                        >
-                          Even Split
-                        </button>
-                      </div>
-                      {savingTipsDistributionMode && <span className="text-xs text-gray-400">Saving…</span>}
                     </div>
                     {event?.tips_distribution_mode !== "prorated" &&
                       liveTipsDistribution.distributedTotal > (Number(tips) || 0) && (
@@ -7518,6 +7709,25 @@ export default function EventDashboardPage() {
                                               Not Invited
                                             </span>
                                           )}
+                                          {!isUninvited && isPendingTeamStatus(member?.status) && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
+                                              Pending
+                                            </span>
+                                          )}
+                                          {member?.confirmedElsewhere && (
+                                            isPendingTeamStatus(member?.conflictStatus) ? (
+                                              <span
+                                                className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800"
+                                                title={member?.conflictEventName ? `Invited to ${member?.conflictEventName} - awaiting confirmation` : "Invited to another event - awaiting confirmation"}
+                                              >
+                                                Pending
+                                              </span>
+                                            ) : (
+                                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700">
+                                                Busy
+                                              </span>
+                                            )
+                                          )}
                                           {member?.isOutOfVenue && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-800 border border-orange-200">
                                               Out of Venue
@@ -7740,6 +7950,25 @@ export default function EventDashboardPage() {
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                               Not Invited
                                             </span>
+                                          )}
+                                          {member.isExistingMember && isPendingTeamStatus(member.status) && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
+                                              Pending
+                                            </span>
+                                          )}
+                                          {member.confirmedElsewhere && (
+                                            isPendingTeamStatus(member.conflictStatus) ? (
+                                              <span
+                                                className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800"
+                                                title={member.conflictEventName ? `Invited to ${member.conflictEventName} - awaiting confirmation` : "Invited to another event - awaiting confirmation"}
+                                              >
+                                                Pending
+                                              </span>
+                                            ) : (
+                                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700">
+                                                Busy
+                                              </span>
+                                            )
                                           )}
                                           {member.isOutOfVenue && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-800 border border-orange-200">
@@ -8043,8 +8272,17 @@ export default function EventDashboardPage() {
               const thirdMealStart   = span.thirdMealStartDisplay || isoToEventHHMM(span.thirdMealStart);
               const thirdMealEnd     = span.thirdMealEndDisplay || isoToEventHHMM(span.thirdMealEnd);
 
-              const inputCls = (editable: boolean) =>
-                `border rounded px-1 py-0.5 text-xs w-[68px] ${editable ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`;
+              const inputCls = (editable: boolean, alert: MealAlert = null) => {
+                const base = "border rounded px-1 py-0.5 text-xs w-[68px]";
+                if (alert) {
+                  const tone =
+                    alert.level === "red"
+                      ? "bg-red-600 border-red-700 text-white"
+                      : "bg-orange-500 border-orange-600 text-white";
+                  return `${base} ${tone} font-semibold ${editable ? "" : "cursor-not-allowed"}`;
+                }
+                return `${base} ${editable ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`;
+              };
 
               // Multi-day non-events (special timesheets spanning several days) record one
               // isolated timesheet per day. The collapsed firstIn/lastOut span would hide the
@@ -8177,6 +8415,11 @@ export default function EventDashboardPage() {
                             GATE_PHONE_OFFSET_MINUTES
                           )
                         : (isDayEditing ? dayDraft.firstIn : day.firstInDisplay);
+                      const dayMealAlerts = getMealTimingAlerts(
+                        dayGateTime || "",
+                        isDayEditing ? dayDraft.firstMealStart : (day.meals[0]?.startDisplay || ""),
+                        isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || "")
+                      );
 
                       return (
                         <tr key={dayKey} className="bg-gray-50/60 hover:bg-gray-100/60">
@@ -8198,7 +8441,8 @@ export default function EventDashboardPage() {
                           <td className={dayCellCls}>
                             <input type="time" value={isDayEditing ? dayDraft.firstMealStart : (day.meals[0]?.startDisplay || "")}
                               onChange={(e) => updateTimesheetDayDraft(uid, day.date, "firstMealStart", e.target.value)}
-                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing, dayMealAlerts.meal1)}
+                              title={dayMealAlerts.meal1?.reason} />
                           </td>
                           <td className={dayCellCls}>
                             <input type="time" value={isDayEditing ? dayDraft.lastMealEnd : (day.meals[0]?.endDisplay || "")}
@@ -8208,7 +8452,8 @@ export default function EventDashboardPage() {
                           <td className={dayCellCls}>
                             <input type="time" value={isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || "")}
                               onChange={(e) => updateTimesheetDayDraft(uid, day.date, "secondMealStart", e.target.value)}
-                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing)} />
+                              placeholder="--:--" readOnly={!isDayEditing} className={inputCls(isDayEditing, dayMealAlerts.meal2)}
+                              title={dayMealAlerts.meal2?.reason} />
                           </td>
                           <td className={dayCellCls}>
                             <input type="time" value={isDayEditing ? dayDraft.secondMealEnd : (day.meals[1]?.endDisplay || "")}
@@ -8290,6 +8535,11 @@ export default function EventDashboardPage() {
                 ? subtractMinutesFromHHMM(isEditing ? draft.firstIn : firstClockIn, GATE_PHONE_OFFSET_MINUTES)
                 : (isEditing ? draft.firstIn : firstClockIn);
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
+              const mealAlerts = getMealTimingAlerts(
+                gatePhoneTime,
+                isEditing ? draft.firstMealStart : firstMealStart,
+                isEditing ? draft.secondMealStart : secondMealStart
+              );
 
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
@@ -8376,7 +8626,8 @@ export default function EventDashboardPage() {
                   <td className="px-1 py-1.5">
                     <input type="time" value={isEditing ? draft.firstMealStart : firstMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
-                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
+                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing, mealAlerts.meal1)}
+                      title={mealAlerts.meal1?.reason} />
                   </td>
 
                   {/* M1 End */}
@@ -8390,7 +8641,8 @@ export default function EventDashboardPage() {
                   <td className="px-1 py-1.5">
                     <input type="time" value={isEditing ? draft.secondMealStart : secondMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealStart", e.target.value)}
-                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
+                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing, mealAlerts.meal2)}
+                      title={mealAlerts.meal2?.reason} />
                   </td>
 
                   {/* M2 End */}
@@ -8517,6 +8769,117 @@ export default function EventDashboardPage() {
         </tbody>
       </table>
     </div>
+
+    {/* Manager sign-off: unlocks the Sales tab. Visible to managers and exec only. */}
+    {canSignTimesheet && !hideSalesAndMerchandise && (
+      <div id="timesheet-signoff" className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Manager Sign-off</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Sign to confirm this timesheet. Once signed, the Sales tab unlocks for the team.
+            </p>
+          </div>
+          {timesheetSignoffStatus === "signed" && (
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-800">
+                Signed
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveTab("sales")}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                Go to Sales
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          )}
+          {timesheetSignoffStatus === "unsigned" && (
+            <span className="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
+              Awaiting signature
+            </span>
+          )}
+        </div>
+
+        {timesheetSignoffStatus === "signed" && timesheetSignoff ? (
+          <div className="space-y-3">
+            <p className="text-sm text-gray-700">
+              Signed by <span className="font-semibold">{timesheetSignoff.signedByName || "Unknown"}</span>
+              {formatSignoffTimestamp(timesheetSignoff.signedAt)
+                ? ` on ${formatSignoffTimestamp(timesheetSignoff.signedAt)}`
+                : ""}
+            </p>
+            <div className="inline-block rounded-lg border border-gray-200 bg-gray-50 p-2">
+              <img src={timesheetSignoff.signatureData} alt="Timesheet sign-off signature" className="h-20 w-auto" />
+            </div>
+            {timesheetSignoff.note && (
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Notes</div>
+                <p className="whitespace-pre-wrap rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                  {timesheetSignoff.note}
+                </p>
+              </div>
+            )}
+          </div>
+        ) : timesheetSignoffStatus === "unsigned" ? (
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="timesheet-signoff-note" className="mb-1 block text-sm font-medium text-gray-700">
+                Notes <span className="font-normal text-gray-400">(optional)</span>
+              </label>
+              <textarea
+                id="timesheet-signoff-note"
+                value={signoffNote}
+                onChange={(e) => setSignoffNote(e.target.value)}
+                maxLength={2000}
+                rows={3}
+                disabled={submittingSignoff}
+                placeholder="Add any notes about this timesheet…"
+                className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Signature <span className="text-red-500">*</span>
+              </label>
+              <SignaturePad
+                ref={signoffPadRef}
+                disabled={submittingSignoff}
+                onEmptyChange={setSignoffSignatureEmpty}
+              />
+            </div>
+            {signoffError && <p className="text-sm text-red-600">{signoffError}</p>}
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-400">A submitted signature cannot be changed.</p>
+              <button
+                type="button"
+                onClick={() => void submitTimesheetSignoff()}
+                disabled={submittingSignoff || signoffSignatureEmpty}
+                className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {submittingSignoff ? "Submitting…" : "Submit Signature"}
+              </button>
+            </div>
+          </div>
+        ) : signoffError ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <span>{signoffError}</span>
+            <button
+              type="button"
+              onClick={() => void loadTimesheetSignoff()}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">Checking sign-off status…</p>
+        )}
+      </div>
+    )}
   </div>
 )}
 
@@ -9499,6 +9862,7 @@ export default function EventDashboardPage() {
                       const phone = (vendor.profiles?.phone || "").toString();
                       const isExistingMember = Boolean(vendor.isExistingMember);
                       const isBusy = Boolean(vendor.confirmedElsewhere);
+                      const isPendingConflict = isBusy && isPendingTeamStatus(vendor.conflictStatus);
                       const isOutOfVenueNew = Boolean(vendor.isOutOfVenue) && !isExistingMember;
                       const isSelectable = !isExistingMember && !isBusy;
                       const vendorStatus = String(vendor.status || "").toLowerCase();
@@ -9507,6 +9871,7 @@ export default function EventDashboardPage() {
                         <div
                           key={vendor.id}
                           className={`px-4 py-3 flex items-center gap-3 ${isSelectable ? "cursor-pointer hover:bg-gray-50" : ""}`}
+                          style={vendor.pendingForms ? PENDING_FORMS_BAR_STYLE : undefined}
                           onClick={() => {
                             if (isSelectable) toggleLocationTeamMember(vendor.id);
                           }}
@@ -9546,17 +9911,28 @@ export default function EventDashboardPage() {
                               <div className="text-sm font-semibold text-gray-900 truncate">{fullName}</div>
                               <div className="flex items-center gap-2 flex-wrap justify-end">
                                 {isBusy && (
-                                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">
-                                    Busy
-                                  </span>
+                                  isPendingConflict ? (
+                                    <span
+                                      className="px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800"
+                                      title={vendor.conflictEventName ? `Invited to ${vendor.conflictEventName} - awaiting confirmation` : "Invited to another event - awaiting confirmation"}
+                                    >
+                                      Pending
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">
+                                      Busy
+                                    </span>
+                                  )
                                 )}
                                 {isExistingMember && (
-                                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700">
+                                  <span className={`px-2 py-0.5 rounded text-xs font-semibold ${isPendingTeamStatus(vendorStatus) ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-700"}`}>
                                     {vendorStatus === "confirmed"
                                       ? "Confirmed"
                                       : vendorStatus === "declined"
                                         ? "Declined"
-                                        : "Invited"}
+                                        : isPendingTeamStatus(vendorStatus)
+                                          ? "Pending"
+                                          : "Invited"}
                                   </span>
                                 )}
                                 {vendor.partialAvailability && (
@@ -9588,6 +9964,7 @@ export default function EventDashboardPage() {
                                 <span className="ml-1 text-orange-600">· Selecting will submit an approval request to management</span>
                               )}
                             </div>
+                            <PendingFormsList compact titles={vendor.pendingFormTitles} count={vendor.pendingFormsCount} />
                           </div>
                         </div>
                       );
@@ -10104,6 +10481,7 @@ export default function EventDashboardPage() {
                           type="button"
                           onClick={() => setSelectedVendorToAdd(vendor.id)}
                           className={`w-full text-left px-4 py-3 transition ${isSelected ? "bg-blue-50" : "hover:bg-gray-50"}`}
+                          style={vendor.pendingForms ? PENDING_FORMS_BAR_STYLE : undefined}
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
@@ -10122,6 +10500,7 @@ export default function EventDashboardPage() {
                                 {vendor.profiles?.city ? ` • ${vendor.profiles.city}` : ""}
                                 {vendor.distance !== null && vendor.distance !== undefined ? ` • ${vendor.distance} mi` : ""}
                               </div>
+                              <PendingFormsList compact titles={vendor.pendingFormTitles} count={vendor.pendingFormsCount} />
                             </div>
                             {isSelected && (
                               <span className="inline-flex items-center px-2 py-1 rounded text-xs font-semibold bg-blue-100 text-blue-700 flex-shrink-0">

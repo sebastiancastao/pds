@@ -15,6 +15,9 @@ import { getInclusiveDateSpanDays, normalizeEventEndDate } from "@/lib/non-event
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// The edit permission check reads timesheet_edit_requests, so it must never be
+// served from the Next.js fetch Data Cache.
+export const fetchCache = "force-no-store";
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
@@ -607,6 +610,23 @@ async function loadLatestEditRequest(userId: string, eventId: string): Promise<T
   };
 }
 
+// True when a reviewer has approved an edit request that has not been used yet.
+async function hasApprovedEditRequest(userId: string, eventId: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("timesheet_edit_requests")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("event_id", eventId)
+    .eq("status", "approved")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  return Boolean(data?.id);
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -810,6 +830,23 @@ export async function PUT(
       eventTimezone,
       workDateWindow.queryDaySpan
     );
+
+    // An attested (or attestation-rejected) timesheet is locked. Managers and
+    // execs can always correct it, but a worker needs an approved edit request.
+    // The timesheet page enforces the same rule in the UI; this keeps the rule
+    // from being bypassed by calling the API directly.
+    if (!TIMESHEET_WRITE_ROLES.has(requester.role)) {
+      const lockState = await loadAttestationState(targetUserId, existingEntries);
+      if (lockState.attestationStatus !== "not_submitted") {
+        const approved = await hasApprovedEditRequest(targetUserId, eventId);
+        if (!approved) {
+          return jsonError(
+            "This timesheet is locked. Request edit permission and wait for it to be approved before changing it.",
+            403
+          );
+        }
+      }
+    }
 
     const existingByAction: Record<string, TimeEntryRow[]> = {};
     for (const entry of existingEntries) {
