@@ -1,29 +1,29 @@
 // Rest break pay, shared by the event dashboard Payment tab, /hr-dashboard payroll,
 // the HR PDF export and /paystub-generator so they can never drift apart.
 //
-// Rest break pay is a flat per-shift premium that depends on how long the shift was.
-// Managers and exec can also record how many rest breaks a worker actually took
-// (Timesheet tab of /event-dashboard). When a count is recorded, the premium is
-// scaled by that count relative to the number of breaks the flat schedule assumes
-// for the shift. Recording exactly the assumed number reproduces the flat amount.
-// When no count is recorded the flat schedule applies unchanged.
+// Rule: $4.50 for every 4 hours worked, counting a partial 4 hours as a full one.
+// A shift of up to 4 hours pays $4.50, up to 8 hours pays $9.00, and so on.
+//
+// Managers and exec can also enter how many rest breaks a worker actually took
+// (Timesheet tab of /event-dashboard). When a count is entered, each break pays
+// $4.50 regardless of shift length. With no count entered, the count is the number
+// of 4-hour periods worked.
+
+/** Dollars paid for each rest break. */
+export const REST_BREAK_RATE = 4.5;
+
+/** One rest break is paid for every this-many hours worked, counting a partial period as a full one. */
+export const REST_BREAK_PERIOD_HOURS = 4;
 
 /** Highest rest break count a manager can record for one worker on one event. */
 export const MAX_REST_BREAK_COUNT = 10;
 
-/** Flat schedule: shift length in hours (inclusive lower bound) -> premium and assumed break count. */
-const REST_BREAK_SCHEDULE: ReadonlyArray<{ minHours: number; amount: number; standardBreaks: number }> = [
-  { minHours: 14, amount: 17, standardBreaks: 4 },
-  { minHours: 10, amount: 12.5, standardBreaks: 3 },
-  { minHours: 0, amount: 9, standardBreaks: 2 },
-];
-
 const roundCents = (value: number): number => Math.round((value + 1e-9) * 100) / 100;
 
-const scheduleFor = (hours: number) => {
-  if (!Number.isFinite(hours) || hours <= 0) return null;
-  return REST_BREAK_SCHEDULE.find((tier) => hours >= tier.minHours) ?? null;
-};
+// Hours reach this module rounded differently depending on the caller (some round to
+// hundredths, some pass raw milliseconds / 3,600,000). Round here so every screen agrees
+// and a few seconds of float noise at exactly 4 or 8 hours cannot add a whole break.
+const roundHours = (hours: number): number => Math.round((hours + 1e-9) * 100) / 100;
 
 /**
  * Coerce a stored or typed value to a valid rest break count.
@@ -39,39 +39,19 @@ export function normalizeRestBreakCount(value: unknown): number | null {
   return n;
 }
 
-/** Flat premium for a shift of this length, ignoring any recorded count. */
-export function getFlatRestBreakAmount(hours: number): number {
-  return scheduleFor(hours)?.amount ?? 0;
-}
-
-/** Number of rest breaks the flat schedule assumes for a shift of this length. */
-export function getStandardRestBreakCount(hours: number): number {
-  return scheduleFor(hours)?.standardBreaks ?? 0;
-}
-
 /**
  * Rest break pay for one worker on one event.
- * `count` is the number recorded by a manager, or null/undefined when none was recorded.
+ * `count` is the number entered by a manager, or null/undefined when none was entered.
  * Callers still decide whether rest break pay applies at all (San Diego, non-event
  * timesheets and some states pay none) and skip this call when it does not.
  */
 export function getRestBreakPay(hours: number, count?: number | null): number {
-  const tier = scheduleFor(hours);
-  if (!tier) return 0;
-  const recorded = normalizeRestBreakCount(count);
-  if (recorded === null) return tier.amount;
-  return roundCents((tier.amount * recorded) / tier.standardBreaks);
-}
-
-/**
- * Number of rest breaks the pay above covers: the recorded count, or the
- * schedule's assumed count when none was recorded. Zero when there is no shift.
- */
-export function getPaidRestBreakCount(hours: number, count?: number | null): number {
-  const tier = scheduleFor(hours);
-  if (!tier) return 0;
-  const recorded = normalizeRestBreakCount(count);
-  return recorded === null ? tier.standardBreaks : recorded;
+  if (!Number.isFinite(hours)) return 0;
+  const worked = roundHours(hours);
+  if (worked <= 0) return 0;
+  const entered = normalizeRestBreakCount(count);
+  const breaks = entered !== null ? entered : Math.ceil(worked / REST_BREAK_PERIOD_HOURS);
+  return roundCents(breaks * REST_BREAK_RATE);
 }
 
 /** Counts keyed by event id, then worker (user) id. */

@@ -12,7 +12,7 @@ import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { isPendingTeamStatus } from "@/lib/team-conflicts";
-import { MAX_REST_BREAK_COUNT, getRestBreakPay, getStandardRestBreakCount, normalizeRestBreakCount } from "@/lib/rest-breaks";
+import { MAX_REST_BREAK_COUNT, REST_BREAK_PERIOD_HOURS, REST_BREAK_RATE, getRestBreakPay, normalizeRestBreakCount } from "@/lib/rest-breaks";
 import SignaturePad, { type SignaturePadHandle } from "@/components/SignaturePad";
 import PendingFormsList, { PENDING_FORMS_BAR_STYLE } from "@/components/PendingFormsList";
 
@@ -8362,8 +8362,8 @@ export default function EventDashboardPage() {
     {showRestBreakInput && canEditRestBreaks && (
       <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
         <span className="font-semibold text-gray-700">Rest Breaks:</span> enter how many rest breaks each worker took.
-        It sets their rest break pay on the Payment tab, HR Dashboard payroll and paystubs. Leave it blank to use the
-        standard amount for the shift length (2 breaks under 10h, 3 for 10–14h, 4 for 14h+).
+        Each break pays ${REST_BREAK_RATE.toFixed(2)} and sets their rest break pay on the Payment tab, HR Dashboard payroll
+        and paystubs. Leave it blank to pay ${REST_BREAK_RATE.toFixed(2)} for every {REST_BREAK_PERIOD_HOURS} hours worked.
       </div>
     )}
     {showRestBreakInput && restBreakError && (
@@ -8406,7 +8406,7 @@ export default function EventDashboardPage() {
             {showRestBreakInput && (
               <th
                 className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide"
-                title="Rest breaks the worker took. Managers and exec can enter this; it drives rest break pay. Leave blank to use the standard amount for the shift length."
+                title="Rest breaks the worker took. Managers and exec can enter this; it drives rest break pay at $4.50 per break. Leave blank to pay $4.50 for every 4 hours worked."
               >
                 Rest Breaks
               </th>
@@ -8882,9 +8882,6 @@ export default function EventDashboardPage() {
                   {/* Rest breaks taken — managers and exec enter it; blank = standard amount for the shift length */}
                   {showRestBreakInput && (() => {
                     const recordedBreaks = restBreakCounts[uid];
-                    const standardBreaks = getStandardRestBreakCount(
-                      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
-                    );
                     const draftBreaks = restBreakDrafts[uid];
                     const breaksInputValue =
                       draftBreaks !== undefined
@@ -8902,7 +8899,6 @@ export default function EventDashboardPage() {
                             max={MAX_REST_BREAK_COUNT}
                             step={1}
                             value={breaksInputValue}
-                            placeholder={standardBreaks > 0 ? String(standardBreaks) : "–"}
                             disabled={savingRestBreakUid === uid}
                             onChange={(e) => {
                               const nextValue = e.target.value;
@@ -8914,19 +8910,13 @@ export default function EventDashboardPage() {
                             onKeyDown={(e) => {
                               if (e.key === "Enter") e.currentTarget.blur();
                             }}
-                            title={
-                              standardBreaks > 0
-                                ? `Rest breaks taken. Leave blank for the standard ${standardBreaks} for this shift length.`
-                                : "Rest breaks taken. No worked hours yet."
-                            }
+                            title={`Rest breaks taken, $${REST_BREAK_RATE.toFixed(2)} each. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`}
                             className="border rounded px-1 py-0.5 text-xs w-[56px] bg-white disabled:bg-gray-100 disabled:cursor-wait"
                           />
                         ) : recordedBreaks !== undefined ? (
                           <span className="text-xs font-medium text-gray-900">{recordedBreaks}</span>
                         ) : (
-                          <span className="text-xs text-gray-400" title="No count recorded; standard amount for the shift length applies.">
-                            {standardBreaks > 0 ? `${standardBreaks} (std)` : "–"}
-                          </span>
+                          <span className="text-xs text-gray-400" title="No count recorded.">–</span>
                         )}
                       </td>
                     );
@@ -9729,7 +9719,7 @@ export default function EventDashboardPage() {
                                   <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
                                     {restBreak > 0 && restBreakCounts[uid] !== undefined
                                       ? `${restBreakCounts[uid]} break${restBreakCounts[uid] === 1 ? '' : 's'} recorded`
-                                      : `${hoursHHMM} ${actualHours > 10 ? '>' : '≤'} 10h`}
+                                      : `$${REST_BREAK_RATE.toFixed(2)} per ${REST_BREAK_PERIOD_HOURS}h`}
                                   </div>
                                 </td>
                               )}
