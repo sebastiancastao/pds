@@ -5,6 +5,8 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
 import { decrypt, isEncrypted } from "@/lib/encryption";
 import { distributeTipsPool, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
+import { getRestBreakPay } from "@/lib/rest-breaks";
+import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -113,11 +115,13 @@ const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCas
 const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
 const isVendorDivision = (d?: string | null) => { const div = normalizeDivision(d); return div === "vendor" || div === "both"; };
 
-function getRestBreakAmount(actualHours: number, stateCode: string) {
+// `recordedBreaks` is the rest break count a manager entered on the event Timesheet tab
+// (null/undefined = none, so the flat per-shift amount applies). Same rule as the on-screen payroll.
+function getRestBreakAmount(actualHours: number, stateCode: string, recordedBreaks?: number | null) {
   const st = normalizeState(stateCode);
   if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
   if (actualHours <= 0) return 0;
-  return actualHours >= 10 ? 12.5 : 9;
+  return getRestBreakPay(actualHours, recordedBreaks);
 }
 
 function getEffectiveHours(payment: any): number {
@@ -644,6 +648,9 @@ export async function GET(req: NextRequest) {
       // For simplicity, default to 0 (same fallback behavior as main page when API fails)
     }
 
+    // Rest breaks managers recorded on the event Timesheet tab (eventId -> userId -> count).
+    const restBreakCountsByEvent = await fetchRestBreakCounts(supabaseAdmin, eventIds);
+
     // --- Process each event ---
     const exportEvents: EventExportData[] = [];
 
@@ -770,7 +777,11 @@ export async function GET(req: NextRequest) {
           : totalTips > 0
           ? Number(tipsSharesByUser[(payment.user_id || "").toString()] || 0)
           : Number(payment.tips || 0);
-        const restBreak = getRestBreakAmount(actualHours, eventState);
+        const restBreak = getRestBreakAmount(
+          actualHours,
+          eventState,
+          restBreakCountsByEvent[eventId]?.[(payment.user_id || "").toString()]
+        );
         const totalPay = totalFinalCommissionAmt + tips + restBreak;
         const finalPay = totalPay + adjustmentAmount;
 

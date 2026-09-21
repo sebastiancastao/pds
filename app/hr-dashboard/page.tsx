@@ -11,6 +11,7 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-d
 import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown, type DailyPayBreakdown } from "@/lib/daily-overtime";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
+import { getRestBreakPay } from "@/lib/rest-breaks";
 import "@/app/global-calendar/dashboard-styles.css";
 import * as XLSX from 'xlsx';
 
@@ -399,10 +400,12 @@ function HRDashboardContent() {
     const st = normalizeState(s);
     return st === "CA" || st === "NV" || st === "WI";
   };
-  const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false) => {
+  // `recordedBreaks` is the number of rest breaks a manager entered on the event Timesheet tab
+  // (null/undefined = none entered, so the flat per-shift amount applies). See lib/rest-breaks.
+  const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false, recordedBreaks?: number | null) => {
     if (eventSanDiego) return 0;
     if (actualHours <= 0) return 0;
-    return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
+    return getRestBreakPay(actualHours, recordedBreaks);
   };
   const formatHoursHHMM = (decimalHours: number): string => {
     const totalMinutes = Math.floor(Math.abs(decimalHours) * 60);
@@ -1605,7 +1608,7 @@ function HRDashboardContent() {
             // of the same name shown elsewhere in this dashboard.
             const manualVariableIncentive = Number(payment.variable_incentive || 0);
 
-            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll);
+            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll, payment.rest_break_count);
             const totalPay = totalFinalCommissionAmt + manualVariableIncentive + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {

@@ -195,7 +195,8 @@ export function TimesheetEditRequestModal({
         <p className="mt-1 text-sm text-gray-500">
           {target.eventName}
           {target.workerName ? ` for ${target.workerName}` : ""}. This timesheet is locked. A
-          reviewer has to approve the request before it can be changed.
+          reviewer has to approve the request first. Any times you change below are applied to the
+          timesheet once it is approved.
         </p>
 
         {workDates.length > 1 && (
@@ -330,7 +331,7 @@ export function TimesheetEditPermissionsPanel({
 
   const act = async (
     request: TimesheetEditRequest,
-    status: "in_review" | "approved" | "rejected" | "cancelled"
+    status: "in_review" | "approved" | "rejected" | "cancelled" | "completed"
   ) => {
     const note = (notesById[request.id] || "").trim();
     setErrorsById((prev) => ({ ...prev, [request.id]: "" }));
@@ -430,10 +431,23 @@ export function TimesheetEditPermissionsPanel({
           </p>
         )}
 
-        {isApproved && (
+        {canReview && isOpen && request.requestedChanges && (
+          <p className="mt-2 text-xs text-gray-500">
+            Approving changes the timesheet to the requested times. The worker keeps their
+            existing attestation.
+          </p>
+        )}
+
+        {isApproved && !request.requestedChanges && (
           <p className="mt-2 text-xs text-emerald-700">
             The timesheet is open for one correction. This permission closes when the corrected
             timesheet is saved and attested again.
+          </p>
+        )}
+        {isApproved && request.requestedChanges && (
+          <p className="mt-2 text-xs text-amber-700">
+            Approved, but the timesheet has not been changed to the requested times yet.
+            {canReview ? " Apply them now, or revoke the permission." : ""}
           </p>
         )}
 
@@ -481,7 +495,11 @@ export function TimesheetEditPermissionsPanel({
                     onClick={() => void act(request, "approved")}
                     className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
                   >
-                    {isBusy ? "Saving..." : "Approve Edit"}
+                    {isBusy
+                      ? "Saving..."
+                      : request.requestedChanges
+                      ? "Approve and Apply"
+                      : "Approve Edit"}
                   </button>
                   <button
                     type="button"
@@ -492,6 +510,16 @@ export function TimesheetEditPermissionsPanel({
                     Reject
                   </button>
                 </>
+              )}
+              {canReview && isApproved && request.requestedChanges && (
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void act(request, "completed")}
+                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {isBusy ? "Saving..." : "Apply Requested Times"}
+                </button>
               )}
               {canReview && isApproved && (
                 <button

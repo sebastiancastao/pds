@@ -57,7 +57,7 @@ export default function TimesheetEditReviewQueue() {
 
   const act = async (
     request: TimesheetEditRequest,
-    status: "in_review" | "approved" | "rejected" | "cancelled"
+    status: "in_review" | "approved" | "rejected" | "cancelled" | "completed"
   ) => {
     const note = (notesById[request.id] || "").trim();
     setErrorsById((prev) => ({ ...prev, [request.id]: "" }));
@@ -198,6 +198,11 @@ export default function TimesheetEditReviewQueue() {
                   type="button"
                   disabled={isBusy}
                   onClick={() => void act(request, "approved")}
+                  title={
+                    request.requestedChanges
+                      ? "Changes the timesheet to the requested times"
+                      : "Lets the timesheet be edited once"
+                  }
                   style={{
                     ...buttonBase,
                     border: "none",
@@ -206,7 +211,7 @@ export default function TimesheetEditReviewQueue() {
                     opacity: isBusy ? 0.6 : 1,
                   }}
                 >
-                  {isBusy ? "Saving…" : "Approve"}
+                  {isBusy ? "Saving…" : request.requestedChanges ? "Approve and apply" : "Approve"}
                 </button>
                 <button
                   type="button"
@@ -224,6 +229,24 @@ export default function TimesheetEditReviewQueue() {
                 </button>
               </>
             ) : (
+              <>
+              {request.requestedChanges && (
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void act(request, "completed")}
+                  title="Approved earlier. Changes the timesheet to the requested times"
+                  style={{
+                    ...buttonBase,
+                    border: "none",
+                    backgroundColor: "#059669",
+                    color: "#ffffff",
+                    opacity: isBusy ? 0.6 : 1,
+                  }}
+                >
+                  {isBusy ? "Saving…" : "Apply times"}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={isBusy}
@@ -238,6 +261,7 @@ export default function TimesheetEditReviewQueue() {
               >
                 {isBusy ? "Saving…" : "Revoke"}
               </button>
+              </>
             )}
           </div>
         </div>

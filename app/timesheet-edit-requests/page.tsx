@@ -524,7 +524,11 @@ function TimesheetEditRequestsPageInner() {
                         disabled={!canReview || isUpdating}
                         className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {isUpdating ? "Saving..." : "Approve Permission"}
+                        {isUpdating
+                          ? "Saving..."
+                          : request.requestedChanges
+                          ? "Approve and Apply Times"
+                          : "Approve Permission"}
                       </button>
                       <button
                         type="button"

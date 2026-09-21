@@ -10,6 +10,8 @@ import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
+import { getPaidRestBreakCount, getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -231,12 +233,27 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false): number => {
+    // `recordedBreaks` is the number of rest breaks a manager entered on the event Timesheet tab
+    // (null/undefined = none entered, so the flat per-shift amount applies). See lib/rest-breaks.
+    const getRestBreakAmount = (
+      actualHours: number,
+      stateCode: string,
+      eventSanDiego = false,
+      recordedBreaks?: number | null
+    ): number => {
       if (eventSanDiego) return 0;
       const st = normalizeState(stateCode);
       if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
-      return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
+      return getRestBreakPay(actualHours, recordedBreaks);
+    };
+    // Loaded from event_rest_breaks just before the PDF is built (eventId -> userId -> count).
+    let restBreakCountsByEvent: RestBreakCountsByEvent = {};
+    const getRecordedRestBreaks = (event: any, worker: any): number | null => {
+      const eventId = (event?.id || "").toString();
+      const userId = (worker?.user_id || "").toString();
+      if (!eventId || !userId) return null;
+      return restBreakCountsByEvent[eventId]?.[userId] ?? null;
     };
     const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};
     const getTimesheetHoursForWorker = (event: any, worker: any): number => {
@@ -1203,6 +1220,12 @@ export async function POST(req: NextRequest) {
     for (const [eventId, byUser] of Object.entries(computedTimesheetHours)) {
       timesheetHoursByEventUser[eventId] = byUser;
     }
+    // Rest breaks managers recorded on the event Timesheet tab; read here (not from the request
+    // body) so a stale paystub-generator page cannot price rest breaks off old numbers.
+    restBreakCountsByEvent = await fetchRestBreakCounts(
+      supabaseAdmin,
+      (events || []).map((e: any) => e?.id)
+    );
 
     // Create a new PDF document
     const pdfDoc = await PDFDocument.create();
@@ -1675,7 +1698,8 @@ export async function POST(req: NextRequest) {
       let totalTips = 0;
       let totalCommission = 0;
       let totalRestBreak = 0;
-      // Number of shifts in the period that earned rest break pay (shown on the Earnings table).
+      // Number of rest breaks paid in the period (shown on the Earnings table): the count managers
+      // recorded per shift, or the flat schedule's assumed count for shifts with none recorded.
       let totalRestBreakCount = 0;
       let totalOther = 0;
       let totalAdjustmentMealPremium = 0;
@@ -1874,7 +1898,10 @@ export async function POST(req: NextRequest) {
         const displayCommissionPay = roundPayrollAmount(isEventSD ? 0 : reportCommissionShare);
         const displayVariableIncentive = roundPayrollAmount(isEventSD ? 0 : reportVariableIncentive);
         const commission = displayCommissionPay;
-        const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState, isEventSD) : 0);
+        const recordedRestBreaks = getRecordedRestBreaks(event, worker);
+        const restBreak = roundPayrollAmount(
+          includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState, isEventSD, recordedRestBreaks) : 0
+        );
         const reportFinalPay = roundPayrollAmount(
           (isEventSD ? reportFinalCommissionAmt : displayCommissionPay + displayVariableIncentive) + tips + restBreak
         );
@@ -1930,7 +1957,8 @@ export async function POST(req: NextRequest) {
         totalVariableIncentive += displayVariableIncentive;
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
-        if (restBreak > 0) totalRestBreakCount += 1;
+        // Recorded break count, or the number the flat schedule assumes for this shift when none was recorded.
+        if (restBreak > 0) totalRestBreakCount += getPaidRestBreakCount(actualHours, recordedRestBreaks);
         totalOther += other;
         totalAdjustmentMealPremium += adjustmentMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;
@@ -2753,7 +2781,11 @@ export async function POST(req: NextRequest) {
 
         // Paystub should follow the employee/paystub state for rest break display/calculation.
         // (Event state can be missing/mismatched, which would incorrectly suppress rest break.)
-        const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0);
+        const restBreak = roundPayrollAmount(
+          includeRestBreakColumn
+            ? getRestBreakAmount(actualHours, paystubState, false, getRecordedRestBreaks(event, worker))
+            : 0
+        );
 
         // Total (gross) used for "This Period" and Net Pay.
         // If persisted total_pay exists and is non-zero, keep it for non-CA; otherwise use computed.

@@ -8,6 +8,8 @@ import { decrypt } from '@/lib/encryption';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 import { normalizeEventEndDate, getInclusiveDateSpanDays } from '@/lib/non-event-timesheets';
+import { getRestBreakPay } from '@/lib/rest-breaks';
+import { fetchRestBreakCounts } from '@/lib/rest-breaks-server';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -463,6 +465,10 @@ export async function GET(req: NextRequest) {
     const { data: adjustments, error: adjustmentsError } = await adjustmentsQuery as any;
     if (adjustmentsError) return NextResponse.json({ error: adjustmentsError.message }, { status: 500 });
 
+    // Rest breaks recorded by managers on the event Timesheet tab (eventId -> userId -> count).
+    // Attached to every returned row so /hr-dashboard prices rest break pay from them.
+    const restBreakCountsByEvent = await fetchRestBreakCounts(supabaseAdmin, fetchAllEvents ? null : eventIds);
+
     console.log('[VENDOR-PAYMENTS] adjustments fetched', {
       count: adjustments?.length || 0,
       sample: (adjustments || []).slice(0, 2).map((r: any) => ({ event_id: r.event_id, user_id: r.user_id, amount: r.adjustment_amount })),
@@ -602,11 +608,11 @@ export async function GET(req: NextRequest) {
         mode: (eventRow as any)?.tips_distribution_mode,
       }).amountsById;
 
-      // Rest break helper (matches event-dashboard)
-      const getRestBreak = (hours: number, st: string) => {
+      // Rest break helper (matches event-dashboard): flat per-shift amount, or scaled by the
+      // number of breaks a manager recorded for this worker on the Timesheet tab.
+      const getRestBreak = (hours: number, st: string, uid: string) => {
         if (st === 'NV' || st === 'WI' || st === 'AZ' || st === 'NY') return 0;
-        if (hours <= 0) return 0;
-        return hours >= 10 ? 12 : 9;
+        return getRestBreakPay(hours, restBreakCountsByEvent[eventId]?.[uid]);
       };
 
       // 8) AZ/NY has different commission logic
@@ -656,7 +662,7 @@ export async function GET(req: NextRequest) {
 
         const tips = !isTrailers ? Number(tipsSharesByUser[uid] || 0) : 0;
 
-        const restBreak = getRestBreak(hours, eventState);
+        const restBreak = getRestBreak(hours, eventState, uid);
         const totalPay = totalFinalCommission + tips + restBreak;
 
         rows.push({
@@ -885,6 +891,8 @@ export async function GET(req: NextRequest) {
         // Attach meal deduction hours so HR dashboard can apply it to all calculations
         const mealDeduct = eventMealDeductions[row.user_id] || 0;
         row.meal_deduction_hours = mealDeduct;
+        // null = no count recorded, so the flat per-shift rest break schedule applies.
+        row.rest_break_count = restBreakCountsByEvent[eventId]?.[row.user_id] ?? null;
 
         const hasTimesheetHours = Object.prototype.hasOwnProperty.call(eventEffectiveHours, row.user_id);
         if (hasTimesheetHours) {

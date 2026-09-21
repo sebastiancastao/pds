@@ -12,6 +12,7 @@ import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { isPendingTeamStatus } from "@/lib/team-conflicts";
+import { MAX_REST_BREAK_COUNT, getRestBreakPay, getStandardRestBreakCount, normalizeRestBreakCount } from "@/lib/rest-breaks";
 import SignaturePad, { type SignaturePadHandle } from "@/components/SignaturePad";
 import PendingFormsList, { PENDING_FORMS_BAR_STYLE } from "@/components/PendingFormsList";
 
@@ -316,6 +317,8 @@ export default function EventDashboardPage() {
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   // Managers and exec can sign off the timesheet; the signature unlocks Sales for everyone.
   const canSignTimesheet = userRole === "exec" || userRole === "manager";
+  // Only managers and exec record how many rest breaks each worker took.
+  const canEditRestBreaks = userRole === "exec" || userRole === "manager";
   const canManageLocations =
     userRole === "exec" ||
     userRole === "admin" ||
@@ -626,6 +629,15 @@ export default function EventDashboardPage() {
   const [submittingSignoff, setSubmittingSignoff] = useState(false);
   const [signoffError, setSignoffError] = useState("");
   const signoffPadRef = useRef<SignaturePadHandle | null>(null);
+
+  // Rest breaks taken per worker (userId -> count), recorded on the Timesheet tab and used to
+  // price rest break pay on the Payment tab. A worker with no entry is on the flat per-shift schedule.
+  const [restBreakCounts, setRestBreakCounts] = useState<Record<string, number>>({});
+  const [restBreakDrafts, setRestBreakDrafts] = useState<Record<string, string>>({});
+  const [savingRestBreakUid, setSavingRestBreakUid] = useState<string | null>(null);
+  const [restBreakError, setRestBreakError] = useState("");
+  // Saving payroll before the counts arrive would price rest breaks off the flat schedule.
+  const [restBreakCountsLoaded, setRestBreakCountsLoaded] = useState(false);
 
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
@@ -1201,6 +1213,7 @@ export default function EventDashboardPage() {
       if (!editingTimesheetUserId) {
         loadTimesheetTotals();
         loadTeam(true); // also refresh attestation status
+        void loadRestBreakCounts(); // another manager may have recorded rest breaks
       }
     }, 15000);
     return () => clearInterval(interval);
@@ -1487,6 +1500,106 @@ export default function EventDashboardPage() {
       setSignoffError("Network error submitting the signature.");
     } finally {
       setSubmittingSignoff(false);
+    }
+  };
+
+  // --- Rest breaks taken per worker (recorded on the Timesheet tab, prices rest break pay) ---
+  useEffect(() => {
+    // Counts belong to one event; forget them if the page switches events.
+    setRestBreakCounts({});
+    setRestBreakDrafts({});
+    setRestBreakError("");
+    setRestBreakCountsLoaded(false);
+  }, [eventId]);
+
+  const loadRestBreakCounts = useCallback(async () => {
+    if (!eventId) return;
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/rest-breaks?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRestBreakError(data?.error || "Could not load rest breaks.");
+        return;
+      }
+      const next: Record<string, number> = {};
+      for (const [uid, value] of Object.entries(data?.counts || {})) {
+        const n = normalizeRestBreakCount(value);
+        if (n !== null) next[uid] = n;
+      }
+      setRestBreakCounts(next);
+      setRestBreakCountsLoaded(true);
+      setRestBreakError("");
+    } catch {
+      setRestBreakError("Network error loading rest breaks.");
+    }
+  }, [eventId, getSessionToken]);
+
+  // Needed on the Timesheet tab (to record them) and the Payment tab (to price rest break pay).
+  useEffect(() => {
+    if (!eventId || !userRole) return;
+    if (activeTab !== "timesheet" && activeTab !== "hr") return;
+    void loadRestBreakCounts();
+  }, [activeTab, eventId, userRole, loadRestBreakCounts]);
+
+  // Record (or clear, when blank) one worker's rest break count.
+  const saveRestBreakCount = async (uid: string, raw: string) => {
+    if (!eventId || !canEditRestBreaks || !uid) return;
+    const trimmed = raw.trim();
+    const next = trimmed === "" ? null : normalizeRestBreakCount(Number(trimmed));
+    if (trimmed !== "" && next === null) {
+      setRestBreakError(`Rest breaks must be a whole number from 0 to ${MAX_REST_BREAK_COUNT}.`);
+      return;
+    }
+    const clearDraft = () =>
+      setRestBreakDrafts((prev) => {
+        if (!(uid in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[uid];
+        return copy;
+      });
+    if (next === (restBreakCounts[uid] ?? null)) {
+      clearDraft();
+      setRestBreakError("");
+      return;
+    }
+    setSavingRestBreakUid(uid);
+    setRestBreakError("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/rest-breaks`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ userId: uid, count: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRestBreakError(data?.error || "Failed to save rest breaks.");
+        return;
+      }
+      setRestBreakCounts((prev) => {
+        const copy = { ...prev };
+        if (next === null) delete copy[uid];
+        else copy[uid] = next;
+        return copy;
+      });
+      clearDraft();
+      // HR dashboard and paystub generator reload payroll data when this fires.
+      markPayrollDataDirty();
+    } catch {
+      setRestBreakError("Network error saving rest breaks.");
+    } finally {
+      setSavingRestBreakUid(null);
     }
   };
 
@@ -3445,7 +3558,7 @@ export default function EventDashboardPage() {
       });
       const proratedTips =
         !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
-      const restBreak = getRestBreakAmount(actualHours, eventState);
+      const restBreak = getRestBreakAmount(actualHours, eventState, uid);
       const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
       const totalGrossPay = totalFinalCommission + proratedTips + restBreak + otherAmount;
       const money = (amount: number) => `$${formatPayrollMoney(amount)}`;
@@ -3489,6 +3602,10 @@ export default function EventDashboardPage() {
     try {
       if (!event) {
         setMessage("Event data is still loading.");
+        return;
+      }
+      if (!restBreakCountsLoaded) {
+        setMessage(restBreakError || "Rest break counts are still loading. Try again in a moment.");
         return;
       }
 
@@ -4210,6 +4327,8 @@ export default function EventDashboardPage() {
   // Orange = warning, red = late. Both meals are measured from admin time:
   //   Meal 1 start  : orange at 4h, red at 5h
   //   Meal 2 start  : orange at 9h, red at 10h
+  // A meal that has not been entered is aged against the clock-out time, or against "now"
+  // while the worker is still clocked in, so a missed meal turns the (empty) cell orange/red.
   type MealAlert = { level: "orange" | "red"; reason: string } | null;
   const MEAL_ALERT_MAX_GAP_MINUTES = 16 * 60;
 
@@ -4238,8 +4357,7 @@ export default function EventDashboardPage() {
     elapsedMinutes: number | null,
     orangeHours: number,
     redHours: number,
-    mealName: string,
-    sinceLabel: string
+    describe: (elapsed: string) => string
   ): MealAlert => {
     if (elapsedMinutes === null) return null;
     const level =
@@ -4247,19 +4365,63 @@ export default function EventDashboardPage() {
     if (!level) return null;
     return {
       level,
-      reason: `${mealName} started ${formatElapsedHM(elapsedMinutes)} ${sinceLabel} (${
-        level === "red" ? redHours : orangeHours
-      }h+)`,
+      reason: `${describe(formatElapsedHM(elapsedMinutes))} (${level === "red" ? redHours : orangeHours}h+)`,
     };
   };
+
+  // Wall-clock "now" and today's date in the event timezone. Read at render time; the
+  // timesheet tab re-renders on its 15s refresh, which keeps open-shift alerts current.
+  const getEventNowHHMM = (): string => isoToEventHHMM(new Date().toISOString());
+  const getEventTodayYMD = (): string =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: eventTimezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+
+  // True when `iso` is in the past but within the alert window, i.e. the shift that began
+  // then can plausibly still be running. Stops a forgotten clock-out from days ago from
+  // aging forever.
+  const isWithinLiveShiftWindow = (iso: string | null | undefined): boolean => {
+    if (!iso) return false;
+    const startedMs = new Date(iso).getTime();
+    if (Number.isNaN(startedMs)) return false;
+    const ageMs = Date.now() - startedMs;
+    return ageMs >= 0 && ageMs <= MEAL_ALERT_MAX_GAP_MINUTES * 60 * 1000;
+  };
+
+  // shiftEnd: clock-out time, or "now" while still clocked in, or "" when unknown.
+  const evaluateMeal = (
+    mealName: string,
+    orangeHours: number,
+    redHours: number,
+    adminTime: string,
+    mealStart: string,
+    shiftEnd: string
+  ): MealAlert =>
+    mealStart
+      ? evaluateMealElapsed(
+          minutesBetweenHHMM(adminTime, mealStart),
+          orangeHours,
+          redHours,
+          (elapsed) => `${mealName} started ${elapsed} after admin time`
+        )
+      : evaluateMealElapsed(
+          minutesBetweenHHMM(adminTime, shiftEnd),
+          orangeHours,
+          redHours,
+          (elapsed) => `No ${mealName} recorded, ${elapsed} since admin time`
+        );
 
   const getMealTimingAlerts = (
     adminTime: string,
     meal1Start: string,
-    meal2Start: string
+    meal2Start: string,
+    shiftEnd: string
   ): { meal1: MealAlert; meal2: MealAlert } => ({
-    meal1: evaluateMealElapsed(minutesBetweenHHMM(adminTime, meal1Start), 4, 5, "Meal 1", "after admin time"),
-    meal2: evaluateMealElapsed(minutesBetweenHHMM(adminTime, meal2Start), 9, 10, "Meal 2", "after admin time"),
+    meal1: evaluateMeal("Meal 1", 4, 5, adminTime, meal1Start, shiftEnd),
+    meal2: evaluateMeal("Meal 2", 9, 10, adminTime, meal2Start, shiftEnd),
   });
 
   const getEventTzAbbr = (iso?: string | null): string => {
@@ -4737,12 +4899,14 @@ export default function EventDashboardPage() {
     return Math.round(actualHours * baseRate * 1.5 * 100) / 100;
   };
 
-  const getRestBreakAmount = (actualHours: number, state: string): number => {
+  // Rest break pay follows the number of breaks a manager recorded for this worker on the
+  // Timesheet tab (`uid`); with none recorded it is the flat per-shift amount (see lib/rest-breaks).
+  const getRestBreakAmount = (actualHours: number, state: string, uid?: string): number => {
     // Matches HR Dashboard's getRestBreakAmount: no rest break for San Diego (its blended
     // OT/DT rate already covers it) or for "special" non-event hourly payroll.
     if (isEventSanDiego || isNonEventTimesheet) return 0;
     if (actualHours <= 0) return 0;
-    return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
+    return getRestBreakPay(actualHours, uid ? restBreakCounts[uid] : null);
   };
   const roundPayrollAmount = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
@@ -4763,6 +4927,8 @@ export default function EventDashboardPage() {
 
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
   const hideRestBreakColumn = false;
+  // San Diego (blended OT/DT rate) and non-event timesheets pay no rest break, so there is nothing to record.
+  const showRestBreakInput = !isEventSanDiego && !isNonEventTimesheet;
 
   // Helper: use the same worked-hours calculation as Timesheet/Payment (includes Gate/Phone offset).
   const getMealDeductedMsForSave = (uid: string) => {
@@ -5360,6 +5526,10 @@ export default function EventDashboardPage() {
       setMessage("Only managers and exec can edit timesheets and payroll adjustments.");
       return;
     }
+    if (!restBreakCountsLoaded) {
+      setMessage(restBreakError || "Rest break counts are still loading. Try again in a moment.");
+      return;
+    }
 
     setSavingPayment(true);
     setMessage("");
@@ -5404,7 +5574,7 @@ export default function EventDashboardPage() {
           baseRate,
           distributedCommissionShare,
         });
-        const restBreak = getRestBreakAmount(actualHours, eventState);
+        const restBreak = getRestBreakAmount(actualHours, eventState, uid);
 
         const tipsOverride = tipsOverrides[uid];
         const proratedTips = tipsOverride === null
@@ -5485,6 +5655,10 @@ export default function EventDashboardPage() {
   // Process Payroll - Send emails to all team members
   const handleProcessPayroll = async () => {
     if (!event || !eventId) return;
+    if (!restBreakCountsLoaded) {
+      setMessage(restBreakError || "Rest break counts are still loading. Try again in a moment.");
+      return;
+    }
 
     if (!window.confirm(`Send payroll details to all ${teamMembers.length} team members via email?`)) {
       return;
@@ -5523,7 +5697,7 @@ export default function EventDashboardPage() {
           baseRate,
           distributedCommissionShare,
         });
-        const restBreak = getRestBreakAmount(actualHours, eventState);
+        const restBreak = getRestBreakAmount(actualHours, eventState, uid);
         const proratedTips = !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
         // "Other" on the Payment tab = Adjustments + Reimbursements combined; both must
         // be included here so the emailed total matches the on-screen Gross Pay.
@@ -8185,6 +8359,19 @@ export default function EventDashboardPage() {
       </div>
     )}
 
+    {showRestBreakInput && canEditRestBreaks && (
+      <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+        <span className="font-semibold text-gray-700">Rest Breaks:</span> enter how many rest breaks each worker took.
+        It sets their rest break pay on the Payment tab, HR Dashboard payroll and paystubs. Leave it blank to use the
+        standard amount for the shift length (2 breaks under 10h, 3 for 10–14h, 4 for 14h+).
+      </div>
+    )}
+    {showRestBreakInput && restBreakError && (
+      <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+        {restBreakError}
+      </div>
+    )}
+
     {loadingTimesheetTab && (
       <div className="text-center py-6 bg-white border rounded-lg">
         <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
@@ -8216,13 +8403,21 @@ export default function EventDashboardPage() {
             {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 End</th>}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Out</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Hrs</th>
+            {showRestBreakInput && (
+              <th
+                className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide"
+                title="Rest breaks the worker took. Managers and exec can enter this; it drives rest break pay. Leave blank to use the standard amount for the shift length."
+              >
+                Rest Breaks
+              </th>
+            )}
             <th className="px-2 py-2 text-right font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
           </tr>
         </thead>
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={9 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={9 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0) + (showRestBreakInput ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -8418,7 +8613,9 @@ export default function EventDashboardPage() {
                       const dayMealAlerts = getMealTimingAlerts(
                         dayGateTime || "",
                         isDayEditing ? dayDraft.firstMealStart : (day.meals[0]?.startDisplay || ""),
-                        isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || "")
+                        isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || ""),
+                        (isDayEditing ? dayDraft.lastOut : day.lastOutDisplay) ||
+                          (day.date === getEventTodayYMD() ? getEventNowHHMM() : "")
                       );
 
                       return (
@@ -8538,7 +8735,9 @@ export default function EventDashboardPage() {
               const mealAlerts = getMealTimingAlerts(
                 gatePhoneTime,
                 isEditing ? draft.firstMealStart : firstMealStart,
-                isEditing ? draft.secondMealStart : secondMealStart
+                isEditing ? draft.secondMealStart : secondMealStart,
+                (isEditing ? draft.lastOut : lastClockOut) ||
+                  (isWithinLiveShiftWindow(span.firstIn) ? getEventNowHHMM() : "")
               );
 
               return (
@@ -8679,6 +8878,59 @@ export default function EventDashboardPage() {
 
                   {/* Hours */}
                   <td className="px-1 py-1.5 font-medium whitespace-nowrap">{hours}</td>
+
+                  {/* Rest breaks taken — managers and exec enter it; blank = standard amount for the shift length */}
+                  {showRestBreakInput && (() => {
+                    const recordedBreaks = restBreakCounts[uid];
+                    const standardBreaks = getStandardRestBreakCount(
+                      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+                    );
+                    const draftBreaks = restBreakDrafts[uid];
+                    const breaksInputValue =
+                      draftBreaks !== undefined
+                        ? draftBreaks
+                        : recordedBreaks !== undefined
+                          ? String(recordedBreaks)
+                          : "";
+                    return (
+                      <td className="px-1 py-1.5 whitespace-nowrap">
+                        {canEditRestBreaks ? (
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={MAX_REST_BREAK_COUNT}
+                            step={1}
+                            value={breaksInputValue}
+                            placeholder={standardBreaks > 0 ? String(standardBreaks) : "–"}
+                            disabled={savingRestBreakUid === uid}
+                            onChange={(e) => {
+                              const nextValue = e.target.value;
+                              setRestBreakDrafts((prev) => ({ ...prev, [uid]: nextValue }));
+                            }}
+                            onBlur={(e) => {
+                              if (restBreakDrafts[uid] !== undefined) void saveRestBreakCount(uid, e.target.value);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") e.currentTarget.blur();
+                            }}
+                            title={
+                              standardBreaks > 0
+                                ? `Rest breaks taken. Leave blank for the standard ${standardBreaks} for this shift length.`
+                                : "Rest breaks taken. No worked hours yet."
+                            }
+                            className="border rounded px-1 py-0.5 text-xs w-[56px] bg-white disabled:bg-gray-100 disabled:cursor-wait"
+                          />
+                        ) : recordedBreaks !== undefined ? (
+                          <span className="text-xs font-medium text-gray-900">{recordedBreaks}</span>
+                        ) : (
+                          <span className="text-xs text-gray-400" title="No count recorded; standard amount for the shift length applies.">
+                            {standardBreaks > 0 ? `${standardBreaks} (std)` : "–"}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })()}
 
                   {/* Actions */}
                   <td className="px-2 py-1.5 text-right whitespace-nowrap">
@@ -9130,7 +9382,7 @@ export default function EventDashboardPage() {
                           const totalBasePay = displayedBreakdown.totalFinalCommission;
 
                           // Calculate total gross pay
-                          const restBreak = getRestBreakAmount(actualHours, eventState);
+                          const restBreak = getRestBreakAmount(actualHours, eventState, uid);
                           const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
                           const totalGrossPay = totalBasePay + proratedTips + restBreak + otherAmount;
 
@@ -9475,7 +9727,9 @@ export default function EventDashboardPage() {
                                     ${formatPayrollMoney(restBreak)}
                                   </div>
                                   <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
-                                    {hoursHHMM} {actualHours > 10 ? '>' : '≤'} 10h
+                                    {restBreak > 0 && restBreakCounts[uid] !== undefined
+                                      ? `${restBreakCounts[uid]} break${restBreakCounts[uid] === 1 ? '' : 's'} recorded`
+                                      : `${hoursHHMM} ${actualHours > 10 ? '>' : '≤'} 10h`}
                                   </div>
                                 </td>
                               )}

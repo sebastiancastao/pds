@@ -8,6 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
+import { getRestBreakPay } from '@/lib/rest-breaks';
 
 interface PaymentData {
   effective_hours?: number | null;
@@ -43,6 +44,8 @@ interface Worker {
   worked_hours?: number;
   adjustment_amount?: number;
   adjustment_note?: string | null;
+  // Rest breaks a manager recorded on the event Timesheet tab; null/absent = none recorded.
+  rest_break_count?: number | null;
 }
 
 interface EventPaymentSummary {
@@ -526,7 +529,8 @@ export default function PaystubGenerator() {
   const getRestPayForReport = (
     actualHours: number,
     stateCode: string | null | undefined,
-    event?: { city?: string | null; venue?: string | null } | null
+    event?: { city?: string | null; venue?: string | null } | null,
+    recordedBreaks?: number | null
   ) => {
     if (event && isSanDiegoRegion({ city: event.city, venue: event.venue })) return 0;
     const normalizedState = normalizeStateCode(stateCode);
@@ -536,7 +540,8 @@ export default function PaystubGenerator() {
     if (!Number.isFinite(actualHours) || actualHours <= 0) {
       return 0;
     }
-    return actualHours >= 10 ? 12 : 9;
+    // Same amount the paystub PDF uses: flat per-shift, or scaled by the recorded break count.
+    return getRestBreakPay(actualHours, recordedBreaks);
   };
   const getCommissionReportBonusAmount = (worker?: Worker | null) => {
     if (!worker) return 0;
@@ -2040,7 +2045,7 @@ export default function PaystubGenerator() {
               : finalPayData?.totalPay != null
                 ? Math.max(0, Number(finalPayData.totalPay) - commissionPaidTotal - tips)
                 : Number(worker.payment_data?.rest_break_pay ?? 0) ||
-                  getRestPayForReport(hoursWorked, formData.state || event.state, event)
+                  getRestPayForReport(hoursWorked, formData.state || event.state, event, worker.rest_break_count)
           );
           const bonusValue = getCommissionReportBonusAmount(worker);
           const rateInEffect = roundMoney(

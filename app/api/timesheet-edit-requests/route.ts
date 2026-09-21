@@ -4,6 +4,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
 import { sendEmail } from "@/lib/email";
+import { applyTimesheetProposal } from "@/lib/timesheet-apply";
 import {
   ACTIVE_TIMESHEET_EDIT_STATUSES,
   OPEN_TIMESHEET_EDIT_STATUSES,
@@ -37,6 +38,7 @@ const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const TIMESHEET_EDIT_REQUEST_NOTIFICATION_RECIPIENTS = [
   "portal@1pds.net",
   "sebastiancastao379@gmail.com",
+  "jenvillar@1pds.net",
 ] as const;
 
 type UserSummary = {
@@ -735,6 +737,107 @@ export async function POST(req: NextRequest) {
   }
 }
 
+type RequestToApprove = {
+  id: string;
+  status: string;
+  user_id: string;
+  event_id: string;
+  request_reason: string;
+  review_notes: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+};
+
+// Approving a request that carries times changes the timesheet to those times.
+// The request goes straight to completed, since the correction is made here and
+// the worker is not asked to make it again.
+async function approveAndApply(args: {
+  request: RequestToApprove;
+  proposal: TimesheetEditProposal;
+  reviewer: { id: string; role: string };
+  reviewNotes: string;
+}) {
+  const { request, proposal, reviewer, reviewNotes } = args;
+  // Applying a request that was already approved keeps the note it was approved with.
+  const extraNote = reviewNotes || (request.status === "approved" ? request.review_notes || "" : "");
+  const approvedNote = extraNote
+    ? `Approved and applied to the timesheet. ${extraNote}`
+    : "Approved and applied to the timesheet.";
+
+  // Take the request first, so a second reviewer cannot act on it while the
+  // times are being applied.
+  const { data: claimed, error: claimError } = await supabaseAdmin
+    .from("timesheet_edit_requests")
+    .update({
+      status: "completed",
+      review_notes: approvedNote,
+      reviewed_by: reviewer.id,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq("id", request.id)
+    .eq("status", request.status)
+    .select("id, status, review_notes, reviewed_at, reviewed_by, updated_at")
+    .maybeSingle();
+
+  if (claimError) {
+    return NextResponse.json({ error: claimError.message }, { status: 500 });
+  }
+  if (!claimed?.id) {
+    return NextResponse.json(
+      { error: "This request was just updated by someone else. Refresh and try again." },
+      { status: 409 }
+    );
+  }
+
+  const applied = await applyTimesheetProposal({
+    db: supabaseAdmin,
+    eventId: request.event_id,
+    userId: request.user_id,
+    proposal,
+    actor: { role: reviewer.role },
+    requestId: request.id,
+    reason: request.request_reason,
+  });
+
+  if (!applied.ok) {
+    // Put the request back as it was so it can be reviewed again.
+    const { error: revertError } = await supabaseAdmin
+      .from("timesheet_edit_requests")
+      .update({
+        status: request.status,
+        review_notes: request.review_notes,
+        reviewed_by: request.reviewed_by,
+        reviewed_at: request.reviewed_at,
+      })
+      .eq("id", request.id)
+      .eq("status", "completed");
+    if (revertError) {
+      console.error("[timesheet-edit-requests] could not restore request after a failed apply:", revertError.message);
+    }
+    return NextResponse.json(
+      {
+        error: `Could not apply the requested times. ${applied.error}${
+          revertError ? " The request may show as completed even though the timesheet was not changed." : " The request was not approved."
+        }`,
+      },
+      { status: applied.status }
+    );
+  }
+
+  return NextResponse.json({
+    ok: true,
+    applied: { updated: applied.updated, inserted: applied.inserted, deleted: applied.deleted },
+    request: {
+      id: claimed.id,
+      status: claimed.status,
+      reviewNotes: claimed.review_notes,
+      reviewedAt: claimed.reviewed_at,
+      reviewedBy: claimed.reviewed_by,
+      updatedAt: claimed.updated_at,
+    },
+  });
+}
+
 export async function PATCH(req: NextRequest) {
   try {
     const auth = await requireAuthedViewer(req);
@@ -762,7 +865,9 @@ export async function PATCH(req: NextRequest) {
 
     const { data: existingRequest, error: loadError } = await supabaseAdmin
       .from("timesheet_edit_requests")
-      .select("id, status, user_id, requested_by")
+      .select(
+        "id, status, user_id, requested_by, event_id, request_reason, requested_changes, review_notes, reviewed_by, reviewed_at"
+      )
       .eq("id", requestId)
       .maybeSingle();
 
@@ -790,6 +895,31 @@ export async function PATCH(req: NextRequest) {
         { error: `A ${existingRequest.status} request cannot be changed to ${nextStatus}.` },
         { status: 409 }
       );
+    }
+
+    // Approving a request that carries times applies them to the timesheet. So does
+    // completing a request that was approved earlier, before its times were applied.
+    const appliesTimes =
+      nextStatus === "approved" || (nextStatus === "completed" && existingRequest.status === "approved");
+    if (appliesTimes && auth.canReview) {
+      const stored = parseTimesheetEditProposal(existingRequest.requested_changes);
+      if (!stored.ok) {
+        return NextResponse.json(
+          {
+            error:
+              "The times saved with this request are not valid, so they cannot be applied. Reject it and ask for a new request.",
+          },
+          { status: 409 }
+        );
+      }
+      if (stored.value) {
+        return approveAndApply({
+          request: existingRequest as RequestToApprove,
+          proposal: stored.value,
+          reviewer: { id: auth.user.id, role: auth.requester.role },
+          reviewNotes,
+        });
+      }
     }
 
     const withdrawnByRequester = !auth.canReview;
