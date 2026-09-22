@@ -9,7 +9,7 @@ import {
   getUserDisplayMap,
   reimbursementSupabaseAdmin,
 } from '@/lib/reimbursements-server';
-import { parseCurrencyInput } from '@/lib/reimbursements';
+import { isReimbursementReviewer, parseCurrencyInput } from '@/lib/reimbursements';
 
 function normalizeReviewRow(row: any, event: any, receiptUrl: string | null, userMap: Record<string, { name: string; email: string | null }>) {
   return {
@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
     }
 
     const role = await getReimbursementUserRole(user.id);
-    if (!['exec', 'admin'].includes(role)) {
+    if (!isReimbursementReviewer(role)) {
       return NextResponse.json({ error: 'Not authorized' }, { status: 403 });
     }
 
@@ -115,7 +115,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const role = await getReimbursementUserRole(user.id);
-    if (!['exec', 'admin'].includes(role)) {
+    if (!isReimbursementReviewer(role)) {
       return NextResponse.json({ error: 'Not authorized' }, { status: 403 });
     }
 
@@ -147,6 +147,12 @@ export async function PATCH(req: NextRequest) {
     }
     if (existing.status !== 'submitted') {
       return NextResponse.json({ error: 'Only submitted requests can be reviewed' }, { status: 400 });
+    }
+    if (existing.user_id === user.id) {
+      return NextResponse.json(
+        { error: 'You cannot approve or reject your own reimbursement request. Ask another reviewer to handle it.' },
+        { status: 403 }
+      );
     }
 
     const updatePayload: Record<string, any> = {

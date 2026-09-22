@@ -408,78 +408,92 @@ export default function ReimbursementsPage() {
             ) : (
               <div className="space-y-4">
                 {requests.map((request) => (
-                  <div key={request.id} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-5">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-lg font-semibold text-slate-900">{formatMoney(request.requested_amount)}</span>
-                          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[request.status]}`}>
-                            {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-sm font-medium text-slate-800">
-                          {request.event ? request.event.event_name : 'Standalone reimbursement'}
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">{request.description}</p>
-                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
-                          <span>Purchase: {formatDate(request.purchase_date)}</span>
-                          <span>Submitted: {new Date(request.created_at).toLocaleString()}</span>
-                          {request.event?.venue && <span>Venue: {request.event.venue}</span>}
-                          {request.approved_pay_date && <span>Pay date: {formatDate(request.approved_pay_date)}</span>}
-                        </div>
+                  <div key={request.id} className="rounded-3xl border border-slate-200 bg-white p-6">
+                    <p className="text-center text-4xl font-bold text-slate-900">{formatMoney(request.requested_amount)}</p>
+                    <p className="mt-2 text-center text-sm text-slate-500">
+                      {request.event ? request.event.event_name : 'Standalone reimbursement'}
+                      {request.event?.venue ? `, ${request.event.venue}` : ''}
+                    </p>
+                    <p className="text-center text-sm text-slate-500">{formatDate(request.purchase_date)}</p>
+
+                    <div className="mt-6 border-t border-slate-100">
+                      <div className="flex items-center justify-between border-b border-slate-100 py-3">
+                        <span className="text-sm font-semibold text-slate-900">Status</span>
+                        <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[request.status]}`}>
+                          {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
+                        </span>
                       </div>
-                      {request.status === 'submitted' && (
-                        <div className="flex shrink-0 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => startEditing(request)}
-                            className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleCancel(request.id)}
-                            disabled={cancellingId === request.id}
-                            className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
-                          >
-                            {cancellingId === request.id ? 'Cancelling...' : 'Cancel'}
-                          </button>
+
+                      <div className="border-b border-slate-100 py-3">
+                        <span className="text-sm font-semibold text-slate-900">Description</span>
+                        <p className="mt-1 text-sm text-slate-600">{request.description}</p>
+                      </div>
+
+                      <div className="flex items-center justify-between border-b border-slate-100 py-3">
+                        <span className="text-sm font-semibold text-slate-900">Approved Amount</span>
+                        <span className="text-sm text-slate-600">
+                          {request.approved_amount == null ? 'Pending' : formatMoney(request.approved_amount)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between border-b border-slate-100 py-3">
+                        <span className="text-sm font-semibold text-slate-900">Submitted</span>
+                        <span className="text-sm text-slate-600">{new Date(request.created_at).toLocaleString()}</span>
+                      </div>
+
+                      {request.approved_pay_date && (
+                        <div className="flex items-center justify-between border-b border-slate-100 py-3">
+                          <span className="text-sm font-semibold text-slate-900">Pay Date</span>
+                          <span className="text-sm text-slate-600">{formatDate(request.approved_pay_date)}</span>
                         </div>
                       )}
-                    </div>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-2xl bg-white px-4 py-3">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Requested</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">{formatMoney(request.requested_amount)}</p>
-                      </div>
-                      <div className="rounded-2xl bg-white px-4 py-3">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Approved</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">
-                          {request.approved_amount == null ? 'Pending' : formatMoney(request.approved_amount)}
-                        </p>
-                      </div>
-                    </div>
+                      {request.review_notes && (
+                        <div className="border-b border-slate-100 py-3">
+                          <span className="text-sm font-semibold text-slate-900">Review Notes</span>
+                          <p className="mt-1 text-sm text-slate-600">{request.review_notes}</p>
+                        </div>
+                      )}
 
-                    {(request.review_notes || request.receipt_url || request.receipt_filename) && (
-                      <div className="mt-4 space-y-3">
-                        {request.review_notes && (
-                          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-                            <span className="font-semibold text-slate-800">Review notes:</span> {request.review_notes}
+                      {request.receipt_url && (
+                        <div className="flex items-center justify-between py-3">
+                          <div className="min-w-0">
+                            <span className="text-sm font-semibold text-slate-900">Receipt</span>
+                            {request.receipt_filename && (
+                              <p className="truncate text-xs text-slate-500">{request.receipt_filename}</p>
+                            )}
                           </div>
-                        )}
-                        {request.receipt_url && (
                           <a
                             href={request.receipt_url}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-2 text-sm font-semibold text-emerald-700 transition hover:text-emerald-800"
+                            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 transition hover:bg-emerald-100"
                           >
-                            View receipt
-                            {request.receipt_filename ? <span className="text-slate-500">({request.receipt_filename})</span> : null}
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
                           </a>
-                        )}
+                        </div>
+                      )}
+                    </div>
+
+                    {request.status === 'submitted' && (
+                      <div className="mt-5 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditing(request)}
+                          className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleCancel(request.id)}
+                          disabled={cancellingId === request.id}
+                          className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
+                        >
+                          {cancellingId === request.id ? 'Cancelling...' : 'Cancel'}
+                        </button>
                       </div>
                     )}
                   </div>

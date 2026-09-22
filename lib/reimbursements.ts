@@ -10,6 +10,17 @@ export const REIMBURSEMENT_ALLOWED_MIME = [
 
 export type ReimbursementStatus = 'submitted' | 'approved' | 'rejected' | 'cancelled';
 
+// Roles that may approve or reject a vendor's reimbursement request. Matches
+// the "Executives can manage ..." convention used on event_payments and
+// event_vendor_payments — financial approval is exec-only. A reviewer must
+// also never be the same person who filed the request (checked separately),
+// so this alone does not make self-approval possible.
+export const REIMBURSEMENT_REVIEW_ROLES: ReadonlySet<string> = new Set(['exec']);
+
+export function isReimbursementReviewer(role: string | null | undefined): boolean {
+  return REIMBURSEMENT_REVIEW_ROLES.has(String(role || '').trim().toLowerCase());
+}
+
 export type ReimbursementEventOption = {
   id: string;
   event_name: string;

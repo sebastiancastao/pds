@@ -372,6 +372,9 @@ export function TimesheetEditPermissionsPanel({
     const isBusy = busyId === request.id;
     const isMine = viewer?.id === request.requestedBy || viewer?.id === request.userId;
     const canWithdraw = isOpen && isMine;
+    // A reviewer role never gets to approve/reject/apply/revoke a request that is
+    // their own submission or filed for their own timesheet — that would be self-approval.
+    const canReviewThis = canReview && !isMine;
 
     return (
       <div key={request.id} className="px-6 py-5">
@@ -431,7 +434,7 @@ export function TimesheetEditPermissionsPanel({
           </p>
         )}
 
-        {canReview && isOpen && request.requestedChanges && (
+        {canReviewThis && isOpen && request.requestedChanges && (
           <p className="mt-2 text-xs text-gray-500">
             Approving changes the timesheet to the requested times. The worker keeps their
             existing attestation.
@@ -447,13 +450,13 @@ export function TimesheetEditPermissionsPanel({
         {isApproved && request.requestedChanges && (
           <p className="mt-2 text-xs text-amber-700">
             Approved, but the timesheet has not been changed to the requested times yet.
-            {canReview ? " Apply them now, or revoke the permission." : ""}
+            {canReviewThis ? " Apply them now, or revoke the permission." : ""}
           </p>
         )}
 
-        {((canReview && (isOpen || isApproved)) || canWithdraw) && (
+        {((canReviewThis && (isOpen || isApproved)) || canWithdraw) && (
           <div className="mt-4 space-y-3">
-            {canReview && (isOpen || isApproved) && (
+            {canReviewThis && (isOpen || isApproved) && (
               <textarea
                 value={notesById[request.id] || ""}
                 onChange={(event) =>
@@ -477,7 +480,7 @@ export function TimesheetEditPermissionsPanel({
             )}
 
             <div className="flex flex-wrap gap-2">
-              {canReview && isOpen && (
+              {canReviewThis && isOpen && (
                 <>
                   {request.status === "submitted" && (
                     <button
@@ -511,7 +514,7 @@ export function TimesheetEditPermissionsPanel({
                   </button>
                 </>
               )}
-              {canReview && isApproved && request.requestedChanges && (
+              {canReviewThis && isApproved && request.requestedChanges && (
                 <button
                   type="button"
                   disabled={isBusy}
@@ -521,7 +524,7 @@ export function TimesheetEditPermissionsPanel({
                   {isBusy ? "Saving..." : "Apply Requested Times"}
                 </button>
               )}
-              {canReview && isApproved && (
+              {canReviewThis && isApproved && (
                 <button
                   type="button"
                   disabled={isBusy}

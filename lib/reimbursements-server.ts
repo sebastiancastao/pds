@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { safeDecrypt } from '@/lib/encryption';
+import { sendEmail } from '@/lib/email';
 import {
   REIMBURSEMENT_ALLOWED_MIME,
   REIMBURSEMENT_BUCKET,
@@ -201,4 +202,95 @@ export async function getUserDisplayMap(userIds: string[]): Promise<Record<strin
   }
 
   return displayMap;
+}
+
+// Notified on every new reimbursement submission (self-service or admin-entered
+// on a vendor's behalf) so a reviewer knows to check the approval queue.
+const REIMBURSEMENT_SUBMISSION_NOTIFICATION_RECIPIENTS = [
+  'sebastiancastao379@gmail.com',
+  'jenvillar@1pds.net',
+];
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export async function notifyReimbursementSubmitted(params: {
+  vendorName: string;
+  vendorEmail: string | null;
+  requestedAmount: number;
+  purchaseDate: string;
+  description: string;
+  eventName: string | null;
+}): Promise<void> {
+  const { vendorName, vendorEmail, requestedAmount, purchaseDate, description, eventName } = params;
+  const approvalUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/payroll-approvals`;
+  const amountLabel = `$${requestedAmount.toFixed(2)}`;
+  const subject = `Reimbursement Submitted - ${vendorName} - ${amountLabel}`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,sans-serif;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="padding:32px 0;background:#f5f5f5;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="640" style="background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <tr>
+            <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
+              <h1 style="margin:0;font-size:24px;">Reimbursement Submitted</h1>
+              <p style="margin:10px 0 0 0;font-size:14px;color:#cbd5e1;">A new receipt is waiting for approval.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px;">
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Vendor</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;font-weight:600;">${escapeHtml(vendorName)}</td></tr>
+                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Vendor Email</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;">${escapeHtml(vendorEmail || '-')}</td></tr>
+                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Amount</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;font-weight:600;">${amountLabel}</td></tr>
+                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Purchase Date</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;">${escapeHtml(purchaseDate)}</td></tr>
+                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Event</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;">${escapeHtml(eventName || 'Standalone reimbursement')}</td></tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+              <div style="margin-top:24px;">
+                <p style="margin:0 0 8px 0;color:#334155;font-size:14px;font-weight:700;">Description</p>
+                <div style="border:1px solid #e2e8f0;border-radius:8px;background:#ffffff;padding:16px;color:#0f172a;font-size:14px;line-height:1.6;">
+                  ${escapeHtml(description).replace(/\n/g, '<br />')}
+                </div>
+              </div>
+              <div style="margin-top:28px;text-align:center;">
+                <a href="${approvalUrl}" style="display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:8px;font-size:14px;font-weight:700;">Open Approval Page</a>
+                <p style="margin:12px 0 0 0;color:#64748b;font-size:12px;">${approvalUrl}</p>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`.trim();
+
+  const result = await sendEmail({
+    to: REIMBURSEMENT_SUBMISSION_NOTIFICATION_RECIPIENTS,
+    subject,
+    html,
+  });
+
+  if (!result.success) {
+    console.error('[REIMBURSEMENTS] Failed to send submission notification email:', result.error);
+  }
 }

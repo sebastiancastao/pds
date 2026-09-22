@@ -2120,6 +2120,31 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // ADP carryover baseline: everything this employee earned/had withheld
+      // BEFORE this system started tracking them (see /adp-ytd-import and
+      // supabase/migrations/20260922000001_create_employee_ytd_carryover_table.sql).
+      // Added on top of ytdSnapshot (this system's own running total) below,
+      // so an employee migrated mid-year gets a correct YTD on their very
+      // first paystub here, with no need for a manual Excel override.
+      // An explicit per-request override (parseYtdOverride, from paystub-generator's
+      // own Excel import) still always wins over both of these.
+      let ytdCarryover: any = null;
+      if (matchedUserId) {
+        try {
+          const { data } = await supabaseAdmin
+            .from("employee_ytd_carryover")
+            .select(
+              "gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, misc_reimbursement_ytd"
+            )
+            .eq("user_id", matchedUserId)
+            .maybeSingle();
+          ytdCarryover = data || null;
+        } catch {
+          ytdCarryover = null;
+        }
+      }
+      const co = (field: string) => Number(ytdCarryover?.[field] || 0);
+
       const toIsoDate = (value: any): string | null => {
         const str = (value || "").toString().trim();
         if (!str) return null;
@@ -2146,29 +2171,29 @@ export async function POST(req: NextRequest) {
       const ytdRegularHours = runningYtd(ytdSnapshot?.regular_hours, totalRegHours);
       const ytdOvertimeHours = runningYtd(ytdSnapshot?.overtime_hours, totalOtHours);
       const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
-      const ytdRegularPay = parseYtdOverride(regularYtd) ?? round2(runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayRounded));
-      const ytdOvertimePay = parseYtdOverride(overtimeYtd) ?? round2(runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayRounded));
-      const ytdDoubletimePay = parseYtdOverride(doubleTimeYtd) ?? round2(runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayRounded));
+      const ytdRegularPay = parseYtdOverride(regularYtd) ?? round2(runningYtd((ytdSnapshot?.regular_earnings || 0) + co('regular_ytd'), totalRegularPayRounded));
+      const ytdOvertimePay = parseYtdOverride(overtimeYtd) ?? round2(runningYtd((ytdSnapshot?.overtime_earnings || 0) + co('overtime_ytd'), totalOvertimePayRounded));
+      const ytdDoubletimePay = parseYtdOverride(doubleTimeYtd) ?? round2(runningYtd((ytdSnapshot?.doubletime_earnings || 0) + co('doubletime_ytd'), totalDoubletimePayRounded));
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
-      const ytdCommission = parseYtdOverride(commissionYtd) ?? round2(totalCommissionRounded);
-      const ytdVariableIncentive = parseYtdOverride(variableIncentiveYtd) ?? round2(totalVariableIncentiveRounded);
-      const ytdTips = parseYtdOverride(creditCardTipsYtd) ?? round2(totalTipsRounded);
-      const ytdRestBreak = parseYtdOverride(restBreakPayYtd) ?? round2(totalRestBreakRounded);
-      const ytdOther = parseYtdOverride(bonusYtd) ?? round2(totalOtherRounded);
-      const ytdMealPremium = parseYtdOverride(mealPremiumYtd) ?? round2(mealPremiumThisPeriod);
-      const ytdSick = parseYtdOverride(sickPayYtd) ?? round2(sickThisPeriod);
-      const ytdGross = parseYtdOverride(grossPayYtd) ?? round2(runningYtd(ytdSnapshot?.ytd_gross, grossPayThisPeriod));
-      const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt));
-      const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt));
-      const ytdMedicare = parseYtdOverride(medicareYtd) ?? round2(runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt));
-      const ytdStateIncome = parseYtdOverride(stateIncomeYtd) ?? round2(runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt));
-      const ytdStateDI = parseYtdOverride(stateDIYtd) ?? round2(runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt));
-      const ytdVoluntaryDeduction = parseYtdOverride(calSaversRothRetYtd) ?? round2(runningYtd(ytdSnapshot?.misc_non_taxable_ytd, miscDeductionAmt));
+      const ytdCommission = parseYtdOverride(commissionYtd) ?? round2(co('commission_ytd') + totalCommissionRounded);
+      const ytdVariableIncentive = parseYtdOverride(variableIncentiveYtd) ?? round2(co('variable_incentive_ytd') + totalVariableIncentiveRounded);
+      const ytdTips = parseYtdOverride(creditCardTipsYtd) ?? round2(co('credit_card_tips_ytd') + totalTipsRounded);
+      const ytdRestBreak = parseYtdOverride(restBreakPayYtd) ?? round2(co('rest_break_pay_ytd') + totalRestBreakRounded);
+      const ytdOther = parseYtdOverride(bonusYtd) ?? round2(co('bonus_ytd') + totalOtherRounded);
+      const ytdMealPremium = parseYtdOverride(mealPremiumYtd) ?? round2(co('meal_premium_ytd') + mealPremiumThisPeriod);
+      const ytdSick = parseYtdOverride(sickPayYtd) ?? round2(co('sick_pay_ytd') + sickThisPeriod);
+      const ytdGross = parseYtdOverride(grossPayYtd) ?? round2(runningYtd((ytdSnapshot?.ytd_gross || 0) + co('gross_pay_ytd'), grossPayThisPeriod));
+      const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.federal_income_ytd || 0) + co('federal_income_ytd'), federalIncomeAmt));
+      const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd((ytdSnapshot?.social_security_ytd || 0) + co('social_security_ytd'), socialSecurityAmt));
+      const ytdMedicare = parseYtdOverride(medicareYtd) ?? round2(runningYtd((ytdSnapshot?.medicare_ytd || 0) + co('medicare_ytd'), medicareAmt));
+      const ytdStateIncome = parseYtdOverride(stateIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.ca_state_income_ytd || 0) + co('state_income_ytd'), stateIncomeAmt));
+      const ytdStateDI = parseYtdOverride(stateDIYtd) ?? round2(runningYtd((ytdSnapshot?.ca_state_di_ytd || 0) + co('state_di_ytd'), stateDIAmt));
+      const ytdVoluntaryDeduction = parseYtdOverride(calSaversRothRetYtd) ?? round2(runningYtd((ytdSnapshot?.misc_non_taxable_ytd || 0) + co('calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
-      const ytdEquipmentReimb = parseYtdOverride(equipmentReimbYtd) ?? round2(adjustmentReimbursementRounded);
+      const ytdEquipmentReimb = parseYtdOverride(equipmentReimbYtd) ?? round2(co('equipment_reimb_ytd') + adjustmentReimbursementRounded);
       // Note: mileage reimbursement YTD is intentionally not itemized on the employee-facing
       // pay sheet, so no display variable is derived here (see mileageRowY removal below).
-      const ytdMiscReimbursement = parseYtdOverride(miscReimbursementYtd) ?? round2(reimbursement);
+      const ytdMiscReimbursement = parseYtdOverride(miscReimbursementYtd) ?? round2(co('misc_reimbursement_ytd') + reimbursement);
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
       let sickAccruedThisPeriod =

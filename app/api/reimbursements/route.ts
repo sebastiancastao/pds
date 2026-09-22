@@ -6,6 +6,8 @@ import {
   createSignedReceiptUrl,
   getReimbursementAuthedUser,
   getSelectableReimbursementEvents,
+  getUserDisplayMap,
+  notifyReimbursementSubmitted,
   reimbursementSupabaseAdmin,
   uploadReimbursementReceipt,
 } from '@/lib/reimbursements-server';
@@ -156,6 +158,20 @@ export async function POST(req: NextRequest) {
 
     const receiptUrl = await createSignedReceiptUrl(inserted.receipt_path || null);
     const event = eventId ? availableEvents.find((entry) => entry.id === eventId) || null : null;
+
+    try {
+      const vendorMap = await getUserDisplayMap([user.id]);
+      await notifyReimbursementSubmitted({
+        vendorName: vendorMap[user.id]?.name || user.email || 'Unknown vendor',
+        vendorEmail: vendorMap[user.id]?.email || user.email || null,
+        requestedAmount: Number(inserted.requested_amount || 0),
+        purchaseDate: inserted.purchase_date,
+        description: inserted.description,
+        eventName: event?.event_name || null,
+      });
+    } catch (notifyError: any) {
+      console.error('[POST /api/reimbursements] notification failed:', notifyError?.message || notifyError);
+    }
 
     return NextResponse.json({
       success: true,

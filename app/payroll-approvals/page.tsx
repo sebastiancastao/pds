@@ -530,11 +530,18 @@ export default function PayrollApprovalsPage() {
                 {reimbursementRequests.map((request) => {
                   const isStandalone = !request.event_id;
                   return (
-                    <div key={request.id} className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-lg font-semibold text-gray-900">{request.vendor_name}</span>
+                    <div key={request.id} className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+                      <p className="text-center text-4xl font-bold text-gray-900">{formatMoney(request.requested_amount)}</p>
+                      <p className="mt-2 text-center text-sm text-gray-500">
+                        {request.vendor_name}
+                        {request.event ? ` · ${request.event.event_name}` : ''}
+                      </p>
+                      <p className="text-center text-sm text-gray-500">{formatDate(request.purchase_date)}</p>
+
+                      <div className="mt-6 border-t border-gray-100">
+                        <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                          <span className="text-sm font-semibold text-gray-900">Status</span>
+                          <div className="flex items-center gap-2">
                             <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${REIMBURSEMENT_STATUS_STYLES[request.status]}`}>
                               {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
                             </span>
@@ -544,73 +551,114 @@ export default function PayrollApprovalsPage() {
                               </span>
                             )}
                           </div>
-                          <p className="mt-1 text-sm text-gray-500">
-                            {request.vendor_email || 'No email'}
-                            {' · '}
-                            Submitted {formatDateTime(request.created_at)}
-                          </p>
-                          <p className="mt-3 text-sm font-medium text-gray-900">
-                            {request.event ? request.event.event_name : 'No event selected'}
-                          </p>
-                          <p className="mt-1 text-sm text-gray-600">{request.description}</p>
-                          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-gray-500">
-                            <span>Purchase: {formatDate(request.purchase_date)}</span>
-                            {request.event?.event_date && <span>Event Date: {formatDate(request.event.event_date)}</span>}
-                            {request.event?.venue && <span>Venue: {request.event.venue}</span>}
-                            {request.approved_pay_date && <span>Pay Date: {formatDate(request.approved_pay_date)}</span>}
-                            {request.reviewed_at && <span>Reviewed: {formatDateTime(request.reviewed_at)}</span>}
-                          </div>
                         </div>
 
-                        {request.status === 'submitted' && reimbursementActionId !== request.id && (
-                          <div className="flex gap-2 shrink-0">
-                            <button
-                              onClick={() => openReimbursementAction(request, 'approve')}
-                              className="apple-button apple-button-primary text-sm px-4 py-2"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              onClick={() => openReimbursementAction(request, 'reject')}
-                              className="apple-button apple-button-danger text-sm px-4 py-2"
-                            >
-                              Reject
-                            </button>
+                        <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                          <span className="text-sm font-semibold text-gray-900">Vendor</span>
+                          <span className="text-right text-sm text-gray-600">
+                            {request.vendor_name}
+                            {request.vendor_email ? <span className="block text-xs text-gray-400">{request.vendor_email}</span> : null}
+                          </span>
+                        </div>
+
+                        <div className="border-b border-gray-100 py-3">
+                          <span className="text-sm font-semibold text-gray-900">Description</span>
+                          <p className="mt-1 text-sm text-gray-600">{request.description}</p>
+                        </div>
+
+                        <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                          <span className="text-sm font-semibold text-gray-900">Event</span>
+                          <span className="text-sm text-gray-600">{request.event ? request.event.event_name : 'No event selected'}</span>
+                        </div>
+
+                        {request.event?.event_date && (
+                          <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                            <span className="text-sm font-semibold text-gray-900">Event Date</span>
+                            <span className="text-sm text-gray-600">{formatDate(request.event.event_date)}</span>
                           </div>
                         )}
-                      </div>
 
-                      <div className="mt-4 grid gap-3 md:grid-cols-3">
-                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Requested</p>
-                          <p className="mt-1 text-lg font-semibold text-slate-900">{formatMoney(request.requested_amount)}</p>
-                        </div>
-                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Approved</p>
-                          <p className="mt-1 text-lg font-semibold text-slate-900">
+                        {request.event?.venue && (
+                          <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                            <span className="text-sm font-semibold text-gray-900">Venue</span>
+                            <span className="text-sm text-gray-600">{request.event.venue}</span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                          <span className="text-sm font-semibold text-gray-900">Approved Amount</span>
+                          <span className="text-sm text-gray-600">
                             {request.approved_amount == null ? 'Pending' : formatMoney(request.approved_amount)}
-                          </p>
+                          </span>
                         </div>
-                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Receipt</p>
-                          <p className="mt-1 text-sm font-medium text-slate-900">
-                            {request.receipt_url ? (
-                              <a href={request.receipt_url} target="_blank" rel="noreferrer" className="text-emerald-700 hover:text-emerald-800">
-                                {request.receipt_filename || 'View receipt'}
-                              </a>
-                            ) : (
-                              'No receipt attached'
+
+                        <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                          <span className="text-sm font-semibold text-gray-900">Submitted</span>
+                          <span className="text-sm text-gray-600">{formatDateTime(request.created_at)}</span>
+                        </div>
+
+                        {request.approved_pay_date && (
+                          <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                            <span className="text-sm font-semibold text-gray-900">Pay Date</span>
+                            <span className="text-sm text-gray-600">{formatDate(request.approved_pay_date)}</span>
+                          </div>
+                        )}
+
+                        {request.reviewed_at && (
+                          <div className="flex items-center justify-between border-b border-gray-100 py-3">
+                            <span className="text-sm font-semibold text-gray-900">Reviewed</span>
+                            <span className="text-sm text-gray-600">
+                              {formatDateTime(request.reviewed_at)}
+                              {request.reviewed_by_name ? ` by ${request.reviewed_by_name}` : ''}
+                            </span>
+                          </div>
+                        )}
+
+                        {request.review_notes && (
+                          <div className="border-b border-gray-100 py-3">
+                            <span className="text-sm font-semibold text-gray-900">Review Notes</span>
+                            <p className="mt-1 text-sm text-gray-600">{request.review_notes}</p>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between py-3">
+                          <div className="min-w-0">
+                            <span className="text-sm font-semibold text-gray-900">Receipt</span>
+                            {request.receipt_url && request.receipt_filename && (
+                              <p className="truncate text-xs text-gray-500">{request.receipt_filename}</p>
                             )}
-                          </p>
+                          </div>
+                          {request.receipt_url ? (
+                            <a
+                              href={request.receipt_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 transition hover:bg-emerald-100"
+                            >
+                              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </a>
+                          ) : (
+                            <span className="text-sm text-gray-400">No receipt attached</span>
+                          )}
                         </div>
                       </div>
 
-                      {(request.review_notes || request.reviewed_by_name) && (
-                        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                          {request.reviewed_by_name ? (
-                            <p className="font-medium text-slate-800 mb-1">Reviewed by {request.reviewed_by_name}</p>
-                          ) : null}
-                          {request.review_notes || 'No review notes.'}
+                      {request.status === 'submitted' && reimbursementActionId !== request.id && (
+                        <div className="mt-5 flex gap-2">
+                          <button
+                            onClick={() => openReimbursementAction(request, 'approve')}
+                            className="apple-button apple-button-primary text-sm px-4 py-2"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => openReimbursementAction(request, 'reject')}
+                            className="apple-button apple-button-danger text-sm px-4 py-2"
+                          >
+                            Reject
+                          </button>
                         </div>
                       )}
 

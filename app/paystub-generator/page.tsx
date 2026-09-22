@@ -2714,6 +2714,16 @@ export default function PaystubGenerator() {
               PDF Reader (Step 1)
             </Link>
             <Link
+              href="/adp-ytd-import"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              title="Import each employee's ADP year-to-date carryover baseline (taxes, gross pay, etc.) so new paystubs start with the correct YTD totals."
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M7 10l5 5 5-5M12 15V3" />
+              </svg>
+              ADP YTD Import
+            </Link>
+            <Link
               href="/hr-dashboard"
               className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
             >

@@ -889,6 +889,14 @@ export async function PATCH(req: NextRequest) {
         { status: 403 }
       );
     }
+    // A reviewer role must not be able to approve/reject/apply/revoke a request
+    // that is their own submission or filed for their own timesheet.
+    if (auth.canReview && isParty && !isWithdrawal) {
+      return NextResponse.json(
+        { error: "You cannot review your own timesheet edit request. Ask another reviewer to handle it." },
+        { status: 403 }
+      );
+    }
 
     if (!canTransitionTimesheetEditRequest(existingRequest.status, nextStatus)) {
       return NextResponse.json(
