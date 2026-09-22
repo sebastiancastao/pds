@@ -116,12 +116,13 @@ const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trai
 const isVendorDivision = (d?: string | null) => { const div = normalizeDivision(d); return div === "vendor" || div === "both"; };
 
 // `recordedBreaks` is the rest break count a manager entered on the event Timesheet tab
-// (null/undefined = none, so the flat per-shift amount applies). Same rule as the on-screen payroll.
-function getRestBreakAmount(actualHours: number, stateCode: string, recordedBreaks?: number | null) {
+// (null/undefined = none, so the flat per-shift amount applies). `eventDate` picks the rule
+// in force for that event (see lib/rest-breaks). Same rule as the on-screen payroll.
+function getRestBreakAmount(actualHours: number, stateCode: string, recordedBreaks: number | null | undefined, eventDate: unknown) {
   const st = normalizeState(stateCode);
   if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
   if (actualHours <= 0) return 0;
-  return getRestBreakPay(actualHours, recordedBreaks);
+  return getRestBreakPay(actualHours, recordedBreaks, eventDate);
 }
 
 function getEffectiveHours(payment: any): number {
@@ -780,7 +781,8 @@ export async function GET(req: NextRequest) {
         const restBreak = getRestBreakAmount(
           actualHours,
           eventState,
-          restBreakCountsByEvent[eventId]?.[(payment.user_id || "").toString()]
+          restBreakCountsByEvent[eventId]?.[(payment.user_id || "").toString()],
+          evt.event_date
         );
         const totalPay = totalFinalCommissionAmt + tips + restBreak;
         const finalPay = totalPay + adjustmentAmount;

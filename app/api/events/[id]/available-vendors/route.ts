@@ -497,7 +497,7 @@ export async function GET(
 
     // Unfinished supplemental (custom) forms per vendor. Only looked up when the caller
     // asks for it (the Create Team modal) because it costs several queries.
-    const includePendingForms = searchParams.get('include_pending_forms') === '1';
+    const includePendingForms = requesterRole === 'exec' && searchParams.get('include_pending_forms') === '1';
     const pendingFormsByUser = includePendingForms
       ? await getPendingCustomFormsByUser(supabaseAdmin, filteredVendors.map((v: any) => v.id))
       : new Map<string, string[]>();

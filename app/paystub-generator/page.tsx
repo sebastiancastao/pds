@@ -532,7 +532,7 @@ export default function PaystubGenerator() {
   // Payment tab: none for San Diego or non-event ("special") timesheets.
   const getRestPayForReport = (
     actualHours: number,
-    event?: { city?: string | null; venue?: string | null; event_type?: string | null } | null,
+    event?: { city?: string | null; venue?: string | null; event_type?: string | null; event_date?: string | null } | null,
     recordedBreaks?: number | null
   ) => {
     if (event && isSanDiegoRegion({ city: event.city, venue: event.venue })) return 0;
@@ -540,7 +540,7 @@ export default function PaystubGenerator() {
     if (!Number.isFinite(actualHours) || actualHours <= 0) {
       return 0;
     }
-    return getRestBreakPay(actualHours, recordedBreaks);
+    return getRestBreakPay(actualHours, recordedBreaks, event?.event_date);
   };
   const getCommissionReportBonusAmount = (worker?: Worker | null) => {
     if (!worker) return 0;

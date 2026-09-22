@@ -1130,7 +1130,7 @@ export default function DashboardPage() {
 
       // Use geographic filtering when a region is selected
       const useGeoFilter = regionId !== "all";
-      const url = `/api/all-vendors?include_pending_forms=1${regionId !== "all" ? `&region_id=${regionId}&geo_filter=true` : ""}`;
+      const url = `/api/all-vendors${userRole === "exec" ? "?include_pending_forms=1" : ""}${regionId !== "all" ? `${userRole === "exec" ? "&" : "?"}region_id=${regionId}&geo_filter=true` : ""}`;
       console.log('[GLOBAL-CALENDAR] ð¡ Fetching vendors from:', url, { useGeoFilter });
 
       // Fetch ALL vendors from the database directly, not filtered by venue
@@ -1311,7 +1311,7 @@ export default function DashboardPage() {
       if (regionId && regionId !== "all") {
         params.append("region_id", regionId);
       }
-      params.append("include_pending_forms", "1");
+      if (userRole === "exec") params.append("include_pending_forms", "1");
       const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, {
         method: "GET",
@@ -1346,7 +1346,7 @@ export default function DashboardPage() {
     // Load existing team members and merge with available vendors
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${event.id}/team?include_pending_forms=1`, {
+      const res = await fetch(`/api/events/${event.id}/team${userRole === "exec" ? "?include_pending_forms=1" : ""}`, {
         method: "GET",
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
@@ -1428,7 +1428,7 @@ export default function DashboardPage() {
 
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch(`/api/events/${selectedEvent.id}/team?include_pending_forms=1`, {
+        const res = await fetch(`/api/events/${selectedEvent.id}/team${userRole === "exec" ? "?include_pending_forms=1" : ""}`, {
           method: "GET",
           headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         });

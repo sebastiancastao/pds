@@ -234,18 +234,20 @@ export async function POST(req: NextRequest) {
     }
 
     // `recordedBreaks` is the number of rest breaks a manager entered on the event Timesheet tab
-    // (null/undefined = none entered, so the flat per-shift amount applies). See lib/rest-breaks.
+    // (null/undefined = none entered, so the flat per-shift amount applies). `eventDate` picks
+    // the rule in force for that event (see lib/rest-breaks).
     const getRestBreakAmount = (
       actualHours: number,
       stateCode: string,
       eventSanDiego = false,
-      recordedBreaks?: number | null
+      recordedBreaks?: number | null,
+      eventDate?: unknown
     ): number => {
       if (eventSanDiego) return 0;
       const st = normalizeState(stateCode);
       if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
-      return getRestBreakPay(actualHours, recordedBreaks);
+      return getRestBreakPay(actualHours, recordedBreaks, eventDate);
     };
     // Loaded from event_rest_breaks just before the PDF is built (eventId -> userId -> count).
     let restBreakCountsByEvent: RestBreakCountsByEvent = {};
@@ -1900,7 +1902,9 @@ export async function POST(req: NextRequest) {
         const commission = displayCommissionPay;
         const recordedRestBreaks = getRecordedRestBreaks(event, worker);
         const restBreak = roundPayrollAmount(
-          includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState, isEventSD, recordedRestBreaks) : 0
+          includeRestBreakColumn
+            ? getRestBreakAmount(actualHours, paystubState, isEventSD, recordedRestBreaks, event?.event_date)
+            : 0
         );
         const reportFinalPay = roundPayrollAmount(
           (isEventSD ? reportFinalCommissionAmt : displayCommissionPay + displayVariableIncentive) + tips + restBreak
@@ -2783,7 +2787,7 @@ export async function POST(req: NextRequest) {
         // (Event state can be missing/mismatched, which would incorrectly suppress rest break.)
         const restBreak = roundPayrollAmount(
           includeRestBreakColumn
-            ? getRestBreakAmount(actualHours, paystubState, false, getRecordedRestBreaks(event, worker))
+            ? getRestBreakAmount(actualHours, paystubState, false, getRecordedRestBreaks(event, worker), event?.event_date)
             : 0
         );
 

@@ -1872,7 +1872,7 @@ export default function EventDashboardPage() {
       const token = await getSessionToken();
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") params.append("region_id", regionId);
-      params.append("include_pending_forms", "1");
+      if (userRole === "exec") params.append("include_pending_forms", "1");
       const availableUrl = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
 
       const [availableRes, teamRes] = await Promise.all([
@@ -1880,7 +1880,7 @@ export default function EventDashboardPage() {
           method: "GET",
           headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         }),
-        fetch(`/api/events/${eventId}/team?include_pending_forms=1`, {
+        fetch(`/api/events/${eventId}/team${userRole === "exec" ? "?include_pending_forms=1" : ""}`, {
           method: "GET",
           headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         }),
@@ -1930,7 +1930,7 @@ export default function EventDashboardPage() {
       const token = await getSessionToken();
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") params.append("region_id", regionId);
-      params.append("include_pending_forms", "1");
+      if (userRole === "exec") params.append("include_pending_forms", "1");
       const url = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
 
       const res = await fetch(url, {
@@ -2109,7 +2109,7 @@ export default function EventDashboardPage() {
       const token = await getSessionToken();
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") params.append("region_id", regionId);
-      params.append("include_pending_forms", "1");
+      if (userRole === "exec") params.append("include_pending_forms", "1");
       const url = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, {
         method: "GET",
@@ -4906,7 +4906,7 @@ export default function EventDashboardPage() {
     // OT/DT rate already covers it) or for "special" non-event hourly payroll.
     if (isEventSanDiego || isNonEventTimesheet) return 0;
     if (actualHours <= 0) return 0;
-    return getRestBreakPay(actualHours, uid ? restBreakCounts[uid] : null);
+    return getRestBreakPay(actualHours, uid ? restBreakCounts[uid] : null, event?.event_date);
   };
   const roundPayrollAmount = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;

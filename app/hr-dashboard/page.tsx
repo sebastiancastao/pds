@@ -401,11 +401,18 @@ function HRDashboardContent() {
     return st === "CA" || st === "NV" || st === "WI";
   };
   // `recordedBreaks` is the number of rest breaks a manager entered on the event Timesheet tab
-  // (null/undefined = none entered, so the flat per-shift amount applies). See lib/rest-breaks.
-  const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false, recordedBreaks?: number | null) => {
+  // (null/undefined = none entered, so the flat per-shift amount applies). `eventDate` picks
+  // the rule in force for that event (see lib/rest-breaks).
+  const getRestBreakAmount = (
+    actualHours: number,
+    stateCode: string,
+    eventSanDiego = false,
+    recordedBreaks?: number | null,
+    eventDate?: unknown
+  ) => {
     if (eventSanDiego) return 0;
     if (actualHours <= 0) return 0;
-    return getRestBreakPay(actualHours, recordedBreaks);
+    return getRestBreakPay(actualHours, recordedBreaks, eventDate);
   };
   const formatHoursHHMM = (decimalHours: number): string => {
     const totalMinutes = Math.floor(Math.abs(decimalHours) * 60);
@@ -1608,7 +1615,7 @@ function HRDashboardContent() {
             // of the same name shown elsewhere in this dashboard.
             const manualVariableIncentive = Number(payment.variable_incentive || 0);
 
-            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll, payment.rest_break_count);
+            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll, payment.rest_break_count, eventInfo.event_date);
             const totalPay = totalFinalCommissionAmt + manualVariableIncentive + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {

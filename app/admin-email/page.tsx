@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
 import { parseEmailInput } from '@/lib/email-list';
 
-type Audience = 'manual' | 'role' | 'region' | 'all';
+type Audience = 'manual' | 'role' | 'managers_supervisors' | 'region' | 'all';
 type BodyFormat = 'html' | 'text';
 
 const allowedRoles = new Set(['admin', 'exec', 'hr', 'hr_admin']);
@@ -426,6 +426,7 @@ function AdminEmailPageContent() {
                   >
                     <option value="manual">Manual list</option>
                     <option value="role">All users by role</option>
+                    <option value="managers_supervisors">Managers &amp; Supervisors</option>
                     <option value="region">All users by region</option>
                     <option value="all">All users</option>
                   </select>

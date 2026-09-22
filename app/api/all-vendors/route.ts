@@ -105,6 +105,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
+    // Pending-forms fields are exec-only, so look the requester's role up regardless
+    // of whether they ask for them (the client can't be trusted to gate itself).
+    const { data: pendingFormsRequester } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+    const requesterIsExec = String(pendingFormsRequester?.role || '').toLowerCase().trim() === 'exec';
+
     // Get query parameters
     const { searchParams } = new URL(req.url);
     const regionId = searchParams.get('region_id');
@@ -435,7 +444,7 @@ export async function GET(req: NextRequest) {
 
     // Unfinished supplemental (custom) forms per vendor. Only looked up when the caller
     // asks for it (the Availability Request modal) because it costs several queries.
-    const includePendingForms = searchParams.get('include_pending_forms') === '1';
+    const includePendingForms = requesterIsExec && searchParams.get('include_pending_forms') === '1';
     const pendingFormsByUser = includePendingForms
       ? await getPendingCustomFormsByUser(supabaseAdmin, (vendors ?? []).map((v: any) => v.id))
       : new Map<string, string[]>();

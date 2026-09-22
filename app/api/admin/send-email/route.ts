@@ -47,7 +47,11 @@ const MAX_CONSECUTIVE_FAILED_BATCHES = 3;
 // to isolate the offender. This caps how many splits one request may spend.
 const MAX_ISOLATION_SPLITS = 60;
 
-type Audience = "manual" | "role" | "region" | "all";
+type Audience = "manual" | "role" | "managers_supervisors" | "region" | "all";
+
+// All manager-tier roles in the user_role enum (see lib/event-access.ts
+// SUPERVISOR_ROLES and app/planned-calendar/page.tsx for the same grouping).
+const MANAGER_SUPERVISOR_ROLES = ["manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"];
 type BodyFormat = "html" | "text";
 
 // Always BCC'd on every email sent from /admin-email-team
@@ -145,7 +149,7 @@ export async function POST(req: NextRequest) {
     const eventName = String(form.get("eventName") || "").trim();
     const eventDate = String(form.get("eventDate") || "").trim();
 
-    if (!["manual", "role", "region", "all"].includes(audience)) {
+    if (!["manual", "role", "managers_supervisors", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
     }
     if ((requesterRole === "manager" || requesterRole === "supervisor" || requesterRole === "supervisor3") && audience !== "manual") {
@@ -180,6 +184,13 @@ export async function POST(req: NextRequest) {
         .from("users")
         .select("email")
         .eq("role", role);
+      if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
+      to = takeValid(parseEmailInput((usersByRole || []).map((u: any) => u.email || "").join(",")));
+    } else if (audience === "managers_supervisors") {
+      const { data: usersByRole, error: usersErr } = await supabaseAdmin
+        .from("users")
+        .select("email")
+        .in("role", MANAGER_SUPERVISOR_ROLES);
       if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
       to = takeValid(parseEmailInput((usersByRole || []).map((u: any) => u.email || "").join(",")));
     } else if (audience === "region") {

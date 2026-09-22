@@ -609,10 +609,11 @@ export async function GET(req: NextRequest) {
       }).amountsById;
 
       // Rest break helper (matches event-dashboard): flat per-shift amount, or scaled by the
-      // number of breaks a manager recorded for this worker on the Timesheet tab.
+      // number of breaks a manager recorded for this worker on the Timesheet tab. `dateStr`
+      // (this event's date, closed over above) picks which rule is in force.
       const getRestBreak = (hours: number, st: string, uid: string) => {
         if (st === 'NV' || st === 'WI' || st === 'AZ' || st === 'NY') return 0;
-        return getRestBreakPay(hours, restBreakCountsByEvent[eventId]?.[uid]);
+        return getRestBreakPay(hours, restBreakCountsByEvent[eventId]?.[uid], dateStr);
       };
 
       // 8) AZ/NY has different commission logic

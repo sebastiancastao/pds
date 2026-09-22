@@ -736,6 +736,15 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
+    // Pending-forms fields are exec-only, so look the requester's role up regardless
+    // of whether they ask for them (the client can't be trusted to gate itself).
+    const { data: pendingFormsRequester } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+    const requesterIsExec = String(pendingFormsRequester?.role || '').toLowerCase().trim() === 'exec';
+
     const { data: eventData, error: eventError } = await supabaseAdmin
       .from('events')
       .select('venue, city, state, event_type')
@@ -1091,7 +1100,7 @@ export async function GET(
 
     // Unfinished supplemental (custom) forms per team member. Only looked up when the
     // caller asks for it (the Create Team modal); other consumers of this route skip the cost.
-    const includePendingForms = new URL(req.url).searchParams.get('include_pending_forms') === '1';
+    const includePendingForms = requesterIsExec && new URL(req.url).searchParams.get('include_pending_forms') === '1';
     const pendingFormsByUser = includePendingForms
       ? await getPendingCustomFormsByUser(supabaseAdmin, teamUserIds)
       : new Map<string, string[]>();
