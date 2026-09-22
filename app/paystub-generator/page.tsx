@@ -526,21 +526,20 @@ export default function PaystubGenerator() {
       tipsSharesByUser: tipsDistribution.amountsById,
     };
   };
+  // Rest break pay for the commission report, priced with the current rule (lib/rest-breaks)
+  // rather than read back out of the saved payment total, which still holds whatever rule was
+  // in force when that event's Payment tab was last saved. Same exclusions as the event
+  // Payment tab: none for San Diego or non-event ("special") timesheets.
   const getRestPayForReport = (
     actualHours: number,
-    stateCode: string | null | undefined,
-    event?: { city?: string | null; venue?: string | null } | null,
+    event?: { city?: string | null; venue?: string | null; event_type?: string | null } | null,
     recordedBreaks?: number | null
   ) => {
     if (event && isSanDiegoRegion({ city: event.city, venue: event.venue })) return 0;
-    const normalizedState = normalizeStateCode(stateCode);
-    if (normalizedState === 'NV' || normalizedState === 'WI' || normalizedState === 'AZ' || normalizedState === 'NY') {
-      return 0;
-    }
+    if ((event?.event_type || '').toString().trim().toLowerCase() === 'special') return 0;
     if (!Number.isFinite(actualHours) || actualHours <= 0) {
       return 0;
     }
-    // Same amount the paystub PDF uses: flat per-shift, or scaled by the recorded break count.
     return getRestBreakPay(actualHours, recordedBreaks);
   };
   const getCommissionReportBonusAmount = (worker?: Worker | null) => {
@@ -2040,12 +2039,7 @@ export default function PaystubGenerator() {
                 : Number(worker.payment_data?.tips ?? 0)
           );
           const restPay = roundMoney(
-            isEventSD
-              ? 0
-              : finalPayData?.totalPay != null
-                ? Math.max(0, Number(finalPayData.totalPay) - commissionPaidTotal - tips)
-                : Number(worker.payment_data?.rest_break_pay ?? 0) ||
-                  getRestPayForReport(hoursWorked, formData.state || event.state, event, worker.rest_break_count)
+            isEventSD ? 0 : getRestPayForReport(hoursWorked, event, worker.rest_break_count)
           );
           const bonusValue = getCommissionReportBonusAmount(worker);
           const rateInEffect = roundMoney(
@@ -2059,9 +2053,9 @@ export default function PaystubGenerator() {
             !isEventSD && hoursWorked > 0 && Math.abs(variableIncentiveValue) >= 0.005
               ? roundMoney(variableIncentiveValue / hoursWorked)
               : '';
-          const baseFinalPay = roundMoney(
-            Number(finalPayData?.totalPay ?? (commissionPaidTotal + tips + restPay))
-          );
+          // Sum of the row's own columns, so Final Pay always matches the Rest Pay shown beside it.
+          // (The saved payment total also bakes in the old rest break amount.)
+          const baseFinalPay = roundMoney(commissionPaidTotal + tips + restPay);
           const finalPay = roundMoney(baseFinalPay + bonusValue);
 
           return [{

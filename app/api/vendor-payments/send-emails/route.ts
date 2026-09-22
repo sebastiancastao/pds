@@ -42,6 +42,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'event_ids required' }, { status: 400 });
     }
 
+    // Event pay as the HR dashboard currently calculates it (eventId -> userId -> dollars, before
+    // adjustments). Saved payment rows keep whatever rest break rule was in force when the event
+    // was last saved, so a figure supplied here wins; the saved total is only the fallback.
+    const computedPay: Record<string, Record<string, number>> = {};
+    const rawComputed = body?.computed_pay;
+    if (rawComputed && typeof rawComputed === 'object') {
+      for (const [eid, byUser] of Object.entries(rawComputed as Record<string, unknown>)) {
+        if (!eventIds.includes(eid) || !byUser || typeof byUser !== 'object') continue;
+        for (const [uid, amount] of Object.entries(byUser as Record<string, unknown>)) {
+          if (typeof amount === 'number' && Number.isFinite(amount) && Math.abs(amount) < 1_000_000) {
+            (computedPay[eid] ||= {})[uid] = amount;
+          }
+        }
+      }
+    }
+
     // Basic role check (exec/admin/hr) — optional, mirrors save-payment
     const { data: userData } = await supabaseAdmin
       .from('users')
@@ -133,7 +149,8 @@ export async function POST(req: NextRequest) {
       }
 
       const adjustment = adjMap.get(`${eventId}::${userId}`) || 0;
-      const totalPay = Number(row.total_pay || 0);
+      const currentPay = computedPay[eventId]?.[userId];
+      const totalPay = currentPay !== undefined ? currentPay : Number(row.total_pay || 0);
       const finalPay = totalPay + Number(adjustment || 0);
 
       const ev = eventById[eventId] || {};

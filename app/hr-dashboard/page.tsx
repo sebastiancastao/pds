@@ -2275,6 +2275,23 @@ function HRDashboardContent() {
         alert('No events loaded. Load a date range first.');
         return;
       }
+      // Event pay exactly as this dashboard shows it (commission + tips + rest break, before
+      // adjustments), so the emails follow the current rest break rule instead of the total
+      // saved when the event's Payment tab was last saved.
+      const computedPay: Record<string, Record<string, number>> = {};
+      paymentsByVenue.forEach(v => v.events.forEach((ev: any) => {
+        if (!ev?.id) return;
+        const byUser: Record<string, number> = {};
+        (Array.isArray(ev.payments) ? ev.payments : []).forEach((p: any) => {
+          const uid = (p?.userId || '').toString();
+          if (!uid) return;
+          const breakdown = getDisplayedPaymentBreakdown(ev, p);
+          const rest = isHourlyPayrollEvent(ev, p) ? 0 : Number(p?.restBreak || 0);
+          const pay = breakdown.commissionPaidTotal + getDisplayedTips(ev, p) + rest;
+          if (Number.isFinite(pay)) byUser[uid] = Math.round((pay + 1e-9) * 100) / 100;
+        });
+        computedPay[ev.id] = byUser;
+      }));
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch('/api/vendor-payments/send-emails', {
         method: 'POST',
@@ -2282,7 +2299,7 @@ function HRDashboardContent() {
           'Content-Type': 'application/json',
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
-        body: JSON.stringify({ event_ids: unique }),
+        body: JSON.stringify({ event_ids: unique, computed_pay: computedPay }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || 'Failed to send emails');
@@ -2292,7 +2309,7 @@ function HRDashboardContent() {
     } finally {
       setSendingEmails(false);
     }
-  }, [paymentsByVenue]);
+  }, [paymentsByVenue, getDisplayedPaymentBreakdown, getDisplayedTips]);
 
   const loadApprovalSubmissions = useCallback(async () => {
     setLoadingSubmissions(true);
