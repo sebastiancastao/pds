@@ -47,7 +47,36 @@ export type ReimbursementRequestRecord = {
   reviewed_at: string | null;
   created_at: string;
   updated_at: string;
+  // Groups receipts uploaded together in one batch (e.g. "3 gas receipts for
+  // this trip") so they can be listed together with one combined recap. Null
+  // for a lone submission.
+  batch_id: string | null;
 };
+
+// Groups a list of reimbursement requests by their shared batch_id, preserving
+// the incoming order (rows already sorted newest-first). A request with no
+// batch_id is its own group of one. Used by every surface that lists
+// reimbursements so a multi-receipt submission shows as one batch with a recap.
+export function groupReimbursementRequestsByBatch<
+  T extends { id: string; batch_id?: string | null }
+>(requests: T[]): { batchId: string | null; items: T[] }[] {
+  const order: string[] = [];
+  const groups = new Map<string, T[]>();
+
+  for (const request of requests) {
+    const key = request.batch_id || `single:${request.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(request);
+  }
+
+  return order.map((key) => {
+    const items = groups.get(key)!;
+    return { batchId: items[0].batch_id || null, items };
+  });
+}
 
 export function sanitizeReimbursementFilename(filename: string): string {
   return filename.replace(/[^\w.\-]+/g, '_');

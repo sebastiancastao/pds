@@ -211,6 +211,21 @@ const REIMBURSEMENT_SUBMISSION_NOTIFICATION_RECIPIENTS = [
   'jenvillar@1pds.net',
 ];
 
+// The testing branch's Vercel preview deployment. A submission made from this
+// URL should link back to it, not to production, so testers land where they
+// actually are instead of on live data.
+const TESTING_APP_URL = 'https://pds-git-testing-sebastiancastaos-projects.vercel.app';
+
+// Picks the link base for the notification email: the testing deployment when
+// that's where the request came from, otherwise the normal production default.
+export function resolveReimbursementAppUrl(req: NextRequest): string {
+  const origin = req.nextUrl?.origin || req.headers.get('origin') || '';
+  if (origin === TESTING_APP_URL) {
+    return TESTING_APP_URL;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app';
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -218,18 +233,46 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;');
 }
 
-export async function notifyReimbursementSubmitted(params: {
-  vendorName: string;
-  vendorEmail: string | null;
+export type ReimbursementNotificationItem = {
   requestedAmount: number;
   purchaseDate: string;
   description: string;
   eventName: string | null;
+};
+
+// One email per submission, whether it's a single receipt or a batch of
+// several uploaded together. Lists every receipt in the batch with a combined
+// total, so a reviewer only gets one message per trip/outing instead of one
+// per file.
+export async function notifyReimbursementSubmitted(params: {
+  baseUrl: string;
+  vendorName: string;
+  vendorEmail: string | null;
+  items: ReimbursementNotificationItem[];
 }): Promise<void> {
-  const { vendorName, vendorEmail, requestedAmount, purchaseDate, description, eventName } = params;
-  const approvalUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/payroll-approvals`;
-  const amountLabel = `$${requestedAmount.toFixed(2)}`;
-  const subject = `Reimbursement Submitted - ${vendorName} - ${amountLabel}`;
+  const { baseUrl, vendorName, vendorEmail, items } = params;
+  if (items.length === 0) return;
+
+  const approvalUrl = `${baseUrl}/payroll-approvals`;
+  const totalAmount = items.reduce((sum, item) => sum + item.requestedAmount, 0);
+  const totalLabel = `$${totalAmount.toFixed(2)}`;
+  const isBatch = items.length > 1;
+  const subject = isBatch
+    ? `Reimbursement Submitted - ${vendorName} - ${items.length} receipts - ${totalLabel} total`
+    : `Reimbursement Submitted - ${vendorName} - ${totalLabel}`;
+
+  const itemRows = items
+    .map(
+      (item, index) => `
+                <tr>
+                  <td style="padding:14px 16px;border-bottom:1px solid #e2e8f0;">
+                    <p style="margin:0;color:#0f172a;font-size:14px;font-weight:600;">Receipt ${index + 1} of ${items.length} — $${item.requestedAmount.toFixed(2)}</p>
+                    <p style="margin:4px 0 0 0;color:#64748b;font-size:13px;">${escapeHtml(item.eventName || 'Standalone reimbursement')} · ${escapeHtml(item.purchaseDate)}</p>
+                    <p style="margin:6px 0 0 0;color:#334155;font-size:13px;line-height:1.5;">${escapeHtml(item.description).replace(/\n/g, '<br />')}</p>
+                  </td>
+                </tr>`
+    )
+    .join('');
 
   const html = `
 <!DOCTYPE html>
@@ -245,8 +288,10 @@ export async function notifyReimbursementSubmitted(params: {
         <table cellpadding="0" cellspacing="0" border="0" width="640" style="background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
           <tr>
             <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
-              <h1 style="margin:0;font-size:24px;">Reimbursement Submitted</h1>
-              <p style="margin:10px 0 0 0;font-size:14px;color:#cbd5e1;">A new receipt is waiting for approval.</p>
+              <h1 style="margin:0;font-size:24px;">${isBatch ? 'Reimbursement Batch Submitted' : 'Reimbursement Submitted'}</h1>
+              <p style="margin:10px 0 0 0;font-size:14px;color:#cbd5e1;">
+                ${isBatch ? `${items.length} receipts are` : 'A new receipt is'} waiting for approval.
+              </p>
             </td>
           </tr>
           <tr>
@@ -257,19 +302,20 @@ export async function notifyReimbursementSubmitted(params: {
                     <table cellpadding="0" cellspacing="0" border="0" width="100%">
                       <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Vendor</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;font-weight:600;">${escapeHtml(vendorName)}</td></tr>
                       <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Vendor Email</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;">${escapeHtml(vendorEmail || '-')}</td></tr>
-                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Amount</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;font-weight:600;">${amountLabel}</td></tr>
-                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Purchase Date</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;">${escapeHtml(purchaseDate)}</td></tr>
-                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Event</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;">${escapeHtml(eventName || 'Standalone reimbursement')}</td></tr>
+                      <tr><td style="padding:6px 0;color:#64748b;font-size:13px;">${isBatch ? 'Receipts' : 'Amount'}</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;font-weight:600;">${isBatch ? `${items.length}` : totalLabel}</td></tr>
+                      ${isBatch ? `<tr><td style="padding:6px 0;color:#64748b;font-size:13px;">Batch Total</td><td style="padding:6px 0;text-align:right;color:#0f172a;font-size:14px;font-weight:700;">${totalLabel}</td></tr>` : ''}
                     </table>
                   </td>
                 </tr>
               </table>
+
               <div style="margin-top:24px;">
-                <p style="margin:0 0 8px 0;color:#334155;font-size:14px;font-weight:700;">Description</p>
-                <div style="border:1px solid #e2e8f0;border-radius:8px;background:#ffffff;padding:16px;color:#0f172a;font-size:14px;line-height:1.6;">
-                  ${escapeHtml(description).replace(/\n/g, '<br />')}
-                </div>
+                <p style="margin:0 0 8px 0;color:#334155;font-size:14px;font-weight:700;">${isBatch ? 'Receipts in this batch' : 'Receipt'}</p>
+                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid #e2e8f0;border-radius:8px;background:#ffffff;overflow:hidden;">
+                  ${itemRows}
+                </table>
               </div>
+
               <div style="margin-top:28px;text-align:center;">
                 <a href="${approvalUrl}" style="display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:8px;font-size:14px;font-weight:700;">Open Approval Page</a>
                 <p style="margin:12px 0 0 0;color:#64748b;font-size:12px;">${approvalUrl}</p>

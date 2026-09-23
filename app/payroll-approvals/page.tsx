@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { groupReimbursementRequestsByBatch } from '@/lib/reimbursements';
 import '@/app/global-calendar/dashboard-styles.css';
 
 type PayrollSubmission = {
@@ -36,6 +37,7 @@ type ReimbursementReviewRequest = {
   reviewed_at: string | null;
   created_at: string;
   updated_at: string;
+  batch_id: string | null;
   event: {
     id: string;
     event_name: string;
@@ -526,8 +528,27 @@ export default function PayrollApprovalsPage() {
                 <p className="text-gray-400 font-medium">No reimbursement requests yet.</p>
               </div>
             ) : (
-              <div className="space-y-4">
-                {reimbursementRequests.map((request) => {
+              <div className="space-y-6">
+                {groupReimbursementRequestsByBatch(reimbursementRequests).map((group) => (
+                  <div
+                    key={group.batchId || group.items[0].id}
+                    className={
+                      group.items.length > 1
+                        ? 'space-y-4 rounded-3xl border-2 border-dashed border-emerald-200 bg-emerald-50/30 p-4'
+                        : 'space-y-4'
+                    }
+                  >
+                    {group.items.length > 1 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-2">
+                        <p className="text-sm font-semibold text-emerald-800">
+                          Batch of {group.items.length} receipts — {group.items[0].vendor_name}
+                        </p>
+                        <p className="text-sm font-bold text-emerald-800">
+                          Total: {formatMoney(group.items.reduce((sum, entry) => sum + entry.requested_amount, 0))}
+                        </p>
+                      </div>
+                    )}
+                    {group.items.map((request) => {
                   const isStandalone = !request.event_id;
                   return (
                     <div key={request.id} className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -730,6 +751,8 @@ export default function PayrollApprovalsPage() {
                     </div>
                   );
                 })}
+                  </div>
+                ))}
               </div>
             )}
           </>

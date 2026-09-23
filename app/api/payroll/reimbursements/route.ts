@@ -32,6 +32,7 @@ function normalizeReviewRow(row: any, event: any, receiptUrl: string | null, use
     reviewed_at: row.reviewed_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    batch_id: row.batch_id || null,
     event: event
       ? {
           id: event.id,

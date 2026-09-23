@@ -4,7 +4,7 @@ import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import type { ReimbursementEventOption } from '@/lib/reimbursements';
+import { groupReimbursementRequestsByBatch, type ReimbursementEventOption } from '@/lib/reimbursements';
 
 type ReimbursementRequest = {
   id: string;
@@ -23,8 +23,29 @@ type ReimbursementRequest = {
   reviewed_at: string | null;
   created_at: string;
   updated_at: string;
+  batch_id: string | null;
   event: ReimbursementEventOption | null;
 };
+
+type LineItem = {
+  key: string;
+  eventId: string;
+  purchaseDate: string;
+  requestedAmount: string;
+  description: string;
+  file: File | null;
+};
+
+function newLineItem(): LineItem {
+  return {
+    key: Math.random().toString(36).slice(2),
+    eventId: '',
+    purchaseDate: '',
+    requestedAmount: '',
+    description: '',
+    file: null,
+  };
+}
 
 const STATUS_STYLES: Record<ReimbursementRequest['status'], string> = {
   submitted: 'bg-blue-100 text-blue-700 border-blue-200',
@@ -72,6 +93,18 @@ export default function ReimbursementsPage() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+
+  // Submitting new requests supports a batch: one or several receipts added
+  // in one sitting, listed with a running total, then submitted together.
+  // Editing an existing request still uses the single formState/receiptFile
+  // above, since you can only edit one at a time.
+  const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()]);
+  const [batchSubmitError, setBatchSubmitError] = useState('');
+
+  const batchTotal = useMemo(
+    () => lineItems.reduce((sum, item) => sum + (Number(item.requestedAmount) || 0), 0),
+    [lineItems]
+  );
 
   const pendingRequests = useMemo(
     () => requests.filter((request) => request.status === 'submitted').length,
@@ -132,6 +165,79 @@ export default function ReimbursementsPage() {
     setFormState(EMPTY_FORM);
     setReceiptFile(null);
     setEditingId(null);
+  }
+
+  function updateLineItem(key: string, patch: Partial<LineItem>) {
+    setLineItems((prev) => prev.map((item) => (item.key === key ? { ...item, ...patch } : item)));
+  }
+
+  function addLineItem() {
+    setLineItems((prev) => [...prev, newLineItem()]);
+  }
+
+  function removeLineItem(key: string) {
+    setLineItems((prev) => (prev.length > 1 ? prev.filter((item) => item.key !== key) : prev));
+  }
+
+  async function handleBatchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError('');
+    setMessage('');
+    setBatchSubmitError('');
+
+    try {
+      const session = await getSessionOrRedirect();
+      if (!session) return;
+
+      const isBatch = lineItems.length > 1;
+      const batchId = isBatch ? (crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`) : null;
+
+      const created: ReimbursementRequest[] = [];
+      for (let index = 0; index < lineItems.length; index += 1) {
+        const item = lineItems[index];
+        const formData = new FormData();
+        formData.append('event_id', item.eventId);
+        formData.append('purchase_date', item.purchaseDate);
+        formData.append('requested_amount', item.requestedAmount);
+        formData.append('description', item.description);
+        if (item.file) {
+          formData.append('receipt', item.file);
+        }
+        if (batchId) {
+          formData.append('batch_id', batchId);
+          formData.append('batch_size', String(lineItems.length));
+          formData.append('batch_index', String(index));
+        }
+
+        const res = await fetch('/api/reimbursements', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          body: formData,
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(
+            isBatch
+              ? `Receipt ${index + 1} of ${lineItems.length} failed: ${json.error || 'Failed to save reimbursement'}`
+              : json.error || 'Failed to save reimbursement'
+          );
+        }
+        created.push(json.request as ReimbursementRequest);
+      }
+
+      setRequests((prev) => [...created, ...prev]);
+      setMessage(
+        created.length > 1
+          ? `${created.length} reimbursement requests submitted (batch total ${formatMoney(batchTotal)}).`
+          : 'Reimbursement request submitted.'
+      );
+      setLineItems([newLineItem()]);
+    } catch (err: any) {
+      setBatchSubmitError(err.message || 'Failed to submit one or more reimbursements.');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function startEditing(request: ReimbursementRequest) {
@@ -287,17 +393,15 @@ export default function ReimbursementsPage() {
         )}
 
         <div className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr]">
-          <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="mb-5 flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-900">
-                  {editingId ? 'Edit Request' : 'Submit a Reimbursement'}
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Receipts are optional, but attaching one makes review easier.
-                </p>
-              </div>
-              {editingId && (
+          {editingId ? (
+            <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-5 flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-900">Edit Request</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Receipts are optional, but attaching one makes review easier.
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={resetForm}
@@ -305,92 +409,221 @@ export default function ReimbursementsPage() {
                 >
                   Cancel Edit
                 </button>
-              )}
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Event</label>
-                <select
-                  value={formState.eventId}
-                  onChange={(e) => setFormState((prev) => ({ ...prev, eventId: e.target.value }))}
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                >
-                  <option value="">Standalone reimbursement</option>
-                  {availableEvents.map((eventOption) => (
-                    <option key={eventOption.id} value={eventOption.id}>
-                      {eventOption.event_name} · {formatDate(eventOption.event_date)}{eventOption.venue ? ` · ${eventOption.venue}` : ''}
-                    </option>
-                  ))}
-                </select>
               </div>
 
-              <div className="grid gap-5 md:grid-cols-2">
+              <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Purchase Date</label>
-                  <input
-                    type="date"
-                    value={formState.purchaseDate}
-                    onChange={(e) => setFormState((prev) => ({ ...prev, purchaseDate: e.target.value }))}
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Event</label>
+                  <select
+                    value={formState.eventId}
+                    onChange={(e) => setFormState((prev) => ({ ...prev, eventId: e.target.value }))}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                  >
+                    <option value="">Standalone reimbursement</option>
+                    {availableEvents.map((eventOption) => (
+                      <option key={eventOption.id} value={eventOption.id}>
+                        {eventOption.event_name} · {formatDate(eventOption.event_date)}{eventOption.venue ? ` · ${eventOption.venue}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid gap-5 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">Purchase Date</label>
+                    <input
+                      type="date"
+                      value={formState.purchaseDate}
+                      onChange={(e) => setFormState((prev) => ({ ...prev, purchaseDate: e.target.value }))}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">Amount</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={formState.requestedAmount}
+                      onChange={(e) => setFormState((prev) => ({ ...prev, requestedAmount: e.target.value }))}
+                      placeholder="0.00"
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Description</label>
+                  <textarea
+                    rows={5}
+                    value={formState.description}
+                    onChange={(e) => setFormState((prev) => ({ ...prev, description: e.target.value }))}
+                    placeholder="Describe what you bought, why it was needed, and any useful context for payroll."
                     className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                     required
                   />
                 </div>
+
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Amount</label>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Receipt</label>
                   <input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={formState.requestedAmount}
-                    onChange={(e) => setFormState((prev) => ({ ...prev, requestedAmount: e.target.value }))}
-                    placeholder="0.00"
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                    required
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                    onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
+                    className="block w-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-600 file:mr-4 file:rounded-full file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-emerald-700"
                   />
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Description</label>
-                <textarea
-                  rows={5}
-                  value={formState.description}
-                  onChange={(e) => setFormState((prev) => ({ ...prev, description: e.target.value }))}
-                  placeholder="Describe what you bought, why it was needed, and any useful context for payroll."
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Receipt</label>
-                <input
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
-                  onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
-                  className="block w-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-600 file:mr-4 file:rounded-full file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-emerald-700"
-                />
-                {editingId && (
                   <p className="mt-2 text-xs text-slate-500">
                     Leave this empty to keep the existing receipt. Upload a new file only if you need to replace it.
                   </p>
+                </div>
+
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                  If you leave the event blank, payroll will review it as a standalone reimbursement and assign the pay date after approval.
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                >
+                  {submitting ? 'Saving...' : 'Save Changes'}
+                </button>
+              </form>
+            </div>
+          ) : (
+            <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-5">
+                <h2 className="text-xl font-semibold text-slate-900">Submit Reimbursements</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Add one receipt or several from the same trip — list them here, then submit as one batch.
+                </p>
+              </div>
+
+              <form onSubmit={handleBatchSubmit} className="space-y-5">
+                {lineItems.map((item, index) => (
+                  <div key={item.key} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <p className="text-sm font-semibold text-slate-800">
+                        Receipt {index + 1}{lineItems.length > 1 ? ` of ${lineItems.length}` : ''}
+                      </p>
+                      {lineItems.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeLineItem(item.key)}
+                          className="text-xs font-semibold text-red-600 hover:text-red-700"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-slate-700">Event</label>
+                      <select
+                        value={item.eventId}
+                        onChange={(e) => updateLineItem(item.key, { eventId: e.target.value })}
+                        className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                      >
+                        <option value="">Standalone reimbursement</option>
+                        {availableEvents.map((eventOption) => (
+                          <option key={eventOption.id} value={eventOption.id}>
+                            {eventOption.event_name} · {formatDate(eventOption.event_date)}{eventOption.venue ? ` · ${eventOption.venue}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-700">Purchase Date</label>
+                        <input
+                          type="date"
+                          value={item.purchaseDate}
+                          onChange={(e) => updateLineItem(item.key, { purchaseDate: e.target.value })}
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-700">Amount</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={item.requestedAmount}
+                          onChange={(e) => updateLineItem(item.key, { requestedAmount: e.target.value })}
+                          placeholder="0.00"
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4">
+                      <label className="mb-2 block text-sm font-medium text-slate-700">Description</label>
+                      <textarea
+                        rows={3}
+                        value={item.description}
+                        onChange={(e) => updateLineItem(item.key, { description: e.target.value })}
+                        placeholder="Describe what you bought, why it was needed, and any useful context for payroll."
+                        className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                        required
+                      />
+                    </div>
+
+                    <div className="mt-4">
+                      <label className="mb-2 block text-sm font-medium text-slate-700">Receipt</label>
+                      <input
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                        onChange={(e) => updateLineItem(item.key, { file: e.target.files?.[0] || null })}
+                        className="block w-full rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-4 text-sm text-slate-600 file:mr-4 file:rounded-full file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-emerald-700"
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={addLineItem}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700"
+                >
+                  + Add Another Receipt
+                </button>
+
+                <div className="flex items-center justify-between rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                  <span>
+                    {lineItems.length > 1
+                      ? 'If you leave an event blank, payroll reviews that receipt as standalone.'
+                      : 'If you leave the event blank, payroll will review it as a standalone reimbursement and assign the pay date after approval.'}
+                  </span>
+                  {lineItems.length > 1 && (
+                    <span className="shrink-0 pl-4 font-semibold">Batch total: {formatMoney(batchTotal)}</span>
+                  )}
+                </div>
+
+                {batchSubmitError && (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {batchSubmitError}
+                  </div>
                 )}
-              </div>
 
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-                If you leave the event blank, payroll will review it as a standalone reimbursement and assign the pay date after approval.
-              </div>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
-              >
-                {submitting ? 'Saving...' : editingId ? 'Save Changes' : 'Submit Request'}
-              </button>
-            </form>
-          </div>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                >
+                  {submitting
+                    ? 'Saving...'
+                    : lineItems.length > 1
+                    ? `Submit ${lineItems.length} Receipts (${formatMoney(batchTotal)})`
+                    : 'Submit Request'}
+                </button>
+              </form>
+            </div>
+          )}
 
           <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
             <div className="mb-5">
@@ -406,8 +639,25 @@ export default function ReimbursementsPage() {
                 <p className="mt-2 text-sm text-slate-500">Your submitted requests will appear here once you send the first one.</p>
               </div>
             ) : (
-              <div className="space-y-4">
-                {requests.map((request) => (
+              <div className="space-y-6">
+                {groupReimbursementRequestsByBatch(requests).map((group) => (
+                  <div
+                    key={group.batchId || group.items[0].id}
+                    className={
+                      group.items.length > 1
+                        ? 'space-y-4 rounded-[2rem] border-2 border-dashed border-emerald-200 bg-emerald-50/30 p-4'
+                        : 'space-y-4'
+                    }
+                  >
+                    {group.items.length > 1 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-2">
+                        <p className="text-sm font-semibold text-emerald-800">Batch of {group.items.length} receipts</p>
+                        <p className="text-sm font-bold text-emerald-800">
+                          Total: {formatMoney(group.items.reduce((sum, entry) => sum + entry.requested_amount, 0))}
+                        </p>
+                      </div>
+                    )}
+                    {group.items.map((request) => (
                   <div key={request.id} className="rounded-3xl border border-slate-200 bg-white p-6">
                     <p className="text-center text-4xl font-bold text-slate-900">{formatMoney(request.requested_amount)}</p>
                     <p className="mt-2 text-center text-sm text-slate-500">
@@ -496,6 +746,8 @@ export default function ReimbursementsPage() {
                         </button>
                       </div>
                     )}
+                  </div>
+                    ))}
                   </div>
                 ))}
               </div>

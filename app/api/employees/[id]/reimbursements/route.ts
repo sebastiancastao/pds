@@ -13,6 +13,7 @@ import {
   getUserDisplayMap,
   notifyReimbursementSubmitted,
   reimbursementSupabaseAdmin,
+  resolveReimbursementAppUrl,
   uploadReimbursementReceipt,
 } from "@/lib/reimbursements-server";
 import { isReimbursementReviewer, parseCurrencyInput } from "@/lib/reimbursements";
@@ -59,6 +60,7 @@ function normalizeRow(row: any, event: any, receiptUrl: string | null, userMap: 
     reviewed_at: row.reviewed_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    batch_id: row.batch_id || null,
     event: event
       ? {
           id: event.id,
@@ -200,6 +202,14 @@ export async function POST(
     const requestedAmount = parseCurrencyInput(formData.get("requested_amount"));
     const receipt = formData.get("receipt");
     const eventId = eventIdRaw || null;
+    // Admin uploading 2-3+ receipts for this vendor in one sitting tags each
+    // with the same batch_id plus its position, so the last one triggers a
+    // single combined notification instead of one email per receipt.
+    const batchId = String(formData.get("batch_id") || "").trim() || null;
+    const batchSizeRaw = Number(formData.get("batch_size"));
+    const batchIndexRaw = Number(formData.get("batch_index"));
+    const batchSize = Number.isFinite(batchSizeRaw) && batchSizeRaw > 0 ? Math.floor(batchSizeRaw) : 1;
+    const batchIndex = Number.isFinite(batchIndexRaw) && batchIndexRaw >= 0 ? Math.floor(batchIndexRaw) : 0;
 
     if (!description) {
       return NextResponse.json({ error: "Description is required" }, { status: 400 });
@@ -235,6 +245,7 @@ export async function POST(
         receipt_path: receiptPath,
         receipt_filename: receiptFilename,
         status: "submitted",
+        batch_id: batchId,
       })
       .select("*")
       .single();
@@ -246,18 +257,56 @@ export async function POST(
     const receiptUrl = await createSignedReceiptUrl(inserted.receipt_path || null);
     const event = eventId ? availableEvents.find((entry) => entry.id === eventId) || null : null;
 
-    try {
-      const vendorMap = await getUserDisplayMap([employeeId]);
-      await notifyReimbursementSubmitted({
-        vendorName: vendorMap[employeeId]?.name || 'Unknown vendor',
-        vendorEmail: vendorMap[employeeId]?.email || null,
-        requestedAmount: Number(inserted.requested_amount || 0),
-        purchaseDate: inserted.purchase_date,
-        description: inserted.description,
-        eventName: event?.event_name || null,
-      });
-    } catch (notifyError: any) {
-      console.error("[POST /api/employees/[id]/reimbursements] notification failed:", notifyError?.message || notifyError);
+    const isLastInBatch = !batchId || batchSize <= 1 || batchIndex >= batchSize - 1;
+    if (isLastInBatch) {
+      try {
+        let notificationItems: { requestedAmount: number; purchaseDate: string; description: string; eventName: string | null }[];
+
+        if (batchId) {
+          const { data: batchRows } = await reimbursementSupabaseAdmin
+            .from("vendor_reimbursement_requests")
+            .select("requested_amount, purchase_date, description, event_id")
+            .eq("batch_id", batchId)
+            .order("created_at", { ascending: true });
+
+          const rows = batchRows || [inserted];
+          const rowEventIds = Array.from(new Set(rows.map((row: any) => row.event_id).filter(Boolean)));
+          const rowEventMap: Record<string, any> = {};
+          if (rowEventIds.length > 0) {
+            const { data: rowEvents } = await reimbursementSupabaseAdmin
+              .from("events")
+              .select("id, event_name, name")
+              .in("id", rowEventIds);
+            for (const rowEvent of rowEvents || []) {
+              rowEventMap[rowEvent.id] = rowEvent;
+            }
+          }
+
+          notificationItems = rows.map((row: any) => ({
+            requestedAmount: Number(row.requested_amount || 0),
+            purchaseDate: row.purchase_date,
+            description: row.description,
+            eventName: row.event_id ? (rowEventMap[row.event_id]?.event_name || rowEventMap[row.event_id]?.name || null) : null,
+          }));
+        } else {
+          notificationItems = [{
+            requestedAmount: Number(inserted.requested_amount || 0),
+            purchaseDate: inserted.purchase_date,
+            description: inserted.description,
+            eventName: event?.event_name || null,
+          }];
+        }
+
+        const vendorMap = await getUserDisplayMap([employeeId]);
+        await notifyReimbursementSubmitted({
+          baseUrl: resolveReimbursementAppUrl(req),
+          vendorName: vendorMap[employeeId]?.name || "Unknown vendor",
+          vendorEmail: vendorMap[employeeId]?.email || null,
+          items: notificationItems,
+        });
+      } catch (notifyError: any) {
+        console.error("[POST /api/employees/[id]/reimbursements] notification failed:", notifyError?.message || notifyError);
+      }
     }
 
     return NextResponse.json({

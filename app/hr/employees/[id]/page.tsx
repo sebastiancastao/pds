@@ -1,7 +1,7 @@
 // app/hr/employees/[id]/page.tsx
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
@@ -9,6 +9,7 @@ import {
   PDFFormVersionHistoryModal,
   type PDFFormHistoryEntry,
 } from "@/app/components/PDFFormVersionHistoryModal";
+import { groupReimbursementRequestsByBatch } from "@/lib/reimbursements";
 import { supabase } from "@/lib/supabase";
 import {
   isCaTempAgreementCustomFormTitle,
@@ -578,8 +579,29 @@ export default function EmployeeProfilePage() {
     reviewed_at: string | null;
     created_at: string;
     updated_at: string;
+    batch_id: string | null;
     event: { id: string; event_name: string; event_date: string | null; venue: string | null } | null;
   };
+
+  type ReimbursementLineItem = {
+    key: string;
+    eventId: string;
+    purchaseDate: string;
+    requestedAmount: string;
+    description: string;
+    file: File | null;
+  };
+
+  function newReimbursementLineItem(): ReimbursementLineItem {
+    return {
+      key: Math.random().toString(36).slice(2),
+      eventId: "",
+      purchaseDate: "",
+      requestedAmount: "",
+      description: "",
+      file: null,
+    };
+  }
 
   const [reimbursements, setReimbursements] = useState<ReimbursementRequestRow[]>([]);
   const [reimbursementsSummary, setReimbursementsSummary] = useState({
@@ -601,13 +623,27 @@ export default function EmployeeProfilePage() {
   // Who is viewing this page, from the server's own role check — never trust a
   // client-only flag for something that gates approving money.
   const [reimbursementViewer, setReimbursementViewer] = useState<{ id: string; role: string; canReview: boolean } | null>(null);
-  const [reimbursementUploadForm, setReimbursementUploadForm] = useState({
-    eventId: "", purchaseDate: "", requestedAmount: "", description: "",
-  });
-  const [reimbursementUploadFile, setReimbursementUploadFile] = useState<File | null>(null);
+  const [reimbursementLineItems, setReimbursementLineItems] = useState<ReimbursementLineItem[]>([newReimbursementLineItem()]);
   const [reimbursementUploading, setReimbursementUploading] = useState(false);
   const [reimbursementUploadError, setReimbursementUploadError] = useState<string | null>(null);
   const [reimbursementUploadMessage, setReimbursementUploadMessage] = useState<string | null>(null);
+
+  const reimbursementBatchTotal = useMemo(
+    () => reimbursementLineItems.reduce((sum, item) => sum + (Number(item.requestedAmount) || 0), 0),
+    [reimbursementLineItems]
+  );
+
+  function updateReimbursementLineItem(key: string, patch: Partial<ReimbursementLineItem>) {
+    setReimbursementLineItems((prev) => prev.map((item) => (item.key === key ? { ...item, ...patch } : item)));
+  }
+
+  function addReimbursementLineItem() {
+    setReimbursementLineItems((prev) => [...prev, newReimbursementLineItem()]);
+  }
+
+  function removeReimbursementLineItem(key: string) {
+    setReimbursementLineItems((prev) => (prev.length > 1 ? prev.filter((item) => item.key !== key) : prev));
+  }
 
   // I-9 edit mode (Documentation section)
   const [i9EditMode, setI9EditMode] = useState(false);
@@ -1319,36 +1355,53 @@ export default function EmployeeProfilePage() {
     setReimbursementUploadMessage(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const formData = new FormData();
-      formData.append("event_id", reimbursementUploadForm.eventId);
-      formData.append("purchase_date", reimbursementUploadForm.purchaseDate);
-      formData.append("requested_amount", reimbursementUploadForm.requestedAmount);
-      formData.append("description", reimbursementUploadForm.description);
-      if (reimbursementUploadFile) {
-        formData.append("receipt", reimbursementUploadFile);
+      const isBatch = reimbursementLineItems.length > 1;
+      const batchId = isBatch ? (crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`) : null;
+
+      const created: ReimbursementRequestRow[] = [];
+      for (let index = 0; index < reimbursementLineItems.length; index += 1) {
+        const item = reimbursementLineItems[index];
+        const formData = new FormData();
+        formData.append("event_id", item.eventId);
+        formData.append("purchase_date", item.purchaseDate);
+        formData.append("requested_amount", item.requestedAmount);
+        formData.append("description", item.description);
+        if (item.file) {
+          formData.append("receipt", item.file);
+        }
+        if (batchId) {
+          formData.append("batch_id", batchId);
+          formData.append("batch_size", String(reimbursementLineItems.length));
+          formData.append("batch_index", String(index));
+        }
+
+        const res = await fetch(`/api/employees/${employeeId}/reimbursements`, {
+          method: "POST",
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          body: formData,
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(
+            isBatch
+              ? `Receipt ${index + 1} of ${reimbursementLineItems.length} failed: ${json.error || "Failed to upload reimbursement"}`
+              : json.error || "Failed to upload reimbursement"
+          );
+        }
+        created.push(json.request as ReimbursementRequestRow);
       }
 
-      const res = await fetch(`/api/employees/${employeeId}/reimbursements`, {
-        method: "POST",
-        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-        body: formData,
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(json.error || "Failed to upload reimbursement");
-      }
-
-      const created = json.request as ReimbursementRequestRow;
-      setReimbursements((prev) => [created, ...prev]);
+      setReimbursements((prev) => [...created, ...prev]);
       setReimbursementsSummary((prev) => ({
         ...prev,
-        total: prev.total + 1,
-        submitted: prev.submitted + 1,
-        total_requested: prev.total_requested + Number(created.requested_amount || 0),
+        total: prev.total + created.length,
+        submitted: prev.submitted + created.length,
+        total_requested: prev.total_requested + created.reduce((sum, entry) => sum + Number(entry.requested_amount || 0), 0),
       }));
-      setReimbursementUploadForm({ eventId: "", purchaseDate: "", requestedAmount: "", description: "" });
-      setReimbursementUploadFile(null);
-      setReimbursementUploadMessage("Receipt uploaded.");
+      setReimbursementLineItems([newReimbursementLineItem()]);
+      setReimbursementUploadMessage(
+        created.length > 1 ? `${created.length} receipts uploaded (batch total $${reimbursementBatchTotal.toFixed(2)}).` : "Receipt uploaded."
+      );
     } catch (err: any) {
       setReimbursementUploadError(err.message || "Failed to upload reimbursement");
     } finally {
@@ -4684,69 +4737,107 @@ export default function EmployeeProfilePage() {
               )}
             </div>
 
-            {/* Upload a receipt + expense form on behalf of this employee */}
+            {/* Upload one or several receipts + expense form on behalf of this employee */}
             <form onSubmit={submitReimbursementUpload} className="px-6 py-4 border-b border-gray-100 bg-gray-50/60">
-              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Upload a receipt</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Event (optional)</label>
-                  <select
-                    value={reimbursementUploadForm.eventId}
-                    onChange={(e) => setReimbursementUploadForm((prev) => ({ ...prev, eventId: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  >
-                    <option value="">Standalone reimbursement</option>
-                    {reimbursementAvailableEvents.map((event) => (
-                      <option key={event.id} value={event.id}>
-                        {event.event_name}{event.event_date ? ` · ${formatDate(event.event_date)}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Purchase date</label>
-                  <input
-                    type="date"
-                    value={reimbursementUploadForm.purchaseDate}
-                    onChange={(e) => setReimbursementUploadForm((prev) => ({ ...prev, purchaseDate: e.target.value }))}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Amount</label>
-                  <input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={reimbursementUploadForm.requestedAmount}
-                    onChange={(e) => setReimbursementUploadForm((prev) => ({ ...prev, requestedAmount: e.target.value }))}
-                    placeholder="0.00"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Receipt file</label>
-                  <input
-                    type="file"
-                    accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
-                    onChange={(e) => setReimbursementUploadFile(e.target.files?.[0] || null)}
-                    className="w-full text-xs text-gray-600 file:mr-3 file:rounded-md file:border-0 file:bg-emerald-600 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white hover:file:bg-emerald-700"
-                  />
-                </div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">
+                Upload {reimbursementLineItems.length > 1 ? "receipts" : "a receipt"}
+              </p>
+
+              <div className="space-y-3">
+                {reimbursementLineItems.map((item, index) => (
+                  <div key={item.key} className="rounded-lg border border-gray-200 bg-white p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-xs font-semibold text-gray-700">
+                        Receipt {index + 1}{reimbursementLineItems.length > 1 ? ` of ${reimbursementLineItems.length}` : ""}
+                      </p>
+                      {reimbursementLineItems.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeReimbursementLineItem(item.key)}
+                          className="text-xs font-semibold text-red-600 hover:text-red-700"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Event (optional)</label>
+                        <select
+                          value={item.eventId}
+                          onChange={(e) => updateReimbursementLineItem(item.key, { eventId: e.target.value })}
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        >
+                          <option value="">Standalone reimbursement</option>
+                          {reimbursementAvailableEvents.map((event) => (
+                            <option key={event.id} value={event.id}>
+                              {event.event_name}{event.event_date ? ` · ${formatDate(event.event_date)}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Purchase date</label>
+                        <input
+                          type="date"
+                          value={item.purchaseDate}
+                          onChange={(e) => updateReimbursementLineItem(item.key, { purchaseDate: e.target.value })}
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Amount</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={item.requestedAmount}
+                          onChange={(e) => updateReimbursementLineItem(item.key, { requestedAmount: e.target.value })}
+                          placeholder="0.00"
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Receipt file</label>
+                        <input
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                          onChange={(e) => updateReimbursementLineItem(item.key, { file: e.target.files?.[0] || null })}
+                          className="w-full text-xs text-gray-600 file:mr-3 file:rounded-md file:border-0 file:bg-emerald-600 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white hover:file:bg-emerald-700"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                      <textarea
+                        rows={2}
+                        value={item.description}
+                        onChange={(e) => updateReimbursementLineItem(item.key, { description: e.target.value })}
+                        placeholder="What was purchased and why"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        required
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div className="mt-3">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
-                <textarea
-                  rows={2}
-                  value={reimbursementUploadForm.description}
-                  onChange={(e) => setReimbursementUploadForm((prev) => ({ ...prev, description: e.target.value }))}
-                  placeholder="What was purchased and why"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  required
-                />
-              </div>
+
+              <button
+                type="button"
+                onClick={addReimbursementLineItem}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-dashed border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 transition-colors hover:border-emerald-400 hover:text-emerald-700"
+              >
+                + Add Another Receipt
+              </button>
+
+              {reimbursementLineItems.length > 1 && (
+                <p className="mt-3 text-xs font-semibold text-gray-700">
+                  Batch total: ${reimbursementBatchTotal.toFixed(2)}
+                </p>
+              )}
+
               {reimbursementUploadError && (
                 <p className="text-xs text-red-600 mt-2">{reimbursementUploadError}</p>
               )}
@@ -4761,7 +4852,11 @@ export default function EmployeeProfilePage() {
                     reimbursementUploading ? "bg-gray-300 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700"
                   }`}
                 >
-                  {reimbursementUploading ? "Uploading..." : "Upload Receipt"}
+                  {reimbursementUploading
+                    ? "Uploading..."
+                    : reimbursementLineItems.length > 1
+                    ? `Upload ${reimbursementLineItems.length} Receipts ($${reimbursementBatchTotal.toFixed(2)})`
+                    : "Upload Receipt"}
                 </button>
               </div>
             </form>
@@ -4795,7 +4890,17 @@ export default function EmployeeProfilePage() {
               ) : reimbursements.length === 0 ? (
                 <div className="px-6 py-8 text-center text-sm text-gray-400">No reimbursement receipts submitted yet.</div>
               ) : (
-                reimbursements.map((request) => (
+                groupReimbursementRequestsByBatch(reimbursements).map((group) => (
+                  <Fragment key={group.batchId || group.items[0].id}>
+                    {group.items.length > 1 && (
+                      <div className="px-6 py-2 bg-emerald-50 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-emerald-800">Batch of {group.items.length} receipts</span>
+                        <span className="text-xs font-bold text-emerald-800">
+                          Total: ${group.items.reduce((sum, entry) => sum + entry.requested_amount, 0).toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+                    {group.items.map((request) => (
                   <div key={request.id} className="px-6 py-5">
                     <p className="text-center text-3xl font-bold text-gray-900">${request.requested_amount.toFixed(2)}</p>
                     <p className="mt-2 text-center text-sm text-gray-500">
@@ -4970,6 +5075,8 @@ export default function EmployeeProfilePage() {
                       </div>
                     )}
                   </div>
+                    ))}
+                  </Fragment>
                 ))
               )}
             </div>
