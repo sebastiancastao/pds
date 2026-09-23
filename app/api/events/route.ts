@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { getSupervisorTeamVenueIds } from "@/lib/event-access";
 import { sendNonEventTimesheetCreatedNotification } from "@/lib/email";
 import { getEventAssociationMap } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
@@ -250,6 +251,17 @@ export async function GET(req: NextRequest) {
     }
 
     if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4') {
+      // Venues an exec assigned to this supervisor on the supervisor-team venue
+      // screen live in their own table, separate from venue_managers.
+      const supervisorTeamVenueIds = await getSupervisorTeamVenueIds(supabaseAdmin, user.id);
+      if (supervisorTeamVenueIds.length > 0) {
+        const { data: supervisorTeamVenueRefs } = await supabaseAdmin
+          .from('venue_reference')
+          .select('venue_name')
+          .in('id', supervisorTeamVenueIds);
+        if (supervisorTeamVenueRefs) addVenueNames(supervisorTeamVenueRefs);
+      }
+
       // Look up which managers this supervisor is assigned to
       const { data: teamLinks } = await supabaseAdmin
         .from('manager_team_members')

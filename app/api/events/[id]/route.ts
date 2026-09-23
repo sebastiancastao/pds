@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { deleteEventAssociations } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
-import { canUserAccessEventById } from "@/lib/event-access";
+import { canUserAccessEventById, canUserAccessLoadedEvent } from "@/lib/event-access";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -60,95 +60,37 @@ export async function GET(
     const userRole = userData?.role as string;
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
-    // For supervisors/supervisor2/supervisor3, look up their lead manager(s) and group members to grant access
-    let allowedCreatorIds: string[] = [user.id];
-    let supervisorManagerIds: string[] = [];
-    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3" || userRole === "supervisor4") {
-      const { data: teamLinks } = await supabaseAdmin
-        .from("manager_team_members")
-        .select("manager_id")
-        .eq("member_id", user.id)
-        .eq("is_active", true);
-      if (teamLinks) {
-        for (const link of teamLinks) {
-          if (!allowedCreatorIds.includes(link.manager_id)) {
-            allowedCreatorIds.push(link.manager_id);
-            supervisorManagerIds.push(link.manager_id);
-          }
-        }
-        // Also include co-supervisors (other active members under the same managers)
-        if (supervisorManagerIds.length > 0) {
-          const { data: groupMembers } = await supabaseAdmin
-            .from("manager_team_members")
-            .select("member_id")
-            .in("manager_id", supervisorManagerIds)
-            .eq("is_active", true);
-          if (groupMembers) {
-            for (const member of groupMembers) {
-              if (!allowedCreatorIds.includes(member.member_id)) {
-                allowedCreatorIds.push(member.member_id);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // For managers: check if the event is at one of their assigned venues.
-    // Supervisors inherit this from their lead manager(s), so they can see
-    // events at those venues even when someone else created them.
-    let managerAssignedVenueNames: string[] = [];
-    const venueManagerIds = userRole === "manager" ? [user.id] : supervisorManagerIds;
-    if (venueManagerIds.length > 0) {
-      const { data: venueLinks } = await supabaseAdmin
-        .from("venue_managers")
-        .select("venue_id")
-        .in("manager_id", venueManagerIds)
-        .eq("is_active", true);
-
-      if (venueLinks && venueLinks.length > 0) {
-        const venueIds = venueLinks.map((v: any) => v.venue_id);
-        const { data: venueRefs } = await supabaseAdmin
-          .from("venue_reference")
-          .select("venue_name")
-          .in("id", venueIds);
-
-        if (venueRefs) {
-          managerAssignedVenueNames = venueRefs.map((v: any) => v.venue_name).filter(Boolean);
-        }
-      }
-    }
-
-    // Build query - admin/exec can see any event, supervisors see own + manager's, others only their own
+    // Visibility is decided by the shared helper in lib/event-access.ts so this
+    // route can't drift from the event list (/api/events) and the event
+    // sub-routes. Supervisors see events created by themselves, their lead
+    // manager(s) and co-supervisors, events at their manager(s)' venues, and
+    // events at venues assigned to them directly.
     let data: any = null;
     let error: any = null;
 
-    if (isAdminOrExec) {
-      ({ data, error } = await supabaseAdmin
-        .from("events")
-        .select("*")
-        .eq("id", eventId)
-        .single());
-    } else if (managerAssignedVenueNames.length > 0) {
-      // Manager: access if they created it OR the event is at one of their assigned venues
-      // Use two queries to avoid PostgREST escaping issues with venue names
-      const [byCreator, byVenue] = await Promise.all([
-        supabaseAdmin.from("events").select("*").eq("id", eventId).in("created_by", allowedCreatorIds).maybeSingle(),
-        supabaseAdmin.from("events").select("*").eq("id", eventId).in("venue", managerAssignedVenueNames).maybeSingle(),
-      ]);
-      if (byCreator.error) { error = byCreator.error; }
-      else if (byVenue.error) { error = byVenue.error; }
-      else { data = byCreator.data ?? byVenue.data ?? null; }
-      if (!data && !error) {
+    ({ data, error } = await supabaseAdmin
+      .from("events")
+      .select("*")
+      .eq("id", eventId)
+      .maybeSingle());
+
+    if (!error && !data) {
+      return NextResponse.json({ error: "Event not found" }, { status: 404 });
+    }
+
+    if (!error && !isAdminOrExec) {
+      const allowed = await canUserAccessLoadedEvent(
+        supabaseAdmin,
+        {
+          id: String(data.id || ""),
+          created_by: data.created_by ? String(data.created_by) : null,
+          venue: data.venue ? String(data.venue) : null,
+        },
+        { userId: user.id, role: userRole || "" }
+      );
+      if (!allowed) {
         return NextResponse.json({ error: "Event not found" }, { status: 404 });
       }
-    } else {
-      ({ data, error } = await supabaseAdmin
-        .from("events")
-        .select("*")
-        .eq("id", eventId)
-        .in("created_by", allowedCreatorIds)
-        .single());
     }
 
     if (error) {

@@ -36,31 +36,58 @@ async function isUserOnEventTeam(
   return Boolean(data);
 }
 
-async function getAssignedVenueNames(
+/**
+ * Venues an exec assigned to a supervisor through the supervisor-team venue
+ * screen (supervisor3_team_venue_assignments). These are separate from
+ * venue_managers rows and must count as the supervisor's own venues.
+ */
+export async function getSupervisorTeamVenueIds(
   supabaseAdmin: SupabaseClient,
-  managerIds: string[]
-): Promise<Set<string>> {
-  if (managerIds.length === 0) {
-    return new Set<string>();
-  }
-
-  const { data: venueLinks, error: venueLinksError } = await supabaseAdmin
-    .from("venue_managers")
+  supervisorId: string
+): Promise<string[]> {
+  const { data, error } = await supabaseAdmin
+    .from("supervisor3_team_venue_assignments")
     .select("venue_id")
-    .in("manager_id", managerIds)
-    .eq("is_active", true);
+    .eq("supervisor_id", supervisorId);
 
-  if (venueLinksError) {
-    throw new Error(venueLinksError.message);
+  if (error) {
+    // Table may not exist in every environment; treat as no assignments.
+    if (error.code === "42P01" || /does not exist/i.test(error.message || "")) {
+      return [];
+    }
+    throw new Error(error.message);
   }
 
-  if (!venueLinks || venueLinks.length === 0) {
-    return new Set<string>();
-  }
-
-  const venueIds = venueLinks
+  return (data || [])
     .map((row: any) => normalizeText(row?.venue_id))
     .filter(Boolean);
+}
+
+async function getAssignedVenueNames(
+  supabaseAdmin: SupabaseClient,
+  managerIds: string[],
+  extraVenueIds: string[] = []
+): Promise<Set<string>> {
+  let venueLinks: any[] = [];
+  if (managerIds.length > 0) {
+    const { data, error: venueLinksError } = await supabaseAdmin
+      .from("venue_managers")
+      .select("venue_id")
+      .in("manager_id", managerIds)
+      .eq("is_active", true);
+
+    if (venueLinksError) {
+      throw new Error(venueLinksError.message);
+    }
+    venueLinks = data || [];
+  }
+
+  const venueIds = Array.from(
+    new Set([
+      ...venueLinks.map((row: any) => normalizeText(row?.venue_id)),
+      ...extraVenueIds.map(normalizeText),
+    ])
+  ).filter(Boolean);
 
   if (venueIds.length === 0) {
     return new Set<string>();
@@ -191,7 +218,12 @@ export async function canUserAccessLoadedEvent(
     // the event list (/api/events) already shows them those events, so the
     // per-event check must honor their own assignments as well.
     if (venueName) {
-      const assignedVenueNames = await getAssignedVenueNames(supabaseAdmin, [userId, ...managerIds]);
+      const supervisorTeamVenueIds = await getSupervisorTeamVenueIds(supabaseAdmin, userId);
+      const assignedVenueNames = await getAssignedVenueNames(
+        supabaseAdmin,
+        [userId, ...managerIds],
+        supervisorTeamVenueIds
+      );
       if (assignedVenueNames.has(venueName)) {
         return true;
       }
