@@ -315,6 +315,8 @@ export default function EventDashboardPage() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
+  // Only exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
+  const canEditTimesheetTimes = userRole === "exec";
   // Managers and exec can sign off the timesheet; the signature unlocks Sales for everyone.
   const canSignTimesheet = userRole === "exec" || userRole === "manager";
   // Only managers and exec record how many rest breaks each worker took.
@@ -325,12 +327,14 @@ export default function EventDashboardPage() {
     userRole === "manager" ||
     userRole === "supervisor" ||
     userRole === "supervisor2" ||
-    userRole === "supervisor3";
+    userRole === "supervisor3" ||
+    userRole === "supervisor4";
   const canManageTeam =
     userRole === "exec" ||
     userRole === "manager" ||
     userRole === "supervisor" ||
-    userRole === "supervisor3";
+    userRole === "supervisor3" ||
+    userRole === "supervisor4";
   const isNonEventTimesheet = event?.event_type === "special";
   const canUseImmediateTeamAdd =
     canManageTeam &&
@@ -377,7 +381,8 @@ export default function EventDashboardPage() {
     userRole === "manager" ||
     userRole === "supervisor" ||
     userRole === "supervisor2" ||
-    userRole === "supervisor3";
+    userRole === "supervisor3" ||
+    userRole === "supervisor4";
   const canUninviteTeamMember =
     canManageTeam ||
     userRole === "admin" ||
@@ -4457,7 +4462,7 @@ export default function EventDashboardPage() {
     thirdMealStartDisplay?: string;
     thirdMealEndDisplay?: string;
   }) => {
-    if (!canEditTimesheets) return;
+    if (!canEditTimesheetTimes) return;
     setTimesheetDrafts((prev) => ({
       ...prev,
       [uid]: {
@@ -4594,7 +4599,7 @@ export default function EventDashboardPage() {
   }, []);
 
   const saveTimesheetEdit = async (uid: string, editNote: string, editSignature: string) => {
-    if (!eventId || !canEditTimesheets) return;
+    if (!eventId || !canEditTimesheetTimes) return;
     const draft = timesheetDrafts[uid];
     if (!draft) return;
 
@@ -4679,7 +4684,7 @@ export default function EventDashboardPage() {
       meals: Array<{ startDisplay: string; endDisplay: string }>;
     }
   ) => {
-    if (!canEditTimesheets) return;
+    if (!canEditTimesheetTimes) return;
     const key = `${uid}::${day.date}`;
     setTimesheetDayDrafts((prev) => ({
       ...prev,
@@ -4733,7 +4738,7 @@ export default function EventDashboardPage() {
   };
 
   const saveTimesheetDayEdit = async (uid: string, date: string, editNote: string, editSignature: string) => {
-    if (!eventId || !canEditTimesheets) return;
+    if (!eventId || !canEditTimesheetTimes) return;
     const key = `${uid}::${date}`;
     const draft = timesheetDayDrafts[key];
     if (!draft) return;
@@ -4801,7 +4806,7 @@ export default function EventDashboardPage() {
   // audit record on the backend (one PUT per day), so the accountability trail is
   // identical to sending days one at a time — this just avoids re-signing per day.
   const saveAllTimesheetDaysEdit = async (uid: string, editNote: string, editSignature: string) => {
-    if (!eventId || !canEditTimesheets) return;
+    if (!eventId || !canEditTimesheetTimes) return;
     const days = timesheetDays[uid] || [];
     if (days.length === 0) return;
 
@@ -7854,7 +7859,7 @@ export default function EventDashboardPage() {
                                               Manager
                                             </span>
                                           )}
-                                          {(["supervisor", "supervisor2", "supervisor3"].includes((member?.role || "").toLowerCase())) && (
+                                          {(["supervisor", "supervisor2", "supervisor3", "supervisor4"].includes((member?.role || "").toLowerCase())) && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
                                               Supervisor
                                             </span>
@@ -8115,7 +8120,7 @@ export default function EventDashboardPage() {
                                               Manager
                                             </span>
                                           )}
-                                          {(["supervisor", "supervisor2", "supervisor3"].includes((member?.role || "").toLowerCase())) && (
+                                          {(["supervisor", "supervisor2", "supervisor3", "supervisor4"].includes((member?.role || "").toLowerCase())) && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
                                               Supervisor
                                             </span>
@@ -8353,9 +8358,9 @@ export default function EventDashboardPage() {
       </div>
     </div>
 
-    {!canEditTimesheets && (
+    {!canEditTimesheetTimes && (
       <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-        Read-only access. Only managers and exec can edit timesheets.
+        Read-only access. Only exec can edit timesheets.
       </div>
     )}
 
@@ -8533,7 +8538,7 @@ export default function EventDashboardPage() {
                         {formatHoursFromMs(getDisplayedWorkedMs(uid))}
                       </td>
                       <td className="px-2 py-1.5 text-right whitespace-nowrap">
-                        {canEditTimesheets && memberDays.length > 1 && (
+                        {canEditTimesheetTimes && memberDays.length > 1 && (
                           <button
                             onClick={() => openTimesheetEditModal(uid, undefined, true)}
                             disabled={savingAllTimesheetDaysUid === uid}
@@ -8593,7 +8598,7 @@ export default function EventDashboardPage() {
                         "Save", or all queued/unedited days can be sent together via "Send All Days" above. */}
                     {memberDays.map((day) => {
                       const dayKey = `${uid}::${day.date}`;
-                      const isDayEditing = canEditTimesheets && !!editingTimesheetDayKeys[dayKey];
+                      const isDayEditing = canEditTimesheetTimes && !!editingTimesheetDayKeys[dayKey];
                       const dayDraft = timesheetDayDrafts[dayKey] || {
                         firstIn: day.firstInDisplay || "",
                         lastOut: day.lastOutDisplay || "",
@@ -8680,7 +8685,7 @@ export default function EventDashboardPage() {
                             {formatHoursFromMs(day.totalMs)}
                           </td>
                           <td className="px-2 py-1 text-right whitespace-nowrap">
-                            {canEditTimesheets && (
+                            {canEditTimesheetTimes && (
                               isDayEditing ? (
                                 <>
                                   <button
@@ -8716,7 +8721,7 @@ export default function EventDashboardPage() {
                 );
               }
 
-              const isEditing = canEditTimesheets && editingTimesheetUserId === uid;
+              const isEditing = canEditTimesheetTimes && editingTimesheetUserId === uid;
 
               const draft = timesheetDrafts[uid] || {
                 firstIn: firstClockIn,
@@ -8924,7 +8929,7 @@ export default function EventDashboardPage() {
 
                   {/* Actions */}
                   <td className="px-2 py-1.5 text-right whitespace-nowrap">
-                    {canEditTimesheets ? (
+                    {canEditTimesheetTimes ? (
                       isEditing ? (
                         <>
                           <button
@@ -9137,7 +9142,7 @@ export default function EventDashboardPage() {
                       <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
                     )}
                   </div>
-                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && (
+                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && userRole !== "supervisor4" && (
                     <button
                       onClick={handleExportPayments}
                       disabled={loadingPaymentTab || filteredTeamMembers.length === 0}

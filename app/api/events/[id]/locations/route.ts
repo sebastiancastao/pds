@@ -19,7 +19,7 @@ type AuthContext = {
   role: string;
 };
 
-const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3"]);
+const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"]);
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();

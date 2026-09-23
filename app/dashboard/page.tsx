@@ -123,7 +123,7 @@ const EventCalendar = dynamic(
 );
 
 const isScopedManagerRole = (role?: string | null) =>
-  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3";
+  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3" || role === "supervisor4";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -577,7 +577,7 @@ export default function DashboardPage() {
           }
         }
 
-        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3') {
+        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3' && role !== 'supervisor4') {
           console.error('[DASHBOARD] Access denied - user role:', role);
           router.replace('/login');
           return;
@@ -624,7 +624,7 @@ export default function DashboardPage() {
 
                 // For managers, auto-set their region filter
                 // For executives, they can still change it
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                 }
@@ -651,7 +651,7 @@ export default function DashboardPage() {
               if (region) {
                 console.log('[DASHBOARD] â Region found from database:', region.name);
                 setDetectedRegion({ id: region.id, name: region.name });
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4') {
                   setSelectedRegion(region.id);
                 }
                 regionDetected = true;
@@ -697,7 +697,7 @@ export default function DashboardPage() {
                 console.log('[DASHBOARD] â User location detected in region:', userRegion.name);
                 setDetectedRegion({ id: userRegion.id, name: userRegion.name });
                 setUserCoordinates({ lat: currentLat, lng: currentLng });
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                 }
@@ -1145,7 +1145,7 @@ export default function DashboardPage() {
         setAvailableVendors(data.vendors || []);
       } else {
         console.error('[DASHBOARD-TEAM] â Failed to load available vendors:', data.error);
-        setTeamMessage("Failed to load available vendors");
+        setTeamMessage(`Failed to load available vendors${data?.error ? `: ${data.error}` : ""} (HTTP ${res.status})`);
       }
     } catch (err) {
       console.error('[DASHBOARD-TEAM] â Network error loading available vendors:', err);
@@ -1516,7 +1516,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="apple-header-actions flex w-full flex-wrap items-center gap-2 sm:gap-3 lg:w-auto lg:justify-end">
-              {userRole !== 'supervisor' && userRole !== 'supervisor2' && (
+              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor4' && (
                 <Link
                   href="/global-calendar"
                   className="apple-button apple-button-secondary flex items-center gap-2"
@@ -2144,7 +2144,7 @@ export default function DashboardPage() {
                   {/* Region Filter - For both managers and executives */}
                   <div className="mb-6">
                     {/* Auto-detection notice for managers */}
-                    {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion && (
+                    {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4') && detectedRegion && (
                       <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
                         <div className="flex items-center text-xs text-blue-800">
                           <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">

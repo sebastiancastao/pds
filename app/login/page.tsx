@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase, isValidEmail } from '@/lib/supabase';
 import { logAuditEvent } from '@/lib/audit';
+import { consumePostLoginRedirect, sanitizeRedirectPath, savePostLoginRedirect } from '@/lib/post-login-redirect';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,6 +16,33 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Email links (e.g. reimbursement approvals) land here with ?next=/path.
+  // Remember the target for after MFA, and if this browser already has a
+  // fully verified session, skip the form and go straight there.
+  useEffect(() => {
+    const next = sanitizeRedirectPath(new URLSearchParams(window.location.search).get('next'));
+    if (!next) return;
+    savePostLoginRedirect(next);
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const mfaVerified =
+          sessionStorage.getItem('mfa_verified') === 'true' ||
+          localStorage.getItem('mfa_verified') === 'true';
+        if (!cancelled && session?.user && mfaVerified) {
+          sessionStorage.setItem('mfa_verified', 'true');
+          router.replace(consumePostLoginRedirect() || next);
+        }
+      } catch {
+        // stay on the login form
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

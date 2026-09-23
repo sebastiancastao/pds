@@ -10,7 +10,7 @@ import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
-import { getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import { getRestBreakCount, getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
 
 const supabaseAdmin = createClient(
@@ -1961,8 +1961,8 @@ export async function POST(req: NextRequest) {
         totalVariableIncentive += displayVariableIncentive;
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
-        // Only what a manager typed is shown; a shift with no typed count adds nothing here.
-        if (restBreak > 0 && recordedRestBreaks !== null) totalRestBreakCount += recordedRestBreaks;
+        // Breaks paid on this shift: the manager-typed count, or one per 4 hours worked.
+        if (restBreak > 0) totalRestBreakCount += getRestBreakCount(actualHours, recordedRestBreaks);
         totalOther += other;
         totalAdjustmentMealPremium += adjustmentMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;

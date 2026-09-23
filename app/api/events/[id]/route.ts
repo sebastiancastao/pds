@@ -63,7 +63,7 @@ export async function GET(
     // For supervisors/supervisor2/supervisor3, look up their lead manager(s) and group members to grant access
     let allowedCreatorIds: string[] = [user.id];
     let supervisorManagerIds: string[] = [];
-    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3") {
+    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3" || userRole === "supervisor4") {
       const { data: teamLinks } = await supabaseAdmin
         .from("manager_team_members")
         .select("manager_id")

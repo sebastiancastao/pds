@@ -180,7 +180,8 @@ export async function GET(
       .single();
 
     if (requesterError || !requester) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+      console.warn('[AVAILABLE-VENDORS] 403 requester lookup failed', { userId: user.id, eventId, requesterError });
+      return NextResponse.json({ error: 'Unauthorized: your user record could not be loaded' }, { status: 403 });
     }
 
     const requesterRole = String(requester.role || '').toLowerCase();
@@ -216,7 +217,14 @@ export async function GET(
     );
 
     if (!allowed) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+      console.warn('[AVAILABLE-VENDORS] 403 event access denied', {
+        userId: user.id,
+        role: requesterRole,
+        eventId,
+        eventVenue: event.venue,
+        eventCreatedBy: event.created_by,
+      });
+      return NextResponse.json({ error: `Unauthorized: role "${requesterRole}" has no access to this event` }, { status: 403 });
     }
 
     // Get venue coordinates. Some venue names are reused across cities/states, so

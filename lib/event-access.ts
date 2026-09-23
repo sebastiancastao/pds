@@ -11,7 +11,7 @@ type EventAccessEvent = {
   venue: string | null;
 };
 
-const SUPERVISOR_ROLES = new Set(["supervisor", "supervisor2", "supervisor3"]);
+const SUPERVISOR_ROLES = new Set(["supervisor", "supervisor2", "supervisor3", "supervisor4"]);
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
@@ -187,8 +187,11 @@ export async function canUserAccessLoadedEvent(
     // Supervisors inherit their lead manager(s)' venue assignments too, so they
     // can see events at those venues even when someone else created them —
     // this mirrors the manager's own venue-based access above.
-    if (venueName && managerIds.length > 0) {
-      const assignedVenueNames = await getAssignedVenueNames(supabaseAdmin, managerIds);
+    // Supervisors can also be assigned to venues directly in venue management;
+    // the event list (/api/events) already shows them those events, so the
+    // per-event check must honor their own assignments as well.
+    if (venueName) {
+      const assignedVenueNames = await getAssignedVenueNames(supabaseAdmin, [userId, ...managerIds]);
       if (assignedVenueNames.has(venueName)) {
         return true;
       }

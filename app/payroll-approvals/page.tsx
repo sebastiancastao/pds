@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { loginUrlFor, savePostLoginRedirect } from '@/lib/post-login-redirect';
 import { supabase } from '@/lib/supabase';
 import { groupReimbursementRequestsByBatch } from '@/lib/reimbursements';
 import '@/app/global-calendar/dashboard-styles.css';
@@ -122,7 +123,9 @@ export default function PayrollApprovalsPage() {
           data: { session },
         } = await supabase.auth.getSession();
         if (!session?.user) {
-          router.push('/login');
+          const target = `${window.location.pathname}${window.location.search}`;
+          savePostLoginRedirect(target);
+          router.replace(loginUrlFor(target));
           return;
         }
 
@@ -140,7 +143,9 @@ export default function PayrollApprovalsPage() {
 
         setIsAuthorized(true);
       } catch {
-        router.push('/login');
+        const target = `${window.location.pathname}${window.location.search}`;
+        savePostLoginRedirect(target);
+        router.replace(loginUrlFor(target));
       } finally {
         setAuthChecking(false);
       }

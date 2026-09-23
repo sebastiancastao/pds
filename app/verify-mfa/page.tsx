@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { consumePostLoginRedirect } from '@/lib/post-login-redirect';
 
 function VerifyMFAContent() {
   const router = useRouter();
@@ -409,6 +410,14 @@ function VerifyMFAContent() {
         }
 
         console.log('[VERIFY-MFA DEBUG] No onboarding redirect needed - proceeding to role-based routing');
+
+        // Return to the page the user was trying to open (e.g. an email link).
+        const postLoginRedirect = consumePostLoginRedirect();
+        if (postLoginRedirect) {
+          sessionStorage.removeItem('cw_user');
+          router.push(postLoginRedirect);
+          return;
+        }
 
         // CW (CWT Trailers division) users: manager-level roles get the parallel
         // CW dashboard (their mirror role, e.g. cw-manager); other CW roles keep

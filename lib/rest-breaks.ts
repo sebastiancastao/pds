@@ -90,3 +90,18 @@ export function getRestBreakPay(hours: number, count: number | null | undefined,
 
 /** Counts keyed by event id, then worker (user) id. */
 export type RestBreakCountsByEvent = Record<string, Record<string, number>>;
+
+/**
+ * Number of rest breaks to show next to rest break pay on a paystub.
+ * A manager-entered count wins; otherwise one break per 4 hours worked, counting a partial
+ * 4 hours as a full one (the same number the current pay rule uses). Events on the older
+ * flat schedule are counted the same way so the paystub always shows a number.
+ */
+export function getRestBreakCount(hours: number, count: number | null | undefined): number {
+  const entered = normalizeRestBreakCount(count);
+  if (entered !== null) return entered;
+  if (!Number.isFinite(hours)) return 0;
+  const worked = roundHours(hours);
+  if (worked <= 0) return 0;
+  return Math.ceil(worked / REST_BREAK_PERIOD_HOURS);
+}

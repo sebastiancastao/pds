@@ -18,7 +18,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3"]);
+const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"]);
 
 type LoadedUser = {
   id: string;

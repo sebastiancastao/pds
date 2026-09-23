@@ -3128,38 +3128,6 @@ export default function PaystubGenerator() {
                                       </div>
                                     )}
 
-                                    {matchedUserId && worker.user_id === matchedUserId && (
-                                      <div className="mt-3 pt-3 border-t border-slate-200">
-                                        <p className="text-xs font-semibold text-slate-700 mb-2">Pay Adjustments</p>
-                                        <div className="flex items-center gap-4">
-                                          <label className="flex items-center gap-1.5 text-xs text-slate-600">
-                                            <span className="whitespace-nowrap">Meal Premium $</span>
-                                            <input
-                                              type="number"
-                                              min="0"
-                                              step="0.01"
-                                              placeholder="0.00"
-                                              value={getOverride(matchedUserId).mealPremium}
-                                              onChange={(ev) => setOverride(matchedUserId, 'mealPremium', ev.target.value)}
-                                              className="w-24 px-2 py-1 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
-                                            />
-                                          </label>
-                                          <label className="flex items-center gap-1.5 text-xs text-slate-600">
-                                            <span className="whitespace-nowrap">Sick $</span>
-                                            <input
-                                              type="number"
-                                              min="0"
-                                              step="0.01"
-                                              placeholder="0.00"
-                                              value={getOverride(matchedUserId).sick}
-                                              onChange={(ev) => setOverride(matchedUserId, 'sick', ev.target.value)}
-                                              className="w-24 px-2 py-1 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
-                                            />
-                                          </label>
-                                        </div>
-                                      </div>
-                                    )}
-
                                     {worker.payment_data && (
                                       <div className="mt-2 pt-2 border-t border-slate-200">
                                         <p className="text-xs font-semibold text-slate-600 mb-1">💳 Database Payment Data:</p>

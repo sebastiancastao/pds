@@ -249,7 +249,7 @@ export async function GET(req: NextRequest) {
       if (venueRefs) addVenueNames(venueRefs);
     }
 
-    if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') {
+    if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4') {
       // Look up which managers this supervisor is assigned to
       const { data: teamLinks } = await supabaseAdmin
         .from('manager_team_members')

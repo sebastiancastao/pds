@@ -217,13 +217,13 @@ export async function POST(
 
     // Allow event creator, exec, manager, or supervisor roles
     if (event.created_by !== user.id) {
-      if (requesterRole !== 'exec' && requesterRole !== 'manager' && requesterRole !== 'supervisor' && requesterRole !== 'supervisor2' && requesterRole !== 'supervisor3') {
+      if (requesterRole !== 'exec' && requesterRole !== 'manager' && requesterRole !== 'supervisor' && requesterRole !== 'supervisor2' && requesterRole !== 'supervisor3' && requesterRole !== 'supervisor4') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
       }
     }
 
     let managerCcEmail: string | null = null;
-    const requesterIsSupervisor = requesterRole === 'supervisor' || requesterRole === 'supervisor2';
+    const requesterIsSupervisor = requesterRole === 'supervisor' || requesterRole === 'supervisor2' || requesterRole === 'supervisor4';
 
     if (!shouldAutoConfirm && requesterIsSupervisor) {
       const managerCandidateIds: string[] = [];
