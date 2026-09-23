@@ -315,8 +315,8 @@ export default function EventDashboardPage() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
-  // Only exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
-  const canEditTimesheetTimes = userRole === "exec";
+  // Only admin can edit timesheet times on the Timesheet tab; exec, managers and supervisors view only.
+  const canEditTimesheetTimes = userRole === "admin";
   // Managers and exec can sign off the timesheet; the signature unlocks Sales for everyone.
   const canSignTimesheet = userRole === "exec" || userRole === "manager";
   // Only managers and exec record how many rest breaks each worker took.
@@ -4603,8 +4603,8 @@ export default function EventDashboardPage() {
     const draft = timesheetDrafts[uid];
     if (!draft) return;
 
-    // Only execs may delete time entries (clear a field that had a value)
-    if (userRole !== "exec") {
+    // Only admins may delete time entries (clear a field that had a value)
+    if (userRole !== "admin") {
       const original = timesheetSpans[uid];
       if (original) {
         const wouldDelete =
@@ -4617,7 +4617,7 @@ export default function EventDashboardPage() {
           (original.thirdMealStart && !draft.thirdMealStart) ||
           (original.thirdMealEnd && !draft.thirdMealEnd);
         if (wouldDelete) {
-          setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
+          setMessage("Only admins can delete time entries. You may update times but not clear existing entries.");
           return;
         }
       }
@@ -4743,8 +4743,8 @@ export default function EventDashboardPage() {
     const draft = timesheetDayDrafts[key];
     if (!draft) return;
 
-    // Only execs may delete time entries (clear a field that had a value)
-    if (userRole !== "exec") {
+    // Only admins may delete time entries (clear a field that had a value)
+    if (userRole !== "admin") {
       const originalDay = (timesheetDays[uid] || []).find((d) => d.date === date);
       if (originalDay) {
         const wouldDelete =
@@ -4757,7 +4757,7 @@ export default function EventDashboardPage() {
           (originalDay.meals[2]?.startDisplay && !draft.thirdMealStart) ||
           (originalDay.meals[2]?.endDisplay && !draft.thirdMealEnd);
         if (wouldDelete) {
-          setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
+          setMessage("Only admins can delete time entries. You may update times but not clear existing entries.");
           return;
         }
       }
@@ -4825,8 +4825,8 @@ export default function EventDashboardPage() {
       return { date: day.date, draft, original: day };
     });
 
-    // Only execs may delete time entries (clear a field that had a value)
-    if (userRole !== "exec") {
+    // Only admins may delete time entries (clear a field that had a value)
+    if (userRole !== "admin") {
       const wouldDeleteAny = dayPayloads.some(
         ({ draft, original }) =>
           (original.firstInDisplay && !draft.firstIn) ||
@@ -4839,7 +4839,7 @@ export default function EventDashboardPage() {
           (original.meals[2]?.endDisplay && !draft.thirdMealEnd)
       );
       if (wouldDeleteAny) {
-        setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
+        setMessage("Only admins can delete time entries. You may update times but not clear existing entries.");
         return;
       }
     }
@@ -8360,7 +8360,7 @@ export default function EventDashboardPage() {
 
     {!canEditTimesheetTimes && (
       <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-        Read-only access. Only exec can edit timesheets.
+        Read-only access. Only admin can edit timesheets.
       </div>
     )}
 
@@ -8961,43 +8961,6 @@ export default function EventDashboardPage() {
                           >
                             View Timesheet
                           </Link>
-                          {userRole === "exec" && hasSubmittedAttestation && (
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const { data: sess } = await supabase.auth.getSession();
-                                  const token = sess?.session?.access_token;
-                                  if (!token) return;
-                                  const res = await fetch(
-                                    `/api/events/${eventId}/attestation-pdf?userId=${encodeURIComponent(uid)}`,
-                                    { headers: { Authorization: `Bearer ${token}` } }
-                                  );
-                                  if (!res.ok) {
-                                    console.warn("Attestation PDF unavailable", {
-                                      status: res.status,
-                                      userId: uid,
-                                    });
-                                    return;
-                                  }
-                                  const blob = await res.blob();
-                                  const blobUrl = URL.createObjectURL(blob);
-                                  const a = document.createElement("a");
-                                  a.href = blobUrl;
-                                  a.download = `attestation-${firstName}_${lastName}.pdf`;
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  a.remove();
-                                  URL.revokeObjectURL(blobUrl);
-                                } catch (err: any) {
-                                  console.error("Failed to download attestation PDF", err);
-                                }
-                              }}
-                              className="text-purple-600 hover:text-purple-700 font-medium text-xs ml-2"
-                              title="Download submitted attestation PDF"
-                            >
-                              Attestation PDF
-                            </button>
-                          )}
                         </>
                       )
                     ) : (
@@ -9008,6 +8971,43 @@ export default function EventDashboardPage() {
                         View Timesheet
                       </Link>
                     )}
+                      {userRole === "exec" && hasSubmittedAttestation && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const { data: sess } = await supabase.auth.getSession();
+                              const token = sess?.session?.access_token;
+                              if (!token) return;
+                              const res = await fetch(
+                                `/api/events/${eventId}/attestation-pdf?userId=${encodeURIComponent(uid)}`,
+                                { headers: { Authorization: `Bearer ${token}` } }
+                              );
+                              if (!res.ok) {
+                                console.warn("Attestation PDF unavailable", {
+                                  status: res.status,
+                                  userId: uid,
+                                });
+                                return;
+                              }
+                              const blob = await res.blob();
+                              const blobUrl = URL.createObjectURL(blob);
+                              const a = document.createElement("a");
+                              a.href = blobUrl;
+                              a.download = `attestation-${firstName}_${lastName}.pdf`;
+                              document.body.appendChild(a);
+                              a.click();
+                              a.remove();
+                              URL.revokeObjectURL(blobUrl);
+                            } catch (err: any) {
+                              console.error("Failed to download attestation PDF", err);
+                            }
+                          }}
+                          className="text-purple-600 hover:text-purple-700 font-medium text-xs ml-2"
+                          title="Download submitted attestation PDF"
+                        >
+                          Attestation PDF
+                        </button>
+                      )}
                   </td>
                 </tr>
               );

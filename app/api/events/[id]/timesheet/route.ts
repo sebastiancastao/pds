@@ -701,8 +701,8 @@ export async function PUT(
       return NextResponse.json({ error: requesterError.message }, { status: 500 });
     }
     const requesterRole = String(requester?.role || "").toLowerCase().trim();
-    if (requesterRole !== "exec" && requesterRole !== "manager" && requesterRole !== "supervisor3") {
-      return NextResponse.json({ error: "Only exec, manager, or supervisor3 can edit timesheets." }, { status: 403 });
+    if (requesterRole !== "admin") {
+      return NextResponse.json({ error: "Only admin can edit timesheets." }, { status: 403 });
     }
 
     const body = await req.json().catch(() => null);
@@ -1043,9 +1043,9 @@ export async function PUT(
     }
 
     if (toDelete.length > 0) {
-      if (requesterRole !== "exec") {
+      if (requesterRole !== "admin") {
         return NextResponse.json(
-          { error: "Only execs can delete time entries. Managers and supervisors may only update existing entries." },
+          { error: "Only admins can delete time entries." },
           { status: 403 }
         );
       }
