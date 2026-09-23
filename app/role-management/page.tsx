@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -74,6 +74,14 @@ export default function RoleManagementPage() {
   const [error, setError] = useState("");
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
+  // Bumped on every role change so a list refresh that started before the
+  // change can't overwrite it with the stale role when it resolves later.
+  const roleMutationVersionRef = useRef(0);
+  // Local role changes re-applied over refreshed lists that may predate them.
+  // settledAt is the mutation version when the save finished; any refresh
+  // started at or after that version already reflects it and is trusted.
+  const pendingRolesRef = useRef<Map<string, { role: string; settledAt: number | null }>>(new Map());
+  const hasLoadedUsersRef = useRef(false);
 
   // --- Team Assignment State ---
   const [activeTab, setActiveTab] = useState<"roles" | "teams" | "sup3venues">("roles");
@@ -237,8 +245,12 @@ export default function RoleManagementPage() {
   };
 
   const loadUsers = async () => {
-    setLoading(true);
+    // Only show the full-page "Loading users..." state on the first load.
+    // Background refreshes keep the table on screen.
+    // (A ref, not users.length, because the polling interval holds a stale closure.)
+    if (!hasLoadedUsersRef.current) setLoading(true);
     setError("");
+    const versionAtStart = roleMutationVersionRef.current;
     try {
       const token = await getToken();
       const res = await fetch(`/api/users/role-management-list?t=${Date.now()}`, {
@@ -249,7 +261,19 @@ export default function RoleManagementPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load users');
 
-      setUsers(data.users || []);
+      const pending = pendingRolesRef.current;
+      const fresh: User[] = (data.users || []).map((u: User) => {
+        const entry = pending.get(u.id);
+        if (!entry) return u;
+        if (entry.settledAt !== null && versionAtStart >= entry.settledAt) {
+          // This refresh started after the save finished, so the server is current.
+          pending.delete(u.id);
+          return u;
+        }
+        return { ...u, role: entry.role };
+      });
+      setUsers(fresh);
+      hasLoadedUsersRef.current = true;
     } catch (err: any) {
       console.error('[ROLE-MANAGEMENT] Error loading users:', err);
       setError(err.message || 'Failed to load users');
@@ -294,6 +318,11 @@ export default function RoleManagementPage() {
     setError("");
     setSuccessMessage("");
 
+    // Show the new role immediately; roll back if the save fails.
+    roleMutationVersionRef.current += 1;
+    pendingRolesRef.current.set(userId, { role: newRole, settledAt: null });
+    setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
+
     try {
       const token = await getToken();
       const res = await fetch("/api/users/update-role", {
@@ -306,11 +335,16 @@ export default function RoleManagementPage() {
       if (!res.ok) throw new Error(data.error || "Failed to update role");
 
       const persistedRole = data?.user?.role || newRole;
+      roleMutationVersionRef.current += 1;
+      pendingRolesRef.current.set(userId, { role: persistedRole, settledAt: roleMutationVersionRef.current });
       setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: persistedRole } : u));
       setSuccessMessage(`${userName}'s role updated to ${persistedRole}`);
       setTimeout(() => setSuccessMessage(""), 4000);
     } catch (err: any) {
       console.error("[ROLE-MANAGEMENT] Error:", err);
+      roleMutationVersionRef.current += 1;
+      pendingRolesRef.current.delete(userId);
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: currentRole } : u));
       setError(err.message || "Failed to update role");
     } finally {
       setUpdatingUserId(null);

@@ -63,20 +63,22 @@ export async function GET(request: NextRequest) {
     try {
       // Users and profiles are fetched separately (left-join semantics) so users
       // without a profile row still appear in the list
-      users = await fetchAll((from, to) =>
-        supabaseAdmin
-          .from('users')
-          .select('id, email, role, division, is_active')
-          .order('id')
-          .range(from, to)
-      );
-      profiles = await fetchAll((from, to) =>
-        supabaseAdmin
-          .from('profiles')
-          .select('user_id, first_name, last_name')
-          .order('user_id')
-          .range(from, to)
-      );
+      [users, profiles] = await Promise.all([
+        fetchAll((from, to) =>
+          supabaseAdmin
+            .from('users')
+            .select('id, email, role, division, is_active')
+            .order('id')
+            .range(from, to)
+        ),
+        fetchAll((from, to) =>
+          supabaseAdmin
+            .from('profiles')
+            .select('user_id, first_name, last_name')
+            .order('user_id')
+            .range(from, to)
+        ),
+      ]);
     } catch (fetchError) {
       console.error('[ROLE-MGMT-LIST] Error fetching users:', fetchError);
       return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500, headers: NO_STORE_HEADERS });

@@ -16,6 +16,10 @@ const isValidUUID = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
 // PUT: Update a user's role
+//
+// Round trips are batched: the requester check and both target lookups run in
+// parallel, and the auth-metadata sync and audit log run in parallel after the
+// update. Previously all seven calls ran one after another.
 export async function PUT(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization');
@@ -29,29 +33,42 @@ export async function PUT(request: NextRequest) {
       global: { headers: { Authorization: `Bearer ${token}` } }
     });
 
-    // Verify requester identity
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) {
+    // Use service role to bypass RLS
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
+    });
+
+    // Verify requester identity and parse the body at the same time
+    const [authResult, body] = await Promise.all([
+      supabase.auth.getUser(token),
+      request.json().catch(() => ({})),
+    ]);
+    const user = authResult.data?.user;
+    if (authResult.error || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Verify requester is exec/admin
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('role')
-      .eq('id', user.id)
-      .single();
+    const { userId, newRole } = body || {};
+    const userIdValid = !!userId && typeof userId === 'string' && isValidUUID(userId);
 
-    if (userError || !userData || !['exec', 'admin'].includes(userData.role)) {
+    // Requester role check + target lookups in parallel
+    const [requesterResult, targetResult, targetAuthResult] = await Promise.all([
+      supabase.from('users').select('role').eq('id', user.id).single(),
+      userIdValid
+        ? supabaseAdmin.from('users').select('id, email, role').eq('id', userId).single()
+        : Promise.resolve({ data: null, error: null } as const),
+      userIdValid && userId !== user.id
+        ? supabaseAdmin.auth.admin.getUserById(userId)
+        : Promise.resolve({ data: { user: null }, error: null } as const),
+    ]);
+
+    const userData = requesterResult.data as { role: string } | null;
+    if (requesterResult.error || !userData || !['exec', 'admin'].includes(userData.role)) {
       return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403 });
     }
 
-    // Parse request body
-    const body = await request.json();
-    const { userId, newRole } = body;
-
     // Validate userId
-    if (!userId || typeof userId !== 'string' || !isValidUUID(userId)) {
+    if (!userIdValid) {
       console.error('[UPDATE-ROLE] Invalid userId received:', { userId, body });
       return NextResponse.json({ error: 'Valid user ID is required' }, { status: 400 });
     }
@@ -71,26 +88,15 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Cannot change your own role' }, { status: 400 });
     }
 
-    // Use service role to bypass RLS
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { persistSession: false }
-    });
-
-    // Get target user's current role
-    const { data: targetUser, error: targetError } = await supabaseAdmin
-      .from('users')
-      .select('id, email, role')
-      .eq('id', userId)
-      .single();
-
-    if (targetError || !targetUser) {
+    const targetUser = targetResult.data as { id: string; email: string; role: string } | null;
+    if (targetResult.error || !targetUser) {
       return NextResponse.json({ error: 'Target user not found' }, { status: 404 });
     }
 
     // Ensure target user exists in Supabase Auth so metadata can stay in sync.
-    const { data: targetAuthData, error: targetAuthError } = await supabaseAdmin.auth.admin.getUserById(userId);
-    if (targetAuthError || !targetAuthData?.user) {
-      console.error('[UPDATE-ROLE] Auth user lookup failed:', targetAuthError);
+    const targetAuthUser = targetAuthResult.data?.user;
+    if (targetAuthResult.error || !targetAuthUser) {
+      console.error('[UPDATE-ROLE] Auth user lookup failed:', targetAuthResult.error);
       return NextResponse.json(
         { error: 'Target auth user not found. Role update aborted to avoid inconsistent data.' },
         { status: 409, headers: NO_STORE_HEADERS }
@@ -116,41 +122,40 @@ export async function PUT(request: NextRequest) {
       .select('id, role')
       .single();
 
-    if (updateError) {
+    if (updateError || !updatedUser) {
       console.error('[UPDATE-ROLE] Error updating user role:', updateError);
       return NextResponse.json({ error: 'Failed to update role' }, { status: 500, headers: NO_STORE_HEADERS });
     }
 
-    // Keep auth user metadata role in sync with public.users role.
+    // Keep auth user metadata role in sync with public.users role, and write the
+    // audit log, in parallel.
     const mergedUserMetadata = {
-      ...(targetAuthData.user.user_metadata || {}),
+      ...(targetAuthUser.user_metadata || {}),
       role: newRole,
     };
 
-    const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-      user_metadata: mergedUserMetadata,
-    });
+    const [authUpdateResult] = await Promise.all([
+      supabaseAdmin.auth.admin.updateUserById(userId, { user_metadata: mergedUserMetadata }),
+      logUserEvent(
+        'user_updated',
+        userId,
+        user.id,
+        true,
+        {
+          action: 'role_changed',
+          oldRole,
+          newRole,
+          targetEmail: targetUser.email,
+          authMetadataUpdated: true,
+        }
+      ),
+    ]);
 
-    if (authUpdateError) {
+    if (authUpdateResult.error) {
       // Auth metadata sync is best-effort — log the failure but do NOT roll back
       // the database change. public.users.role is the source of truth for access control.
-      console.error('[UPDATE-ROLE] Warning: auth metadata sync failed (non-fatal):', authUpdateError);
+      console.error('[UPDATE-ROLE] Warning: auth metadata sync failed (non-fatal):', authUpdateResult.error);
     }
-
-    // Log audit event
-    await logUserEvent(
-      'user_updated',
-      userId,
-      user.id,
-      true,
-      {
-        action: 'role_changed',
-        oldRole,
-        newRole,
-        targetEmail: targetUser.email,
-        authMetadataUpdated: true,
-      }
-    );
 
     console.log('[UPDATE-ROLE] Successfully updated role:', {
       targetUserId: userId,
