@@ -5528,7 +5528,7 @@ export default function EventDashboardPage() {
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
     if (!canEditTimesheets) {
-      setMessage("Only managers and exec can edit timesheets and payroll adjustments.");
+      setMessage("Only Admin can edit timesheets.");
       return;
     }
     if (!restBreakCountsLoaded) {
