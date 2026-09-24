@@ -3,7 +3,7 @@
 
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import {
   TIMESHEET_EDIT_PANEL_ID,
@@ -491,7 +491,18 @@ function formatHelpdeskStatus(status: HelpdeskTicketStatus | undefined) {
 
 export default function WorkerProfilePage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const employeeId = params?.id;
+
+  const handleLogout = async () => {
+    try {
+      sessionStorage.removeItem("mfa_verified");
+      sessionStorage.removeItem("mfa_checkpoint");
+      await supabase.auth.signOut();
+    } finally {
+      router.push("/login");
+    }
+  };
   const timeSheetUserQuery = employeeId ? `?userId=${encodeURIComponent(employeeId)}` : "";
 
   const [loading, setLoading] = useState(true);
@@ -3161,6 +3172,7 @@ export default function WorkerProfilePage() {
                 : "Cumulative hours, shifts, and event history"}
             </p>
           </div>
+          <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => setIsHelpdeskModalOpen(true)}
@@ -3171,6 +3183,14 @@ export default function WorkerProfilePage() {
             </svg>
             Helpdesk
           </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 rounded-xl bg-red-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-red-600"
+          >
+            Logout
+          </button>
+          </div>
         </div>
 
         {/* Loading & Error */}
