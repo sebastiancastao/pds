@@ -8443,16 +8443,10 @@ export default function EventDashboardPage() {
 
     {showRestBreakInput && canEditRestBreaks && (
       <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-        <span className="font-semibold text-gray-700">Rest Breaks:</span> enter how many rest breaks each worker took.
-        Each break pays ${REST_BREAK_RATE.toFixed(2)} and sets their rest break pay on the Payment tab, HR Dashboard payroll
-        and paystubs.{" "}
-        {restBreaksRequired ? (
-          <span className="font-semibold text-red-700">
-            Required: enter a count (0 if none) for every worker, even if their times are empty or incomplete, before you can sign off the timesheet.
-          </span>
-        ) : (
-          <>Leave it blank to pay ${REST_BREAK_RATE.toFixed(2)} for every {REST_BREAK_PERIOD_HOURS} hours worked.</>
-        )}
+        <span className="font-semibold text-gray-700">Rest Breaks:</span>{" "}
+        <span className={restBreaksRequired ? "font-semibold text-red-700" : undefined}>
+          enter number of rest breaks per vendor, must have correct time and rest breaks to be able to sign and save sheets.
+        </span>
       </div>
     )}
     {showRestBreakInput && restBreakError && (
