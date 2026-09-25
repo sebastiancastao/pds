@@ -4994,10 +4994,10 @@ export default function EventDashboardPage() {
   const hideRestBreakColumn = false;
   // San Diego (blended OT/DT rate) and non-event timesheets pay no rest break, so there is nothing to record.
   const showRestBreakInput = !isEventSanDiego && !isNonEventTimesheet;
-  // Managers must record rest breaks for every worker on the timesheet before they can sign it
-  // off, even when that worker's times are empty or only partly filled in. Exec can still sign
-  // without them. Enforced in the UI only, like the sign-off itself.
-  const restBreaksRequired = showRestBreakInput && userRole === "manager";
+  // Every role (manager, exec and anyone else) must have rest breaks recorded for every worker on
+  // the timesheet before it can be signed off, even when that worker's times are empty or only
+  // partly filled in. Enforced in the UI only, like the sign-off itself.
+  const restBreaksRequired = showRestBreakInput;
   const needsRestBreakCount = (uid: string): boolean =>
     restBreaksRequired && !!uid && restBreakCounts[uid] === undefined;
   const workersMissingRestBreaks: string[] = restBreaksRequired
