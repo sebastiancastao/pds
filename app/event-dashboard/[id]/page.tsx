@@ -4994,11 +4994,12 @@ export default function EventDashboardPage() {
   const hideRestBreakColumn = false;
   // San Diego (blended OT/DT rate) and non-event timesheets pay no rest break, so there is nothing to record.
   const showRestBreakInput = !isEventSanDiego && !isNonEventTimesheet;
-  // Managers must record rest breaks for every worker who clocked in before they can sign the
-  // timesheet off. Exec can still sign without them. Enforced in the UI only, like the sign-off itself.
+  // Managers must record rest breaks for every worker on the timesheet before they can sign it
+  // off, even when that worker's times are empty or only partly filled in. Exec can still sign
+  // without them. Enforced in the UI only, like the sign-off itself.
   const restBreaksRequired = showRestBreakInput && userRole === "manager";
   const needsRestBreakCount = (uid: string): boolean =>
-    restBreaksRequired && !!uid && !!timesheetSpans[uid]?.firstIn && restBreakCounts[uid] === undefined;
+    restBreaksRequired && !!uid && restBreakCounts[uid] === undefined;
   const workersMissingRestBreaks: string[] = restBreaksRequired
     ? sortedTeamMembers.flatMap((m: any) => {
         const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
@@ -8447,7 +8448,7 @@ export default function EventDashboardPage() {
         and paystubs.{" "}
         {restBreaksRequired ? (
           <span className="font-semibold text-red-700">
-            Required: enter a count (0 if none) for every worker who clocked in before you can sign off the timesheet.
+            Required: enter a count (0 if none) for every worker, even if their times are empty or incomplete, before you can sign off the timesheet.
           </span>
         ) : (
           <>Leave it blank to pay ${REST_BREAK_RATE.toFixed(2)} for every {REST_BREAK_PERIOD_HOURS} hours worked.</>
