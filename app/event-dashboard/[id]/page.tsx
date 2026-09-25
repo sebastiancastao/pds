@@ -4340,8 +4340,14 @@ export default function EventDashboardPage() {
   //   Meal 2 start  : orange at 9h, red at 10h
   // A meal that has not been entered is aged against the clock-out time, or against "now"
   // while the worker is still clocked in, so a missed meal turns the (empty) cell orange/red.
+  // Worked time of 12h or more (admin time to clock-out/now, minus recorded meals: the same
+  // figure as the Hrs column) also turns Meal 2 red, whether or not Meal 2 was entered.
   type MealAlert = { level: "orange" | "red"; reason: string } | null;
+  // A recorded meal start more than 16h after admin time is treated as bad data.
   const MEAL_ALERT_MAX_GAP_MINUTES = 16 * 60;
+  // Admin time to clock-out/now can legitimately run longer, but not past 20h.
+  const MEAL_ALERT_MAX_SHIFT_MINUTES = 20 * 60;
+  const MEAL_ALERT_WORKED_RED_HOURS = 12;
 
   const hhmmToMinutes = (hhmm: string): number | null => {
     if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return null;
@@ -4351,14 +4357,19 @@ export default function EventDashboardPage() {
   };
 
   // Minutes from `from` to `to` on the wall clock, wrapping past midnight for overnight
-  // shifts. A gap over 16h means `to` is really *before* `from` (bad data), so no alert.
-  const minutesBetweenHHMM = (from: string, to: string): number | null => {
+  // shifts. A gap over `maxGapMinutes` means `to` is really *before* `from` (bad data),
+  // so there is no alert.
+  const minutesBetweenHHMM = (
+    from: string,
+    to: string,
+    maxGapMinutes: number = MEAL_ALERT_MAX_GAP_MINUTES
+  ): number | null => {
     const start = hhmmToMinutes(from);
     const end = hhmmToMinutes(to);
     if (start === null || end === null) return null;
     let diff = end - start;
     if (diff < 0) diff += 24 * 60;
-    return diff > MEAL_ALERT_MAX_GAP_MINUTES ? null : diff;
+    return diff > maxGapMinutes ? null : diff;
   };
 
   const formatElapsedHM = (minutes: number): string =>
@@ -4399,7 +4410,7 @@ export default function EventDashboardPage() {
     const startedMs = new Date(iso).getTime();
     if (Number.isNaN(startedMs)) return false;
     const ageMs = Date.now() - startedMs;
-    return ageMs >= 0 && ageMs <= MEAL_ALERT_MAX_GAP_MINUTES * 60 * 1000;
+    return ageMs >= 0 && ageMs <= MEAL_ALERT_MAX_SHIFT_MINUTES * 60 * 1000;
   };
 
   // shiftEnd: clock-out time, or "now" while still clocked in, or "" when unknown.
@@ -4419,21 +4430,54 @@ export default function EventDashboardPage() {
           (elapsed) => `${mealName} started ${elapsed} after admin time`
         )
       : evaluateMealElapsed(
-          minutesBetweenHHMM(adminTime, shiftEnd),
+          minutesBetweenHHMM(adminTime, shiftEnd, MEAL_ALERT_MAX_SHIFT_MINUTES),
           orangeHours,
           redHours,
           (elapsed) => `No ${mealName} recorded, ${elapsed} since admin time`
         );
 
-  const getMealTimingAlerts = (
+  // Worked minutes = admin time to shiftEnd, minus every meal that has both a start and an end.
+  const getWorkedMinutes = (
     adminTime: string,
-    meal1Start: string,
-    meal2Start: string,
-    shiftEnd: string
-  ): { meal1: MealAlert; meal2: MealAlert } => ({
-    meal1: evaluateMeal("Meal 1", 4, 5, adminTime, meal1Start, shiftEnd),
-    meal2: evaluateMeal("Meal 2", 9, 10, adminTime, meal2Start, shiftEnd),
-  });
+    shiftEnd: string,
+    meals: Array<[string, string]>
+  ): number | null => {
+    const elapsed = minutesBetweenHHMM(adminTime, shiftEnd, MEAL_ALERT_MAX_SHIFT_MINUTES);
+    if (elapsed === null) return null;
+    const mealMinutes = meals.reduce(
+      (sum, [start, end]) => sum + (start && end ? minutesBetweenHHMM(start, end) ?? 0 : 0),
+      0
+    );
+    return Math.max(elapsed - mealMinutes, 0);
+  };
+
+  const getMealTimingAlerts = (t: {
+    adminTime: string;
+    meal1Start: string;
+    meal1End: string;
+    meal2Start: string;
+    meal2End: string;
+    meal3Start: string;
+    meal3End: string;
+    shiftEnd: string; // clock-out, or "now" while still clocked in, or "" when unknown
+  }): { meal1: MealAlert; meal2: MealAlert } => {
+    const workedMinutes = getWorkedMinutes(t.adminTime, t.shiftEnd, [
+      [t.meal1Start, t.meal1End],
+      [t.meal2Start, t.meal2End],
+      [t.meal3Start, t.meal3End],
+    ]);
+    const workedAlert: MealAlert =
+      workedMinutes !== null && workedMinutes >= MEAL_ALERT_WORKED_RED_HOURS * 60
+        ? {
+            level: "red",
+            reason: `Worked ${formatElapsedHM(workedMinutes)} (${MEAL_ALERT_WORKED_RED_HOURS}h+)`,
+          }
+        : null;
+    return {
+      meal1: evaluateMeal("Meal 1", 4, 5, t.adminTime, t.meal1Start, t.shiftEnd),
+      meal2: workedAlert || evaluateMeal("Meal 2", 9, 10, t.adminTime, t.meal2Start, t.shiftEnd),
+    };
+  };
 
   const getEventTzAbbr = (iso?: string | null): string => {
     const d = iso
@@ -8621,13 +8665,18 @@ export default function EventDashboardPage() {
                             GATE_PHONE_OFFSET_MINUTES
                           )
                         : (isDayEditing ? dayDraft.firstIn : day.firstInDisplay);
-                      const dayMealAlerts = getMealTimingAlerts(
-                        dayGateTime || "",
-                        isDayEditing ? dayDraft.firstMealStart : (day.meals[0]?.startDisplay || ""),
-                        isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || ""),
-                        (isDayEditing ? dayDraft.lastOut : day.lastOutDisplay) ||
-                          (day.date === getEventTodayYMD() ? getEventNowHHMM() : "")
-                      );
+                      const dayMealAlerts = getMealTimingAlerts({
+                        adminTime: dayGateTime || "",
+                        meal1Start: isDayEditing ? dayDraft.firstMealStart : (day.meals[0]?.startDisplay || ""),
+                        meal1End: isDayEditing ? dayDraft.lastMealEnd : (day.meals[0]?.endDisplay || ""),
+                        meal2Start: isDayEditing ? dayDraft.secondMealStart : (day.meals[1]?.startDisplay || ""),
+                        meal2End: isDayEditing ? dayDraft.secondMealEnd : (day.meals[1]?.endDisplay || ""),
+                        meal3Start: isDayEditing ? dayDraft.thirdMealStart : (day.meals[2]?.startDisplay || ""),
+                        meal3End: isDayEditing ? dayDraft.thirdMealEnd : (day.meals[2]?.endDisplay || ""),
+                        shiftEnd:
+                          (isDayEditing ? dayDraft.lastOut : day.lastOutDisplay) ||
+                          (day.date === getEventTodayYMD() ? getEventNowHHMM() : ""),
+                      });
 
                       return (
                         <tr key={dayKey} className="bg-gray-50/60 hover:bg-gray-100/60">
@@ -8743,13 +8792,18 @@ export default function EventDashboardPage() {
                 ? subtractMinutesFromHHMM(isEditing ? draft.firstIn : firstClockIn, GATE_PHONE_OFFSET_MINUTES)
                 : (isEditing ? draft.firstIn : firstClockIn);
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
-              const mealAlerts = getMealTimingAlerts(
-                gatePhoneTime,
-                isEditing ? draft.firstMealStart : firstMealStart,
-                isEditing ? draft.secondMealStart : secondMealStart,
-                (isEditing ? draft.lastOut : lastClockOut) ||
-                  (isWithinLiveShiftWindow(span.firstIn) ? getEventNowHHMM() : "")
-              );
+              const mealAlerts = getMealTimingAlerts({
+                adminTime: gatePhoneTime,
+                meal1Start: isEditing ? draft.firstMealStart : firstMealStart,
+                meal1End: isEditing ? draft.lastMealEnd : lastMealEnd,
+                meal2Start: isEditing ? draft.secondMealStart : secondMealStart,
+                meal2End: isEditing ? draft.secondMealEnd : secondMealEnd,
+                meal3Start: isEditing ? draft.thirdMealStart : thirdMealStart,
+                meal3End: isEditing ? draft.thirdMealEnd : thirdMealEnd,
+                shiftEnd:
+                  (isEditing ? draft.lastOut : lastClockOut) ||
+                  (isWithinLiveShiftWindow(span.firstIn) ? getEventNowHHMM() : ""),
+              });
 
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
