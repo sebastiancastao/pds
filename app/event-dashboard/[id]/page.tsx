@@ -1476,6 +1476,14 @@ export default function EventDashboardPage() {
 
   const submitTimesheetSignoff = async () => {
     if (!eventId || !canSignTimesheet || submittingSignoff) return;
+    if (signoffBlockedByRestBreaks) {
+      setSignoffError(
+        restBreakCountsLoaded
+          ? "Enter rest breaks for every worker before signing."
+          : "Rest breaks are still loading. Try again in a moment."
+      );
+      return;
+    }
     const signature = signoffPadRef.current?.toDataURL() ?? "";
     if (!signature) {
       setSignoffError("Please draw your signature before submitting.");
@@ -4460,7 +4468,9 @@ export default function EventDashboardPage() {
     meal3Start: string;
     meal3End: string;
     shiftEnd: string; // clock-out, or "now" while still clocked in, or "" when unknown
+    clockedOut?: boolean; // once the worker has clocked out, meal colors are no longer shown
   }): { meal1: MealAlert; meal2: MealAlert } => {
+    if (t.clockedOut) return { meal1: null, meal2: null };
     const workedMinutes = getWorkedMinutes(t.adminTime, t.shiftEnd, [
       [t.meal1Start, t.meal1End],
       [t.meal2Start, t.meal2End],
@@ -4984,6 +4994,22 @@ export default function EventDashboardPage() {
   const hideRestBreakColumn = false;
   // San Diego (blended OT/DT rate) and non-event timesheets pay no rest break, so there is nothing to record.
   const showRestBreakInput = !isEventSanDiego && !isNonEventTimesheet;
+  // Managers must record rest breaks for every worker who clocked in before they can sign the
+  // timesheet off. Exec can still sign without them. Enforced in the UI only, like the sign-off itself.
+  const restBreaksRequired = showRestBreakInput && userRole === "manager";
+  const needsRestBreakCount = (uid: string): boolean =>
+    restBreaksRequired && !!uid && !!timesheetSpans[uid]?.firstIn && restBreakCounts[uid] === undefined;
+  const workersMissingRestBreaks: string[] = restBreaksRequired
+    ? sortedTeamMembers.flatMap((m: any) => {
+        const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+        if (!needsRestBreakCount(uid)) return [];
+        const profile = m.users?.profiles;
+        const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim();
+        return [name || m.users?.email || "Unknown worker"];
+      })
+    : [];
+  const signoffBlockedByRestBreaks =
+    restBreaksRequired && (!restBreakCountsLoaded || workersMissingRestBreaks.length > 0);
 
   // Helper: use the same worked-hours calculation as Timesheet/Payment (includes Gate/Phone offset).
   const getMealDeductedMsForSave = (uid: string) => {
@@ -8418,7 +8444,14 @@ export default function EventDashboardPage() {
       <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
         <span className="font-semibold text-gray-700">Rest Breaks:</span> enter how many rest breaks each worker took.
         Each break pays ${REST_BREAK_RATE.toFixed(2)} and sets their rest break pay on the Payment tab, HR Dashboard payroll
-        and paystubs. Leave it blank to pay ${REST_BREAK_RATE.toFixed(2)} for every {REST_BREAK_PERIOD_HOURS} hours worked.
+        and paystubs.{" "}
+        {restBreaksRequired ? (
+          <span className="font-semibold text-red-700">
+            Required: enter a count (0 if none) for every worker who clocked in before you can sign off the timesheet.
+          </span>
+        ) : (
+          <>Leave it blank to pay ${REST_BREAK_RATE.toFixed(2)} for every {REST_BREAK_PERIOD_HOURS} hours worked.</>
+        )}
       </div>
     )}
     {showRestBreakInput && restBreakError && (
@@ -8676,6 +8709,7 @@ export default function EventDashboardPage() {
                         shiftEnd:
                           (isDayEditing ? dayDraft.lastOut : day.lastOutDisplay) ||
                           (day.date === getEventTodayYMD() ? getEventNowHHMM() : ""),
+                        clockedOut: !!(isDayEditing ? dayDraft.lastOut : day.lastOutDisplay),
                       });
 
                       return (
@@ -8803,6 +8837,7 @@ export default function EventDashboardPage() {
                 shiftEnd:
                   (isEditing ? draft.lastOut : lastClockOut) ||
                   (isWithinLiveShiftWindow(span.firstIn) ? getEventNowHHMM() : ""),
+                clockedOut: !!(isEditing ? draft.lastOut : lastClockOut),
               });
 
               return (
@@ -8975,8 +9010,14 @@ export default function EventDashboardPage() {
                             onKeyDown={(e) => {
                               if (e.key === "Enter") e.currentTarget.blur();
                             }}
-                            title={`Rest breaks taken, $${REST_BREAK_RATE.toFixed(2)} each. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`}
-                            className="border rounded px-1 py-0.5 text-xs w-[56px] bg-white disabled:bg-gray-100 disabled:cursor-wait"
+                            title={
+                              needsRestBreakCount(uid)
+                                ? "Required: enter how many rest breaks this worker took (0 if none)."
+                                : `Rest breaks taken, $${REST_BREAK_RATE.toFixed(2)} each. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`
+                            }
+                            className={`border rounded px-1 py-0.5 text-xs w-[56px] disabled:bg-gray-100 disabled:cursor-wait ${
+                              needsRestBreakCount(uid) ? "border-red-500 bg-red-50 ring-1 ring-red-400" : "bg-white"
+                            }`}
                           />
                         ) : recordedBreaks !== undefined ? (
                           <span className="text-xs font-medium text-gray-900">{recordedBreaks}</span>
@@ -9158,13 +9199,25 @@ export default function EventDashboardPage() {
                 onEmptyChange={setSignoffSignatureEmpty}
               />
             </div>
+            {signoffBlockedByRestBreaks && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {restBreakCountsLoaded ? (
+                  <>
+                    <span className="font-semibold">Enter rest breaks before signing.</span> Missing for:{" "}
+                    {workersMissingRestBreaks.join(", ")}.
+                  </>
+                ) : (
+                  "Loading rest breaks…"
+                )}
+              </div>
+            )}
             {signoffError && <p className="text-sm text-red-600">{signoffError}</p>}
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-gray-400">A submitted signature cannot be changed.</p>
               <button
                 type="button"
                 onClick={() => void submitTimesheetSignoff()}
-                disabled={submittingSignoff || signoffSignatureEmpty}
+                disabled={submittingSignoff || signoffSignatureEmpty || signoffBlockedByRestBreaks}
                 className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submittingSignoff ? "Submitting…" : "Submit Signature"}

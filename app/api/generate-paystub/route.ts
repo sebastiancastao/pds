@@ -10,7 +10,7 @@ import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
-import { getRestBreakCount, getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import { REST_BREAK_RATE, getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
 
 const supabaseAdmin = createClient(
@@ -1702,7 +1702,6 @@ export async function POST(req: NextRequest) {
       let totalRestBreak = 0;
       // Rest breaks managers typed in for the period's shifts (shown on the Earnings table).
       // Never derived from shift length, so it stays blank when nothing was typed.
-      let totalRestBreakCount = 0;
       let totalOther = 0;
       let totalAdjustmentMealPremium = 0;
       let totalAdjustmentReimbursement = 0;
@@ -1961,11 +1960,6 @@ export async function POST(req: NextRequest) {
         totalVariableIncentive += displayVariableIncentive;
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
-        // Breaks paid on this shift: the manager-typed count, or one per 4 hours worked.
-        // Events on the older flat schedule derive the count from the flat amount paid.
-        if (restBreak > 0) {
-          totalRestBreakCount += getRestBreakCount(actualHours, recordedRestBreaks, event?.event_date ?? null);
-        }
         totalOther += other;
         totalAdjustmentMealPremium += adjustmentMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;
@@ -2084,6 +2078,9 @@ export async function POST(req: NextRequest) {
       const totalVariableIncentiveRounded = roundPayrollAmount(rawVariableIncentiveTotalForEarnings);
       const totalTipsRounded = round2(totalTips);
       const totalRestBreakRounded = round2(totalRestBreak);
+      // Rest breaks shown on the paystub: this period's rest break pay divided by $4.50,
+      // rounded down to a whole break (e.g. $25.00 / $4.50 = 5.55 -> 5).
+      const totalRestBreakCount = Math.floor(totalRestBreakRounded / REST_BREAK_RATE + 1e-9);
       const totalOtherRounded = round2(totalOther);
       const totalMileageReimbursementRounded = round2(totalMileageReimbursement);
       const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0) + totalAdjustmentMealPremium);
@@ -2324,7 +2321,7 @@ export async function POST(req: NextRequest) {
         { label: "Commission", color: black, rate: effectiveRate, hours: commissionHoursForEarnings, thisPeriod: totalCommissionRounded, ytd: ytdCommission },
         { label: "Variable Incentive", color: black, rate: round2(variableRateForEarnings), hours: commissionHoursForEarnings, thisPeriod: totalVariableIncentiveRounded, ytd: ytdVariableIncentive },
         { label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
-        // Hours column holds the rest breaks managers typed in for this period (a count, not hours); blank when none.
+        // Hours column holds this period's rest break count (a count, not hours): rest break pay / $4.50, rounded down.
         // Keep the label unchanged: /pdf-reader and the LLM extractor match "Rest Break Pay" followed by numbers.
         { label: "Rest Break Pay", color: black, rate: 0, hours: totalRestBreakCount, hoursAsCount: true, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
         { label: "Bonus", color: black, rate: 0, hours: 0, thisPeriod: totalOtherRounded, ytd: ytdOther },
