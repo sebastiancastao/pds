@@ -701,8 +701,8 @@ export async function PUT(
       return NextResponse.json({ error: requesterError.message }, { status: 500 });
     }
     const requesterRole = String(requester?.role || "").toLowerCase().trim();
-    if (requesterRole !== "admin") {
-      return NextResponse.json({ error: "Only admin can edit timesheets." }, { status: 403 });
+    if (requesterRole !== "admin" && requesterRole !== "exec") {
+      return NextResponse.json({ error: "Only admin and exec can edit timesheets." }, { status: 403 });
     }
 
     const body = await req.json().catch(() => null);

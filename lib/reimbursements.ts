@@ -21,6 +21,14 @@ export function isReimbursementReviewer(role: string | null | undefined): boolea
   return REIMBURSEMENT_REVIEW_ROLES.has(String(role || '').trim().toLowerCase());
 }
 
+// Roles that may view the full reimbursement list read-only (HR dashboard
+// Payroll tab). Approving/rejecting still requires isReimbursementReviewer.
+export const REIMBURSEMENT_VIEW_ROLES: ReadonlySet<string> = new Set(['exec', 'admin', 'hr']);
+
+export function canViewAllReimbursements(role: string | null | undefined): boolean {
+  return REIMBURSEMENT_VIEW_ROLES.has(String(role || '').trim().toLowerCase());
+}
+
 export type ReimbursementEventOption = {
   id: string;
   event_name: string;

@@ -9,7 +9,7 @@ import {
   getUserDisplayMap,
   reimbursementSupabaseAdmin,
 } from '@/lib/reimbursements-server';
-import { isReimbursementReviewer, parseCurrencyInput } from '@/lib/reimbursements';
+import { canViewAllReimbursements, isReimbursementReviewer, parseCurrencyInput } from '@/lib/reimbursements';
 
 function normalizeReviewRow(row: any, event: any, receiptUrl: string | null, userMap: Record<string, { name: string; email: string | null }>) {
   return {
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
     }
 
     const role = await getReimbursementUserRole(user.id);
-    if (!isReimbursementReviewer(role)) {
+    if (!canViewAllReimbursements(role)) {
       return NextResponse.json({ error: 'Not authorized' }, { status: 403 });
     }
 

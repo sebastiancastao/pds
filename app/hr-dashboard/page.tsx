@@ -12,6 +12,7 @@ import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown,
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRestBreakPay } from "@/lib/rest-breaks";
+import ReimbursementsPanel from "./ReimbursementsPanel";
 import "@/app/global-calendar/dashboard-styles.css";
 import * as XLSX from 'xlsx';
 
@@ -222,6 +223,8 @@ function HRDashboardContent() {
   const [paysheetSickRequests, setPaysheetSickRequests] = useState<Array<{ user_id: string; event_id: string; event_name: string | null; event_date: string | null; duration_hours: number; start_date: string | null }>>([]);
   // Toggle for the sick-leave panels (Payment Cycles + Sick Leave Pay Sheet) in the payroll tab
   const [showSickLeavePanels, setShowSickLeavePanels] = useState(false);
+  // Toggle for the read-only Reimbursements visualization panel in the payroll tab
+  const [showReimbursementsPanel, setShowReimbursementsPanel] = useState(false);
   const [loadingSickPaysheets, setLoadingSickPaysheets] = useState(false);
   const [sickPaysheetError, setSickPaysheetError] = useState<string>("");
   const [sickPaysheetSuccess, setSickPaysheetSuccess] = useState<string>("");
@@ -1979,6 +1982,25 @@ function HRDashboardContent() {
       return (a.firstName || '').toLowerCase().localeCompare((b.firstName || '').toLowerCase());
     });
   }, [paymentsByVenue]);
+
+  // eventId -> userId -> reimbursement currently on the loaded payroll row
+  // (unsaved edits in the Reimbursement column win over the loaded value).
+  const payrollReimbursementsByEventUser = useMemo(() => {
+    const out: Record<string, Record<string, number>> = {};
+    paymentsByVenue.forEach(v => {
+      (v.events || []).forEach((ev: any) => {
+        if (!ev?.id) return;
+        const row: Record<string, number> = out[ev.id] || {};
+        (ev.payments || []).forEach((p: any) => {
+          if (!p?.userId) return;
+          const stateVal = reimbursementAmounts[ev.id]?.[p.userId];
+          row[p.userId] = stateVal !== undefined ? Number(stateVal || 0) : Number(p.reimbursementAmount || 0);
+        });
+        out[ev.id] = row;
+      });
+    });
+    return out;
+  }, [paymentsByVenue, reimbursementAmounts]);
 
   const venueSummaries = useMemo(() => {
     return paymentsByVenue
@@ -4668,11 +4690,27 @@ function HRDashboardContent() {
                       >
                         {showSickLeavePanels ? 'Hide Sick Leave' : 'Sick Leave'}
                       </button>
+                      <button
+                        onClick={() => setShowReimbursementsPanel((prev) => !prev)}
+                        className={`apple-button ${showReimbursementsPanel ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        aria-expanded={showReimbursementsPanel}
+                      >
+                        {showReimbursementsPanel ? 'Hide Reimbursements' : 'Reimbursements'}
+                      </button>
                     </div>
                   </>
                 )}
               </div>
             </div>
+
+            {payrollLoadMode !== "cw" && showReimbursementsPanel && (
+              <ReimbursementsPanel
+                startDate={paymentsStartDate}
+                endDate={paymentsEndDate}
+                payrollReimbursements={payrollReimbursementsByEventUser}
+                payrollLoaded={paymentsByVenue.length > 0}
+              />
+            )}
 
             {payrollLoadMode !== "cw" && showSickLeavePanels && (
             <>

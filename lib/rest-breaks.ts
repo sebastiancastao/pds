@@ -93,11 +93,25 @@ export type RestBreakCountsByEvent = Record<string, Record<string, number>>;
 
 /**
  * Number of rest breaks to show next to rest break pay on a paystub.
- * A manager-entered count wins; otherwise one break per 4 hours worked, counting a partial
- * 4 hours as a full one (the same number the current pay rule uses). Events on the older
- * flat schedule are counted the same way so the paystub always shows a number.
+ *
+ * Current rule (events on or after REST_BREAK_RATE_CHANGE_DATE): a manager-entered count
+ * wins; otherwise one break per 4 hours worked, counting a partial 4 hours as a full one.
+ * That is exactly the number the pay is built from, so count x $4.50 = pay.
+ *
+ * Older flat schedule: pay was a flat amount per shift ($9 / $12.50 / $17), not per break,
+ * and a typed count never changed it. The count is taken from the dollars actually paid
+ * (pay / $4.50, rounded: $9 -> 2, $12.50 -> 3, $17 -> 4) so the paystub count stays in
+ * line with the Rest Break Pay amount beside it instead of a separate hours estimate.
  */
-export function getRestBreakCount(hours: number, count: number | null | undefined): number {
+export function getRestBreakCount(
+  hours: number,
+  count: number | null | undefined,
+  eventDate?: unknown
+): number {
+  if (eventDate !== undefined && !usesCurrentRestBreakRule(eventDate)) {
+    const pay = getRestBreakPay(hours, null, eventDate);
+    return pay > 0 ? Math.round(pay / REST_BREAK_RATE) : 0;
+  }
   const entered = normalizeRestBreakCount(count);
   if (entered !== null) return entered;
   if (!Number.isFinite(hours)) return 0;

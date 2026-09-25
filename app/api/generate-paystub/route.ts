@@ -1962,7 +1962,10 @@ export async function POST(req: NextRequest) {
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         // Breaks paid on this shift: the manager-typed count, or one per 4 hours worked.
-        if (restBreak > 0) totalRestBreakCount += getRestBreakCount(actualHours, recordedRestBreaks);
+        // Events on the older flat schedule derive the count from the flat amount paid.
+        if (restBreak > 0) {
+          totalRestBreakCount += getRestBreakCount(actualHours, recordedRestBreaks, event?.event_date ?? null);
+        }
         totalOther += other;
         totalAdjustmentMealPremium += adjustmentMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;

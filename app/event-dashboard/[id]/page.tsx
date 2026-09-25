@@ -15,6 +15,7 @@ import { isPendingTeamStatus } from "@/lib/team-conflicts";
 import { MAX_REST_BREAK_COUNT, REST_BREAK_PERIOD_HOURS, REST_BREAK_RATE, getRestBreakPay, normalizeRestBreakCount } from "@/lib/rest-breaks";
 import SignaturePad, { type SignaturePadHandle } from "@/components/SignaturePad";
 import PendingFormsList, { PENDING_FORMS_BAR_STYLE } from "@/components/PendingFormsList";
+import EventReimbursementsTab from "./EventReimbursementsTab";
 
 type EventItem = {
   id: string;
@@ -60,7 +61,7 @@ type Venue = {
   longitude: number;
 };
 
-type TabType = "edit" | "sales" | "merchandise" | "team" | "locations" | "timesheet" | "hr";
+type TabType = "edit" | "sales" | "merchandise" | "team" | "locations" | "timesheet" | "hr" | "reimbursements";
 
 type TimesheetSignoff = {
   id: string;
@@ -315,12 +316,14 @@ export default function EventDashboardPage() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
-  // Only admin can edit timesheet times on the Timesheet tab; exec, managers and supervisors view only.
-  const canEditTimesheetTimes = userRole === "admin";
+  // Admin and exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
+  const canEditTimesheetTimes = userRole === "admin" || userRole === "exec";
   // Managers and exec can sign off the timesheet; the signature unlocks Sales for everyone.
   const canSignTimesheet = userRole === "exec" || userRole === "manager";
   // Only managers and exec record how many rest breaks each worker took.
   const canEditRestBreaks = userRole === "exec" || userRole === "manager";
+  // Only managers and exec can see the reimbursements vendors submitted for this event (view only).
+  const canViewEventReimbursements = userRole === "exec" || userRole === "manager";
   const canManageLocations =
     userRole === "exec" ||
     userRole === "admin" ||
@@ -1042,6 +1045,9 @@ export default function EventDashboardPage() {
     ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
     ...(userRole === "exec"
       ? ([["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"]] as Array<[TabType, string, string]>)
+      : []),
+    ...(canViewEventReimbursements
+      ? ([["reimbursements", "Reimbursements", "M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"]] as Array<[TabType, string, string]>)
       : []),
   ];
 
@@ -8360,7 +8366,7 @@ export default function EventDashboardPage() {
 
     {!canEditTimesheetTimes && (
       <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-        Read-only access. Only admin can edit timesheets.
+        Read-only access. Only admin and exec can edit timesheets.
       </div>
     )}
 
@@ -9129,6 +9135,11 @@ export default function EventDashboardPage() {
     )}
   </div>
 )}
+
+          {/* REIMBURSEMENTS TAB (exec + manager, view only) */}
+          {activeTab === "reimbursements" && canViewEventReimbursements && (
+            <EventReimbursementsTab eventId={eventId} />
+          )}
 
           {/* HR TAB */}
           {activeTab === "hr" && (
