@@ -1479,7 +1479,7 @@ export default function EventDashboardPage() {
     if (signoffBlockedByRestBreaks) {
       setSignoffError(
         restBreakCountsLoaded
-          ? "Enter rest breaks for every worker before signing."
+          ? `Rest breaks have to be filled in before signing. Missing for: ${workersMissingRestBreaks.join(", ")}.`
           : "Rest breaks are still loading. Try again in a moment."
       );
       return;
@@ -9203,7 +9203,7 @@ export default function EventDashboardPage() {
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {restBreakCountsLoaded ? (
                   <>
-                    <span className="font-semibold">Enter rest breaks before signing.</span> Missing for:{" "}
+                    <span className="font-semibold">Rest breaks have to be filled in before signing.</span> Missing for:{" "}
                     {workersMissingRestBreaks.join(", ")}.
                   </>
                 ) : (
