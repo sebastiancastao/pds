@@ -22,9 +22,9 @@ const supabaseAnon = createClient(
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Only managers and exec record rest breaks. Other staff who work the event
+// Only managers, exec and supervisor3 record rest breaks. Other staff who work the event
 // dashboard can read them, since the Payment tab prices rest break pay from them.
-const EDITOR_ROLES = new Set(["manager", "exec"]);
+const EDITOR_ROLES = new Set(["manager", "exec", "supervisor3"]);
 const VIEWER_ROLES = new Set([
   "manager",
   "exec",
@@ -101,7 +101,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
 
     const role = await getRole(user.id);
     if (!EDITOR_ROLES.has(role)) {
-      return json({ error: "Only managers and exec can record rest breaks." }, 403);
+      return json({ error: "Only managers, exec and supervisor3 can record rest breaks." }, 403);
     }
     const allowed = await canUserAccessEventById(supabaseAdmin, eventId, { userId: user.id, role });
     if (!allowed) return json({ error: "Unauthorized" }, 403);

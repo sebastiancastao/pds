@@ -318,10 +318,11 @@ export default function EventDashboardPage() {
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   // Admin and exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
   const canEditTimesheetTimes = userRole === "admin" || userRole === "exec";
-  // Managers and exec can sign off the timesheet; the signature unlocks Sales for everyone.
-  const canSignTimesheet = userRole === "exec" || userRole === "manager";
-  // Only managers and exec record how many rest breaks each worker took.
-  const canEditRestBreaks = userRole === "exec" || userRole === "manager";
+  // Managers, exec and supervisor3 can sign off the timesheet; the signature unlocks Sales for everyone.
+  const canSignTimesheet = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
+  // Managers, exec and supervisor3 record how many rest breaks each worker took.
+  // supervisor3 still cannot edit timesheet times (see canEditTimesheetTimes).
+  const canEditRestBreaks = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   // Only managers and exec can see the reimbursements vendors submitted for this event (view only).
   const canViewEventReimbursements = userRole === "exec" || userRole === "manager";
   const canManageLocations =

@@ -76,9 +76,9 @@ type SignoffRow = {
   signed_at: string;
 };
 
-// Only managers and exec can sign, and only they see the signature image and note.
+// Only managers, exec and supervisor3 can sign, and only they see the signature image and note.
 // Everyone else who can open the event only learns whether the timesheet is signed off.
-const SIGNER_ROLES = new Set(["manager", "exec"]);
+const SIGNER_ROLES = new Set(["manager", "exec", "supervisor3"]);
 
 function buildResponse(row: SignoffRow | null, role: string) {
   if (!row) return { signed: false, signedAt: null, signoff: null };
@@ -147,7 +147,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
     const role = await getRole(user.id);
     if (!SIGNER_ROLES.has(role)) {
-      return NextResponse.json({ error: "Only managers and exec can sign off the timesheet." }, { status: 403 });
+      return NextResponse.json({ error: "Only managers, exec and supervisor3 can sign off the timesheet." }, { status: 403 });
     }
 
     const allowed = await canUserAccessEventById(supabaseAdmin, eventId, { userId: user.id, role });
