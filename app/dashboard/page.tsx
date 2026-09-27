@@ -10,6 +10,7 @@ import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
 import { safeDecrypt } from "@/lib/encryption";
 import { getVenueAbbreviation } from "@/lib/utils";
 import { isPendingTeamStatus } from "@/lib/team-conflicts";
+import { isViewOnlyRole } from "@/lib/roles";
 import "./dashboard-styles.css";
 import PendingFormsList from "@/components/PendingFormsList";
 
@@ -123,7 +124,7 @@ const EventCalendar = dynamic(
 );
 
 const isScopedManagerRole = (role?: string | null) =>
-  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3" || role === "supervisor4";
+  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3" || role === "supervisor4" || role === "supervisor5";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -146,6 +147,8 @@ export default function DashboardPage() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [userRole, setUserRole] = useState<string>("");
+  // supervisor5 opens the dashboard read-only: every create/invite/edit control is hidden.
+  const isViewOnly = isViewOnlyRole(userRole);
   const [userRegionId, setUserRegionId] = useState<string | null>(null);
   const [userCoordinates, setUserCoordinates] = useState<{ lat: number; lng: number } | null>(null);
   const [detectedRegion, setDetectedRegion] = useState<{ id: string; name: string } | null>(null);
@@ -577,7 +580,7 @@ export default function DashboardPage() {
           }
         }
 
-        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3' && role !== 'supervisor4') {
+        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3' && role !== 'supervisor4' && role !== 'supervisor5') {
           console.error('[DASHBOARD] Access denied - user role:', role);
           router.replace('/login');
           return;
@@ -1511,12 +1514,12 @@ export default function DashboardPage() {
                   <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
                   </svg>
-                  Manager & Executive Access
+                  {isViewOnly ? "View-Only Access" : "Manager & Executive Access"}
                 </span>
               </div>
             </div>
             <div className="apple-header-actions flex w-full flex-wrap items-center gap-2 sm:gap-3 lg:w-auto lg:justify-end">
-              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor4' && (
+              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor4' && !isViewOnly && (
                 <Link
                   href="/global-calendar"
                   className="apple-button apple-button-secondary flex items-center gap-2"
@@ -1585,7 +1588,8 @@ export default function DashboardPage() {
         {/* EVENTS TAB */}
         {activeTab === "events" && (
           <>
-            {/* Actions */}
+            {/* Actions (hidden for view-only roles) */}
+            {!isViewOnly && (
             <div className="apple-page-actions grid grid-cols-1 gap-3 mb-8 sm:flex sm:flex-wrap sm:mb-10">
               <Link href={isCWDashboard ? "/create-event?returnTo=cw-dashboard&division=trailers" : "/create-event?returnTo=dashboard"}>
                 <button className="apple-button apple-button-primary">
@@ -1608,6 +1612,7 @@ export default function DashboardPage() {
                 Calendar Availability Request
               </button>
             </div>
+            )}
 
             {/* Overview */}
             {!loading && !error && events.length > 0 && (
@@ -1852,7 +1857,7 @@ export default function DashboardPage() {
                           </div>
                         </div>
                         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto lg:justify-end">
-                          {ev.event_type === "special" ? (
+                          {isViewOnly ? null : ev.event_type === "special" ? (
                             <Link href={`/time-sheets/${ev.id}`}>
                               <button className="apple-button apple-button-secondary text-sm py-2 px-4">
                                 <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1869,12 +1874,15 @@ export default function DashboardPage() {
                               Check In
                             </button>
                           )}
+                          {!isViewOnly && (
                           <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
                             <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                             </svg>
                             Create Team
                           </button>
+                          )}
+                          {!isViewOnly && (
                           <Link href={`/admin-email-team?eventId=${ev.id}&from=dashboard`}>
                             <button className="apple-button apple-button-secondary text-sm py-2 px-4">
                               <svg className="w-5 h-5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1884,6 +1892,7 @@ export default function DashboardPage() {
                               Email Team
                             </button>
                           </Link>
+                          )}
                           <Link href={`/event-dashboard/${ev.id}`}>
                             <button className="apple-icon-button">
                               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

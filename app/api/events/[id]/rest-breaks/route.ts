@@ -34,6 +34,7 @@ const VIEWER_ROLES = new Set([
   "supervisor2",
   "supervisor3",
   "supervisor4",
+  "supervisor5",
 ]);
 
 function json(body: unknown, status = 200) {

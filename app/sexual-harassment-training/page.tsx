@@ -46,7 +46,7 @@ const COURSES: {
 
 // Roles that normally supervise other people. Used only to highlight a suggestion;
 // both courses are always available.
-const SUPERVISORY_ROLES = new Set(["exec", "manager", "supervisor", "supervisor2", "supervisor3"]);
+const SUPERVISORY_ROLES = new Set(["exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor5"]);
 
 function courseUrl(kind: CourseKind, language: LanguageId) {
   return `${COURSE_BASE_URL}/${kind}${language}/story.html`;

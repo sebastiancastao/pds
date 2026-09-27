@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { isViewOnlyRole } from "@/lib/roles";
 import "../global-calendar/dashboard-styles.css";
 import "./planned-calendar-styles.css";
 
@@ -117,7 +118,7 @@ export default function PlannedCalendarPage() {
           return;
         }
         const role = userData.role as string;
-        if (!["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"].includes(role)) {
+        if (!["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor5"].includes(role)) {
           router.replace("/dashboard");
           return;
         }
@@ -287,6 +288,8 @@ export default function PlannedCalendarPage() {
     : filteredEvents;
 
   const canDelete = ["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"].includes(userRole ?? "");
+  // supervisor5 sees planned events but cannot create or edit them.
+  const isViewOnly = isViewOnlyRole(userRole);
 
   if (authChecking) {
     return (
@@ -314,7 +317,7 @@ export default function PlannedCalendarPage() {
             )}
             <div className="min-w-0">
               <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">Planning Calendar</h1>
-              <p className="text-sm text-gray-500 mt-0.5">Manage and plan upcoming events</p>
+              <p className="text-sm text-gray-500 mt-0.5">{isViewOnly ? "View upcoming planned events" : "Manage and plan upcoming events"}</p>
             </div>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
@@ -329,6 +332,7 @@ export default function PlannedCalendarPage() {
                 Log Out
               </button>
             )}
+            {!isViewOnly && (
             <button
               onClick={() => { setShowCreateModal(true); setFormError(""); }}
               className="apple-button apple-button-primary flex items-center gap-2"
@@ -338,6 +342,7 @@ export default function PlannedCalendarPage() {
               </svg>
               New Event
             </button>
+            )}
           </div>
         </div>
       </div>
@@ -471,6 +476,7 @@ export default function PlannedCalendarPage() {
                     <p className="text-sm text-blue-600 font-medium mt-0.5">{ev.venue.venue_name}</p>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
+                    {!isViewOnly && (
                     <button
                       onClick={() => openEdit(ev)}
                       className="apple-icon-button flex-shrink-0"
@@ -480,6 +486,7 @@ export default function PlannedCalendarPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828A2 2 0 0110.414 16H8v-2.414a2 2 0 01.586-1.414z" />
                       </svg>
                     </button>
+                    )}
                     {canDelete && (
                       <button
                         onClick={() => setDeleteConfirmId(ev.id)}

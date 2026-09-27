@@ -16,6 +16,8 @@ const supabaseAnon = createClient(
 );
 
 const ALLOWED_ROLES = ["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"];
+// supervisor5 is view-only: it can list planned events but not create, edit or delete them.
+const VIEW_ROLES = [...ALLOWED_ROLES, "supervisor5"];
 
 const EVENT_SELECT = `
   id,
@@ -55,7 +57,7 @@ export async function GET(req: NextRequest) {
     if (userError || !userData) return NextResponse.json({ error: 'Failed to verify user role' }, { status: 403 });
 
     const role = userData.role as string;
-    if (!ALLOWED_ROLES.includes(role)) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    if (!VIEW_ROLES.includes(role)) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
 
     const { data, error } = await supabaseAdmin
       .from("planned_calendar_events")

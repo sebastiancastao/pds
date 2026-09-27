@@ -11,7 +11,8 @@ type EventAccessEvent = {
   venue: string | null;
 };
 
-const SUPERVISOR_ROLES = new Set(["supervisor", "supervisor2", "supervisor3", "supervisor4"]);
+// supervisor5 is view-only: same visibility as a supervisor, writes blocked in middleware.ts.
+const SUPERVISOR_ROLES = new Set(["supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor5"]);
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();

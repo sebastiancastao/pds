@@ -19,6 +19,8 @@ const supabaseAnon = createClient(
 );
 
 const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"]);
+// supervisor5 is view-only: it can read proposals (GET) but not create them.
+const VIEW_ROLES = new Set([...Array.from(MANAGE_ROLES), "supervisor5"]);
 
 type LoadedUser = {
   id: string;
@@ -431,7 +433,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    if (!MANAGE_ROLES.has(auth.role)) {
+    if (!VIEW_ROLES.has(auth.role)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 

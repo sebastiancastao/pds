@@ -12,6 +12,7 @@ import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { isPendingTeamStatus } from "@/lib/team-conflicts";
+import { isViewOnlyRole } from "@/lib/roles";
 import { MAX_REST_BREAK_COUNT, REST_BREAK_PERIOD_HOURS, REST_BREAK_RATE, getRestBreakPay, normalizeRestBreakCount } from "@/lib/rest-breaks";
 import SignaturePad, { type SignaturePadHandle } from "@/components/SignaturePad";
 import PendingFormsList, { PENDING_FORMS_BAR_STYLE } from "@/components/PendingFormsList";
@@ -315,6 +316,9 @@ export default function EventDashboardPage() {
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  // supervisor5 can open every tab a supervisor sees but cannot change anything
+  // (the server refuses its writes too, see middleware.ts).
+  const isViewOnly = isViewOnlyRole(userRole);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   // Admin and exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
   const canEditTimesheetTimes = userRole === "admin" || userRole === "exec";
@@ -698,7 +702,7 @@ export default function EventDashboardPage() {
   }, [timesheetLoaded, sortedTeamMembers, timesheetSpans]);
   // Nobody can edit Sales, exec included, until the timesheet has been signed off.
   const salesAwaitingSignoff = timesheetSignoffStatus !== "signed";
-  const salesReadOnly = (salesLocked && userRole !== "exec") || salesAwaitingSignoff || submitting;
+  const salesReadOnly = isViewOnly || (salesLocked && userRole !== "exec") || salesAwaitingSignoff || submitting;
 
   // Show the third meal columns only when at least one person has a third meal
   // or a row is currently being edited (so the editor can add one if needed).
@@ -6024,9 +6028,15 @@ export default function EventDashboardPage() {
 
         {/* Content */}
         <div className="p-8 bg-gradient-to-br from-gray-50 to-slate-50">
+          {isViewOnly && (
+            <div className="mb-6 text-sm text-slate-700 bg-slate-100 border border-slate-200 rounded-lg px-4 py-3">
+              View-only access. You can look at this event but can&apos;t change anything.
+            </div>
+          )}
           {/* EDIT TAB */}
           {activeTab === "edit" && (
-            <form onSubmit={handleSubmit} className="space-y-8">
+            <form onSubmit={isViewOnly ? (e) => e.preventDefault() : handleSubmit} className="space-y-8">
+              <fieldset disabled={isViewOnly} className="space-y-8 min-w-0 border-0 p-0 m-0">
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
                   <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -6325,6 +6335,7 @@ export default function EventDashboardPage() {
                 </div>
               </div>
 
+              {!isViewOnly && (
               <button
                 type="submit"
                 className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
@@ -6342,6 +6353,8 @@ export default function EventDashboardPage() {
                   "Update Event"
                 )}
               </button>
+              )}
+              </fieldset>
             </form>
           )}
 
@@ -6728,7 +6741,7 @@ export default function EventDashboardPage() {
 
           {/* MERCH TAB */}
           {activeTab === "merchandise" && !hideSalesAndMerchandise && (
-            <div className="space-y-8">
+            <fieldset disabled={isViewOnly} className="space-y-8 min-w-0 border-0 p-0 m-0">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
                   <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -6949,6 +6962,7 @@ export default function EventDashboardPage() {
                     </div>
                   </div>
 
+                  {!isViewOnly && (
                   <button
                     onClick={handleSaveMerchandise}
                     disabled={submitting}
@@ -6964,6 +6978,7 @@ export default function EventDashboardPage() {
                       </span>
                     ) : "Calculate Settlement"}
                   </button>
+                  )}
                 </div>
               </div>
 
@@ -7230,7 +7245,7 @@ export default function EventDashboardPage() {
                   </>
                 ) : null;
               })()}
-            </div>
+            </fieldset>
           )}
 
           {/* TEAM TAB */}
@@ -7264,6 +7279,7 @@ export default function EventDashboardPage() {
                   >
                     Uninvited ({uninvitedTeamMembers.length})
                   </button>
+                  {!isViewOnly && (
                   <button
                     onClick={openCloseEventModal}
                     disabled={loadingTeam}
@@ -7271,6 +7287,7 @@ export default function EventDashboardPage() {
                   >
                     Team Selection Closed
                   </button>
+                  )}
                   <button
                     onClick={() => loadTeam(false)}
                     disabled={loadingTeam}
