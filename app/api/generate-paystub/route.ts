@@ -11,7 +11,7 @@ import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
 import { REST_BREAK_RATE, getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
-import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
+import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -1224,7 +1224,7 @@ export async function POST(req: NextRequest) {
     }
     // Rest breaks managers recorded on the event Timesheet tab; read here (not from the request
     // body) so a stale paystub-generator page cannot price rest breaks off old numbers.
-    restBreakCountsByEvent = await fetchRestBreakCounts(
+    restBreakCountsByEvent = await fetchPayableRestBreakCounts(
       supabaseAdmin,
       (events || []).map((e: any) => e?.id)
     );

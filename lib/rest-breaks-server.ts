@@ -2,7 +2,7 @@
 // Timesheet tab (table event_rest_breaks). Payroll routes call this so every one of
 // them prices rest breaks from the same numbers.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { normalizeRestBreakCount, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import { isRestBreakRecordOnlyEvent, normalizeRestBreakCount, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 
 // Keep the .in() list short enough for the request URL and page through results so
 // the API's default row cap never silently drops workers.
@@ -72,4 +72,34 @@ export async function fetchRestBreakCounts(
   }
 
   return result;
+}
+
+/**
+ * Rest break counts to price pay with: the same as fetchRestBreakCounts, minus every count
+ * recorded on an hourly event (San Diego or non-event "special" timesheet). Managers record
+ * those on the Timesheet tab for the record only; hourly events pay no rest break, so the
+ * count must never change pay, a payroll export or a paystub. Every payroll route loads
+ * counts through this; only the Timesheet tab itself reads the unfiltered counts.
+ */
+export async function fetchPayableRestBreakCounts(
+  client: SupabaseClient<any, any, any>,
+  eventIds?: ReadonlyArray<string | null | undefined> | null
+): Promise<RestBreakCountsByEvent> {
+  const counts = await fetchRestBreakCounts(client, eventIds);
+  const recordedEventIds = Object.keys(counts);
+
+  for (let i = 0; i < recordedEventIds.length; i += EVENT_ID_CHUNK_SIZE) {
+    const chunk = recordedEventIds.slice(i, i + EVENT_ID_CHUNK_SIZE);
+    const { data, error } = await client
+      .from("events")
+      .select("id, event_type, city, venue")
+      .in("id", chunk);
+    // Fail loudly: without the event type a count on an hourly event could be paid.
+    if (error) throw new Error(`Failed to load events for rest break counts: ${error.message}`);
+    for (const row of (data || []) as Array<{ id: string; event_type?: string | null; city?: string | null; venue?: string | null }>) {
+      if (isRestBreakRecordOnlyEvent(row)) delete counts[row.id];
+    }
+  }
+
+  return counts;
 }

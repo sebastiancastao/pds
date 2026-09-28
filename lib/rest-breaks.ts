@@ -9,6 +9,12 @@
 //     $17 for 14h+). A count has no effect here — the count feature did not exist for
 //     events that old, so one is not expected and is ignored if present.
 // Every caller must pass the event's date so the right rule is picked automatically.
+//
+// Hourly events (San Diego and non-event "special" timesheets) pay no rest break at all.
+// Managers still record a count for them on the Timesheet tab, for the timesheet record only;
+// isRestBreakRecordOnlyEvent flags them so payroll never prices that count.
+
+import { isSanDiegoRegion } from "@/lib/commission-pool";
 
 /** Dollars paid for each rest break, for events on or after REST_BREAK_RATE_CHANGE_DATE. */
 export const REST_BREAK_RATE = 4.5;
@@ -21,6 +27,19 @@ export const REST_BREAK_RATE_CHANGE_DATE = "2026-09-13";
 
 /** Highest rest break count a manager can record for one worker on one event. */
 export const MAX_REST_BREAK_COUNT = 10;
+
+/**
+ * True for events paid purely hourly: San Diego (its blended OT/DT rate already covers rest
+ * breaks) and non-event ("special") timesheets. They pay no rest break. A count recorded on
+ * their Timesheet tab is kept for the record only and must never reach pay or a paystub.
+ */
+export function isRestBreakRecordOnlyEvent(
+  event: { event_type?: string | null; city?: string | null; venue?: string | null } | null | undefined
+): boolean {
+  if (!event) return false;
+  if ((event.event_type || "").toString().trim().toLowerCase() === "special") return true;
+  return isSanDiegoRegion({ city: event.city, venue: event.venue });
+}
 
 /** Flat per-shift schedule used for events before REST_BREAK_RATE_CHANGE_DATE. */
 const LEGACY_SCHEDULE: ReadonlyArray<{ minHours: number; amount: number }> = [

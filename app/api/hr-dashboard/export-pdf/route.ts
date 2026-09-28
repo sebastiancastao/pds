@@ -6,7 +6,7 @@ import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage, type PDFP
 import { decrypt, isEncrypted } from "@/lib/encryption";
 import { distributeTipsPool, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
 import { getRestBreakPay } from "@/lib/rest-breaks";
-import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
+import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -650,7 +650,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Rest breaks managers recorded on the event Timesheet tab (eventId -> userId -> count).
-    const restBreakCountsByEvent = await fetchRestBreakCounts(supabaseAdmin, eventIds);
+    const restBreakCountsByEvent = await fetchPayableRestBreakCounts(supabaseAdmin, eventIds);
 
     // --- Process each event ---
     const exportEvents: EventExportData[] = [];

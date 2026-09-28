@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
-import { fetchRestBreakCounts } from "@/lib/rest-breaks-server";
+import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -133,7 +133,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Rest breaks managers recorded on the event Timesheet tab (eventId -> userId -> count).
-    const restBreakCountsByEvent = await fetchRestBreakCounts(supabaseAdmin, eventIds);
+    const restBreakCountsByEvent = await fetchPayableRestBreakCounts(supabaseAdmin, eventIds);
 
     // For each event, fetch assigned workers and their payment data
     const eventsWithPaymentData = await Promise.all(

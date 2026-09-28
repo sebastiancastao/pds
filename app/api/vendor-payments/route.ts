@@ -9,7 +9,7 @@ import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } 
 import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 import { normalizeEventEndDate, getInclusiveDateSpanDays } from '@/lib/non-event-timesheets';
 import { getRestBreakPay } from '@/lib/rest-breaks';
-import { fetchRestBreakCounts } from '@/lib/rest-breaks-server';
+import { fetchPayableRestBreakCounts } from '@/lib/rest-breaks-server';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -467,7 +467,7 @@ export async function GET(req: NextRequest) {
 
     // Rest breaks recorded by managers on the event Timesheet tab (eventId -> userId -> count).
     // Attached to every returned row so /hr-dashboard prices rest break pay from them.
-    const restBreakCountsByEvent = await fetchRestBreakCounts(supabaseAdmin, fetchAllEvents ? null : eventIds);
+    const restBreakCountsByEvent = await fetchPayableRestBreakCounts(supabaseAdmin, fetchAllEvents ? null : eventIds);
 
     console.log('[VENDOR-PAYMENTS] adjustments fetched', {
       count: adjustments?.length || 0,

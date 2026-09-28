@@ -4997,25 +4997,81 @@ export default function EventDashboardPage() {
 
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
   const hideRestBreakColumn = false;
-  // San Diego (blended OT/DT rate) and non-event timesheets pay no rest break, so there is nothing to record.
-  const showRestBreakInput = !isEventSanDiego && !isNonEventTimesheet;
+  // Hourly timesheets (San Diego, whose blended OT/DT rate covers rest breaks, and non-event
+  // timesheets) pay no rest break, but managers still record the count on the Timesheet tab.
+  // That count is for the timesheet only: getRestBreakAmount returns 0 for these events and
+  // every payroll route drops their counts (fetchPayableRestBreakCounts), so it never reaches
+  // pay or the paystub.
+  const restBreaksRecordOnly = isEventSanDiego || isNonEventTimesheet;
   // Every role (manager, exec and anyone else) must have rest breaks recorded for every worker on
   // the timesheet before it can be signed off, even when that worker's times are empty or only
-  // partly filled in. Enforced in the UI only, like the sign-off itself.
-  const restBreaksRequired = showRestBreakInput;
+  // partly filled in, hourly timesheets included. Enforced in the UI only, like the sign-off itself.
   const needsRestBreakCount = (uid: string): boolean =>
-    restBreaksRequired && !!uid && restBreakCounts[uid] === undefined;
-  const workersMissingRestBreaks: string[] = restBreaksRequired
-    ? sortedTeamMembers.flatMap((m: any) => {
-        const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
-        if (!needsRestBreakCount(uid)) return [];
-        const profile = m.users?.profiles;
-        const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim();
-        return [name || m.users?.email || "Unknown worker"];
-      })
-    : [];
+    !!uid && restBreakCounts[uid] === undefined;
+  const workersMissingRestBreaks: string[] = sortedTeamMembers.flatMap((m: any) => {
+    const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+    if (!needsRestBreakCount(uid)) return [];
+    const profile = m.users?.profiles;
+    const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim();
+    return [name || m.users?.email || "Unknown worker"];
+  });
   const signoffBlockedByRestBreaks =
-    restBreaksRequired && (!restBreakCountsLoaded || workersMissingRestBreaks.length > 0);
+    !restBreakCountsLoaded || workersMissingRestBreaks.length > 0;
+  const restBreakColumnTitle = restBreaksRecordOnly
+    ? "Rest breaks the worker took. Managers, exec and supervisor3 enter this for the timesheet record only; hourly timesheets do not pay rest breaks."
+    : `Rest breaks the worker took. Managers, exec and supervisor3 enter this; it drives rest break pay at $${REST_BREAK_RATE.toFixed(2)} per break. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`;
+
+  // Rest breaks cell for one worker on the Timesheet tab (single-day row, or the summary row of a
+  // multi-day timesheet, where one count covers the whole timesheet).
+  const renderRestBreakCell = (uid: string, tdClassName: string) => {
+    const recordedBreaks = restBreakCounts[uid];
+    const draftBreaks = restBreakDrafts[uid];
+    const breaksInputValue =
+      draftBreaks !== undefined
+        ? draftBreaks
+        : recordedBreaks !== undefined
+          ? String(recordedBreaks)
+          : "";
+    return (
+      <td className={tdClassName}>
+        {canEditRestBreaks ? (
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={MAX_REST_BREAK_COUNT}
+            step={1}
+            value={breaksInputValue}
+            disabled={savingRestBreakUid === uid}
+            onChange={(e) => {
+              const nextValue = e.target.value;
+              setRestBreakDrafts((prev) => ({ ...prev, [uid]: nextValue }));
+            }}
+            onBlur={(e) => {
+              if (restBreakDrafts[uid] !== undefined) void saveRestBreakCount(uid, e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+            title={
+              needsRestBreakCount(uid)
+                ? "Required: enter how many rest breaks this worker took (0 if none)."
+                : restBreaksRecordOnly
+                  ? "Rest breaks taken. Recorded on the timesheet only; hourly timesheets do not pay rest breaks."
+                  : `Rest breaks taken, $${REST_BREAK_RATE.toFixed(2)} each. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`
+            }
+            className={`border rounded px-1 py-0.5 text-xs w-[56px] disabled:bg-gray-100 disabled:cursor-wait ${
+              needsRestBreakCount(uid) ? "border-red-500 bg-red-50 ring-1 ring-red-400" : "bg-white"
+            }`}
+          />
+        ) : recordedBreaks !== undefined ? (
+          <span className="text-xs font-medium text-gray-900">{recordedBreaks}</span>
+        ) : (
+          <span className="text-xs text-gray-400" title="No count recorded.">–</span>
+        )}
+      </td>
+    );
+  };
 
   // Helper: use the same worked-hours calculation as Timesheet/Payment (includes Gate/Phone offset).
   const getMealDeductedMsForSave = (uid: string) => {
@@ -8459,15 +8515,18 @@ export default function EventDashboardPage() {
       </div>
     )}
 
-    {showRestBreakInput && canEditRestBreaks && (
+    {canEditRestBreaks && (
       <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
         <span className="font-semibold text-gray-700">Rest Breaks:</span>{" "}
-        <span className={restBreaksRequired ? "font-semibold text-red-700" : undefined}>
+        <span className="font-semibold text-red-700">
           enter number of rest breaks per vendor, must have correct time and rest breaks to be able to sign and save sheets.
         </span>
+        {restBreaksRecordOnly && (
+          <span> Hourly timesheet: rest breaks are recorded on the timesheet only and are not paid.</span>
+        )}
       </div>
     )}
-    {showRestBreakInput && restBreakError && (
+    {restBreakError && (
       <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
         {restBreakError}
       </div>
@@ -8504,21 +8563,19 @@ export default function EventDashboardPage() {
             {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 End</th>}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Out</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Hrs</th>
-            {showRestBreakInput && (
-              <th
-                className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide"
-                title="Rest breaks the worker took. Managers and exec can enter this; it drives rest break pay at $4.50 per break. Leave blank to pay $4.50 for every 4 hours worked."
-              >
-                Rest Breaks
-              </th>
-            )}
+            <th
+              className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide"
+              title={restBreakColumnTitle}
+            >
+              Rest Breaks
+            </th>
             <th className="px-2 py-2 text-right font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
           </tr>
         </thead>
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={9 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0) + (showRestBreakInput ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={10 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -8633,6 +8690,8 @@ export default function EventDashboardPage() {
                       <td className="px-1 py-1.5 font-medium whitespace-nowrap">
                         {formatHoursFromMs(getDisplayedWorkedMs(uid))}
                       </td>
+                      {/* Rest breaks: one count for the whole timesheet, entered on this summary row */}
+                      {renderRestBreakCell(uid, "px-1 py-1.5 whitespace-nowrap")}
                       <td className="px-2 py-1.5 text-right whitespace-nowrap">
                         {canEditTimesheetTimes && memberDays.length > 1 && (
                           <button
@@ -8786,6 +8845,8 @@ export default function EventDashboardPage() {
                           <td className="px-1 py-1 text-xs font-medium whitespace-nowrap">
                             {formatHoursFromMs(day.totalMs)}
                           </td>
+                          {/* Rest breaks are counted once per timesheet, on the summary row above */}
+                          <td className="px-1 py-1" />
                           <td className="px-2 py-1 text-right whitespace-nowrap">
                             {canEditTimesheetTimes && (
                               isDayEditing ? (
@@ -8992,54 +9053,8 @@ export default function EventDashboardPage() {
                   {/* Hours */}
                   <td className="px-1 py-1.5 font-medium whitespace-nowrap">{hours}</td>
 
-                  {/* Rest breaks taken — managers and exec enter it; blank = standard amount for the shift length */}
-                  {showRestBreakInput && (() => {
-                    const recordedBreaks = restBreakCounts[uid];
-                    const draftBreaks = restBreakDrafts[uid];
-                    const breaksInputValue =
-                      draftBreaks !== undefined
-                        ? draftBreaks
-                        : recordedBreaks !== undefined
-                          ? String(recordedBreaks)
-                          : "";
-                    return (
-                      <td className="px-1 py-1.5 whitespace-nowrap">
-                        {canEditRestBreaks ? (
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            min={0}
-                            max={MAX_REST_BREAK_COUNT}
-                            step={1}
-                            value={breaksInputValue}
-                            disabled={savingRestBreakUid === uid}
-                            onChange={(e) => {
-                              const nextValue = e.target.value;
-                              setRestBreakDrafts((prev) => ({ ...prev, [uid]: nextValue }));
-                            }}
-                            onBlur={(e) => {
-                              if (restBreakDrafts[uid] !== undefined) void saveRestBreakCount(uid, e.target.value);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") e.currentTarget.blur();
-                            }}
-                            title={
-                              needsRestBreakCount(uid)
-                                ? "Required: enter how many rest breaks this worker took (0 if none)."
-                                : `Rest breaks taken, $${REST_BREAK_RATE.toFixed(2)} each. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`
-                            }
-                            className={`border rounded px-1 py-0.5 text-xs w-[56px] disabled:bg-gray-100 disabled:cursor-wait ${
-                              needsRestBreakCount(uid) ? "border-red-500 bg-red-50 ring-1 ring-red-400" : "bg-white"
-                            }`}
-                          />
-                        ) : recordedBreaks !== undefined ? (
-                          <span className="text-xs font-medium text-gray-900">{recordedBreaks}</span>
-                        ) : (
-                          <span className="text-xs text-gray-400" title="No count recorded.">–</span>
-                        )}
-                      </td>
-                    );
-                  })()}
+                  {/* Rest breaks taken — managers, exec and supervisor3 enter it (see renderRestBreakCell) */}
+                  {renderRestBreakCell(uid, "px-1 py-1.5 whitespace-nowrap")}
 
                   {/* Actions */}
                   <td className="px-2 py-1.5 text-right whitespace-nowrap">
