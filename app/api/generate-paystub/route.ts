@@ -10,7 +10,7 @@ import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
-import { REST_BREAK_RATE, getRestBreakPay, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyEvent, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
 
 const supabaseAdmin = createClient(
@@ -233,17 +233,24 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Only commission-based work pays rest breaks. Hourly events (San Diego and non-event
+    // "special" timesheets) pay none, matching the event dashboard Payment tab, the HR
+    // dashboard and this page's commission report. Managers still record a count on those
+    // timesheets, but it is for the timesheet only (see lib/rest-breaks).
+    const isHourlyRestBreakEvent = (event: any): boolean =>
+      isRestBreakRecordOnlyEvent(event) || isSanDiegoRegion(event);
+
     // `recordedBreaks` is the number of rest breaks a manager entered on the event Timesheet tab
     // (null/undefined = none entered, so the flat per-shift amount applies). `eventDate` picks
     // the rule in force for that event (see lib/rest-breaks).
     const getRestBreakAmount = (
       actualHours: number,
       stateCode: string,
-      eventSanDiego = false,
+      hourlyEvent = false,
       recordedBreaks?: number | null,
       eventDate?: unknown
     ): number => {
-      if (eventSanDiego) return 0;
+      if (hourlyEvent) return 0;
       const st = normalizeState(stateCode);
       if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
@@ -1902,7 +1909,13 @@ export async function POST(req: NextRequest) {
         const recordedRestBreaks = getRecordedRestBreaks(event, worker);
         const restBreak = roundPayrollAmount(
           includeRestBreakColumn
-            ? getRestBreakAmount(actualHours, paystubState, isEventSD, recordedRestBreaks, event?.event_date)
+            ? getRestBreakAmount(
+                actualHours,
+                paystubState,
+                isEventSD || isHourlyRestBreakEvent(event),
+                recordedRestBreaks,
+                event?.event_date
+              )
             : 0
         );
         const reportFinalPay = roundPayrollAmount(
@@ -2812,7 +2825,13 @@ export async function POST(req: NextRequest) {
         // (Event state can be missing/mismatched, which would incorrectly suppress rest break.)
         const restBreak = roundPayrollAmount(
           includeRestBreakColumn
-            ? getRestBreakAmount(actualHours, paystubState, false, getRecordedRestBreaks(event, worker), event?.event_date)
+            ? getRestBreakAmount(
+                actualHours,
+                paystubState,
+                isHourlyRestBreakEvent(event),
+                getRecordedRestBreaks(event, worker),
+                event?.event_date
+              )
             : 0
         );
 
