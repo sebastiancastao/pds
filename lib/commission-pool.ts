@@ -28,6 +28,31 @@ export function isSanDiegoRegion(input: SanDiegoRegionInput | null | undefined):
   );
 }
 
+// True when a vendor's home region (profiles.region_id -> regions.name) is the Los Angeles
+// region. Today that region is named "Los Angeles Area"; the other spellings cover renames.
+export function isLosAngelesRegionName(regionName?: string | null): boolean {
+  const name = normalizeText(regionName);
+  if (!name) return false;
+  return (
+    name.includes("los angeles") ||
+    name === "la" ||
+    name.startsWith("la ") ||
+    name.includes("la metro") ||
+    name.includes("la region") ||
+    name.includes("la area")
+  );
+}
+
+// San Diego events pay their workers hourly (see lib/san-diego-payroll). Vendors whose home
+// region is Los Angeles keep the commission pay structure they have at LA events, even when
+// they work a San Diego event, so only non-LA vendors are paid hourly there.
+export function usesSanDiegoHourlyPay(
+  event: SanDiegoRegionInput | null | undefined,
+  vendorRegionName?: string | null
+): boolean {
+  return isSanDiegoRegion(event) && !isLosAngelesRegionName(vendorRegionName);
+}
+
 // Venues the app already treats as NorCal / SF Metro (see event-dashboard team tab).
 export const NORCAL_VENUE_KEYWORDS = [
   "save mart",

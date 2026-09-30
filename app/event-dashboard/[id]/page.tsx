@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
-import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion, isNorCalRegion } from "@/lib/commission-pool";
+import { getRegionFallbackCommissionPoolPercent, isLosAngelesRegionName, isSanDiegoRegion, isNorCalRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -3539,7 +3539,7 @@ export default function EventDashboardPage() {
 
   const buildPaymentExportRows = (): Record<string, string | number>[] => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
-    const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
+    const { showHourly: exportHourlyColumns, showCommission: exportCommissionColumns } = getPaymentTabColumnGroups();
     const totalCommissionPool = resolvedCommissionPoolDollars;
     const totalTips = Number(tips) || 0;
 
@@ -3560,6 +3560,8 @@ export default function EventDashboardPage() {
       const hoursHHMM = formatHoursFromMs(totalMs);
       const trailersDivision = isTrailersDivision(division);
       const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+      const baseRate = getPayrollBaseRateForUser(uid);
+      const rowPaysSanDiegoHourly = paysSanDiegoHourly(uid);
       const {
         commissionAmount,
         extAmtOnRegRate,
@@ -3595,17 +3597,23 @@ export default function EventDashboardPage() {
         "Hours (Decimal)": Number(actualHours.toFixed(2)),
       };
 
-      if (isEventSanDiego) {
-        row["Regular Time"] = `${regularHours.toFixed(2)}h | ${money(regularPay)}`;
-        row["Overtime"] = `${overtimeHours.toFixed(2)}h | ${money(overtimePay)}`;
-        row["Double Time"] = `${doubletimeHours.toFixed(2)}h | ${money(doubletimePay)}`;
-      } else {
-        row["Loaded Rate"] = money(finalCommissionRate);
-        row["Commission Pay"] = money(displayedCommissionPay);
-        row["Variable Incentive"] = money(variableIncentive);
-        row["Ext Amt on Reg Rate"] = money(extAmtOnRegRate);
-        row["Commission Amt"] = money(commissionAmount);
-        row["Total Final Commission"] = money(totalFinalCommission);
+      // A San Diego event with Los Angeles-region vendors has both hourly and commission
+      // rows; each row fills its own group and shows "-" in the other.
+      if (exportHourlyColumns && exportCommissionColumns) {
+        row["Pay Type"] = rowPaysSanDiegoHourly ? "Hourly" : "Commission (LA vendor)";
+      }
+      if (exportHourlyColumns) {
+        row["Regular Time"] = rowPaysSanDiegoHourly ? `${regularHours.toFixed(2)}h | ${money(regularPay)}` : "-";
+        row["Overtime"] = rowPaysSanDiegoHourly ? `${overtimeHours.toFixed(2)}h | ${money(overtimePay)}` : "-";
+        row["Double Time"] = rowPaysSanDiegoHourly ? `${doubletimeHours.toFixed(2)}h | ${money(doubletimePay)}` : "-";
+      }
+      if (exportCommissionColumns) {
+        row["Loaded Rate"] = rowPaysSanDiegoHourly ? "-" : money(finalCommissionRate);
+        row["Commission Pay"] = rowPaysSanDiegoHourly ? "-" : money(displayedCommissionPay);
+        row["Variable Incentive"] = rowPaysSanDiegoHourly ? "-" : money(variableIncentive);
+        row["Ext Amt on Reg Rate"] = rowPaysSanDiegoHourly ? "-" : money(extAmtOnRegRate);
+        row["Commission Amt"] = rowPaysSanDiegoHourly ? "-" : money(commissionAmount);
+        row["Total Final Commission"] = rowPaysSanDiegoHourly ? "-" : money(totalFinalCommission);
       }
 
       row.Tips = money(proratedTips);
@@ -3677,32 +3685,37 @@ export default function EventDashboardPage() {
       summarySheet["!cols"] = [{ wch: 24 }, { wch: 42 }];
 
       const paymentsSheet = XLSX.utils.json_to_sheet(rows);
-      const paymentColumns = isEventSanDiego
-        ? [
-            { wch: 26 }, // Employee
-            { wch: 14 }, // Division
-            { wch: 12 }, // Reg Rate
-            { wch: 14 }, // Hours (HH:MM)
-            { wch: 14 }, // Hours (Decimal)
-            { wch: 20 }, // Regular Time
-            { wch: 20 }, // Overtime
-            { wch: 20 }, // Double Time
-            { wch: 10 }, // Tips
-          ]
-        : [
-            { wch: 26 }, // Employee
-            { wch: 14 }, // Division
-            { wch: 12 }, // Reg Rate
-            { wch: 12 }, // Loaded Rate
-            { wch: 14 }, // Hours (HH:MM)
-            { wch: 14 }, // Hours (Decimal)
-            { wch: 16 }, // Commission Pay
-            { wch: 18 }, // Variable Incentive
-            { wch: 18 }, // Ext Amt on Reg Rate
-            { wch: 16 }, // Commission Amt
-            { wch: 20 }, // Total Final Commission
-            { wch: 10 }, // Tips
-          ];
+      // Widths follow the column order of buildPaymentExportRows.
+      const { showHourly: exportHourlyColumns, showCommission: exportCommissionColumns } = getPaymentTabColumnGroups();
+      const paymentColumns: Array<{ wch: number }> = [
+        { wch: 26 }, // Employee
+        { wch: 14 }, // Division
+        { wch: 12 }, // Reg Rate
+        { wch: 14 }, // Hours (HH:MM)
+        { wch: 14 }, // Hours (Decimal)
+      ];
+      if (exportHourlyColumns && exportCommissionColumns) {
+        paymentColumns.push({ wch: 22 }); // Pay Type
+      }
+      if (exportHourlyColumns) {
+        paymentColumns.push(
+          { wch: 20 }, // Regular Time
+          { wch: 20 }, // Overtime
+          { wch: 20 }, // Double Time
+        );
+      }
+      if (exportCommissionColumns) {
+        paymentColumns.push(
+          { wch: 12 }, // Loaded Rate
+          { wch: 16 }, // Commission Pay
+          { wch: 18 }, // Variable Incentive
+          { wch: 18 }, // Ext Amt on Reg Rate
+          { wch: 16 }, // Commission Amt
+          { wch: 20 }, // Total Final Commission
+        );
+      }
+      paymentColumns.push({ wch: 10 }); // Tips
+      paymentColumns.push({ wch: 16 }); // Tips Mode
       if (!hideRestBreakColumn) {
         paymentColumns.push({ wch: 12 }); // Rest Break
       }
@@ -4950,6 +4963,42 @@ export default function EventDashboardPage() {
   };
 
   const isEventSanDiego = isSanDiegoRegion({ city: event?.city, venue: event?.venue });
+  // San Diego events pay their workers hourly, except Los Angeles-region vendors: they keep
+  // the commission pay they get at LA events. Region names come from the team API
+  // (users.profiles.region_name). Their commission share is their part of the event pool
+  // split across the whole team, the same split every vendor would get.
+  const sanDiegoLaCommissionUserIds = useMemo(() => {
+    const ids = new Set<string>();
+    // Non-event ("special") timesheets are hourly for everyone, LA vendors included.
+    if (!isEventSanDiego || isNonEventTimesheet) return ids;
+    for (const member of teamMembers) {
+      const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+      if (uid && isLosAngelesRegionName(member?.users?.profiles?.region_name)) ids.add(uid);
+    }
+    return ids;
+  }, [isEventSanDiego, isNonEventTimesheet, teamMembers]);
+  const hasSanDiegoLaCommissionVendors = sanDiegoLaCommissionUserIds.size > 0;
+  // True when this worker is paid San Diego hourly (with no uid: when the event is San Diego).
+  const paysSanDiegoHourly = (uid?: string | null): boolean =>
+    isEventSanDiego && !(uid && sanDiegoLaCommissionUserIds.has(uid));
+  // Base (Reg) rate for one worker: San Diego hourly rate, or the state rate for commission pay.
+  const getPayrollBaseRateForUser = (uid?: string | null): number =>
+    paysSanDiegoHourly(uid)
+      ? SAN_DIEGO_BASE_RATE
+      : getBaseRateForState(event?.state?.toUpperCase()?.trim() || "CA");
+  // Pay column groups for the Payment tab table and its Excel export. San Diego events show
+  // the hourly group (Regular / Overtime / Double Time), plus the commission group when Los
+  // Angeles-region vendors are on the team. Every other event shows only the commission group.
+  const getPaymentTabColumnGroups = (): { showHourly: boolean; showCommission: boolean } => {
+    if (!isEventSanDiego) return { showHourly: false, showCommission: true };
+    const hasHourlyWorkers =
+      teamMembers.length === 0 ||
+      teamMembers.some((member: any) =>
+        paysSanDiegoHourly((member?.user_id || member?.vendor_id || member?.users?.id || "").toString())
+      );
+    return { showHourly: hasHourlyWorkers, showCommission: hasSanDiegoLaCommissionVendors };
+  };
+  const paymentTabColumnGroups = getPaymentTabColumnGroups();
   // Stand-leader assignment is only offered for NorCal / SF Metro events.
   const isNorCalEvent = isNorCalRegion({ city: event?.city, venue: event?.venue, state: event?.state });
 
@@ -4961,9 +5010,10 @@ export default function EventDashboardPage() {
     return { regularHours: actualHours, overtimeHours: 0, doubletimeHours: 0 };
   };
 
-  // Compute base hourly pay: SD uses per-day OT/DT rules; other states use flat 1.5x.
-  const computeBaseHourlyPay = (actualHours: number, baseRate: number): number => {
-    if (isEventSanDiego) {
+  // Compute base hourly pay: SD hourly workers use per-day OT/DT rules; everyone else
+  // (other states, and Los Angeles-region vendors at San Diego events) uses flat 1.5x.
+  const computeBaseHourlyPay = (actualHours: number, baseRate: number, uid?: string | null): number => {
+    if (paysSanDiegoHourly(uid)) {
       return computeSanDiegoHourlyBreakdown(actualHours, baseRate).totalPay;
     }
     return Math.round(actualHours * baseRate * 1.5 * 100) / 100;
@@ -4972,9 +5022,10 @@ export default function EventDashboardPage() {
   // Rest break pay follows the number of breaks a manager recorded for this worker on the
   // Timesheet tab (`uid`); with none recorded it is the flat per-shift amount (see lib/rest-breaks).
   const getRestBreakAmount = (actualHours: number, state: string, uid?: string): number => {
-    // Matches HR Dashboard's getRestBreakAmount: no rest break for San Diego (its blended
-    // OT/DT rate already covers it) or for "special" non-event hourly payroll.
-    if (isEventSanDiego || isNonEventTimesheet) return 0;
+    // Matches HR Dashboard's getRestBreakAmount: no rest break for San Diego hourly workers
+    // (their blended OT/DT rate already covers it) or for "special" non-event hourly payroll.
+    // Los Angeles-region vendors at a San Diego event are on commission, so they are paid it.
+    if (paysSanDiegoHourly(uid) || isNonEventTimesheet) return 0;
     if (actualHours <= 0) return 0;
     return getRestBreakPay(actualHours, uid ? restBreakCounts[uid] : null, event?.event_date);
   };
@@ -4999,10 +5050,16 @@ export default function EventDashboardPage() {
   const hideRestBreakColumn = false;
   // Hourly timesheets (San Diego, whose blended OT/DT rate covers rest breaks, and non-event
   // timesheets) pay no rest break, but managers still record the count on the Timesheet tab.
-  // That count is for the timesheet only: getRestBreakAmount returns 0 for these events and
+  // That count is for the timesheet only: getRestBreakAmount returns 0 for these workers and
   // every payroll route drops their counts (fetchPayableRestBreakCounts), so it never reaches
-  // pay or the paystub.
+  // pay or the paystub. Los Angeles-region vendors at a San Diego event are the exception:
+  // they are on commission there, so their counts are kept and paid.
   const restBreaksRecordOnly = isEventSanDiego || isNonEventTimesheet;
+  // Per worker: on a San Diego event, Los Angeles-region vendors are on commission and their
+  // rest breaks are paid, so only the other workers' counts are record-only.
+  const isRestBreakRecordOnlyForUser = (uid: string): boolean =>
+    isNonEventTimesheet || paysSanDiegoHourly(uid);
+  const restBreaksMixed = isEventSanDiego && !isNonEventTimesheet && hasSanDiegoLaCommissionVendors;
   // Every role (manager, exec and anyone else) must have rest breaks recorded for every worker on
   // the timesheet before it can be signed off, even when that worker's times are empty or only
   // partly filled in, hourly timesheets included. Enforced in the UI only, like the sign-off itself.
@@ -5017,7 +5074,9 @@ export default function EventDashboardPage() {
   });
   const signoffBlockedByRestBreaks =
     !restBreakCountsLoaded || workersMissingRestBreaks.length > 0;
-  const restBreakColumnTitle = restBreaksRecordOnly
+  const restBreakColumnTitle = restBreaksMixed
+    ? `Rest breaks the worker took. Managers, exec and supervisor3 enter this. San Diego hourly workers: timesheet record only, not paid. Los Angeles-region vendors are on commission here, so their breaks are paid at $${REST_BREAK_RATE.toFixed(2)} each.`
+    : restBreaksRecordOnly
     ? "Rest breaks the worker took. Managers, exec and supervisor3 enter this for the timesheet record only; hourly timesheets do not pay rest breaks."
     : `Rest breaks the worker took. Managers, exec and supervisor3 enter this; it drives rest break pay at $${REST_BREAK_RATE.toFixed(2)} per break. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`;
 
@@ -5056,7 +5115,7 @@ export default function EventDashboardPage() {
             title={
               needsRestBreakCount(uid)
                 ? "Required: enter how many rest breaks this worker took (0 if none)."
-                : restBreaksRecordOnly
+                : isRestBreakRecordOnlyForUser(uid)
                   ? "Rest breaks taken. Recorded on the timesheet only; hourly timesheets do not pay rest breaks."
                   : `Rest breaks taken, $${REST_BREAK_RATE.toFixed(2)} each. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`
             }
@@ -5516,12 +5575,13 @@ export default function EventDashboardPage() {
     distributedCommissionShare: number;
   }) => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
-    const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
+    const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate, uid);
     const trailersDivision = isTrailersDivision(division);
     const commissionOverride = commissionsOverrides[uid];
     const priorWeeklyHours = Number(weeklyHoursByUser[uid] || 0);
 
-    if (isEventSanDiego) {
+    // Los Angeles-region vendors skip this and fall through to commission pay below.
+    if (paysSanDiegoHourly(uid)) {
       // San Diego's blended OT/DT rate accounts for weekly overtime by converting some
       // regular hours to OT once prior-week + this shift's hours exceed 40.
       const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(actualHours, baseRate, priorWeeklyHours);
@@ -5661,7 +5721,7 @@ export default function EventDashboardPage() {
       overtimePay: 0,
       doubletimePay: 0,
     };
-  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, event?.event_type, event?.event_date, eventId, isEventSanDiego, isNonEventTimesheet, payPeriodCommission, weeklyHoursByUser, timesheetDays, timesheetMultiDay]);
+  }, [commissionsOverrides, variableIncentives, event?.state, event?.city, event?.venue, event?.event_type, event?.event_date, eventId, isEventSanDiego, sanDiegoLaCommissionUserIds, isNonEventTimesheet, payPeriodCommission, weeklyHoursByUser, timesheetDays, timesheetMultiDay]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -5682,6 +5742,7 @@ export default function EventDashboardPage() {
 
       // Calculate all payment data using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+      // Event-level base rate saved on event_payments; each worker's own rate is below.
       const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
 
       const netSales = resolvedCommissionNetSales;
@@ -5714,7 +5775,7 @@ export default function EventDashboardPage() {
           uid,
           division: memberDivision,
           actualHours,
-          baseRate,
+          baseRate: getPayrollBaseRateForUser(uid),
           distributedCommissionShare,
         });
         const restBreak = getRestBreakAmount(actualHours, eventState, uid);
@@ -5811,7 +5872,6 @@ export default function EventDashboardPage() {
     try {
       // Calculate payroll data for each team member using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-      const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
 
       const totalCommissionPool = resolvedCommissionPoolDollars;
       const totalTips = Number(tips) || 0;
@@ -5833,11 +5893,12 @@ export default function EventDashboardPage() {
 
         // Same breakdown the Payment tab table displays, so emailed totals match what's
         // shown/saved (San Diego/AZ/NY weekly-OT, CA/NV/WI period-rate math included).
+        const memberBaseRate = getPayrollBaseRateForUser(uid);
         const breakdown = getDisplayedPaymentBreakdown({
           uid,
           division: memberDivision,
           actualHours,
-          baseRate,
+          baseRate: memberBaseRate,
           distributedCommissionShare,
         });
         const restBreak = getRestBreakAmount(actualHours, eventState, uid);
@@ -5864,7 +5925,7 @@ export default function EventDashboardPage() {
           restBreak: formatPayrollMoney(restBreak),
           adjustment: formatPayrollMoney(adjustment),
           totalPay: formatPayrollMoney(totalPay),
-          baseRate: formatPayrollMoney(baseRate),
+          baseRate: formatPayrollMoney(memberBaseRate),
         };
       });
 
@@ -8521,7 +8582,9 @@ export default function EventDashboardPage() {
         <span className="font-semibold text-red-700">
           enter number of rest breaks per vendor, must have correct time and rest breaks to be able to sign and save sheets.
         </span>
-        {restBreaksRecordOnly && (
+        {restBreaksMixed ? (
+          <span> San Diego hourly workers: rest breaks are recorded on the timesheet only and are not paid. Los Angeles-region vendors are paid commission here, so their rest breaks are paid.</span>
+        ) : restBreaksRecordOnly && (
           <span> Hourly timesheet: rest breaks are recorded on the timesheet only and are not paid.</span>
         )}
       </div>
@@ -9345,14 +9408,13 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-purple-900">
                     ${(() => {
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-                      const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
-                      // Sum per-member base pay so SD OT/DT rules apply correctly per worker.
+                      // Sum per-member base pay so SD OT/DT rules apply correctly per worker
+                      // (Los Angeles-region vendors at San Diego events use the commission math).
                       const totalPayment = teamMembers.reduce((sum: number, member: any) => {
                         const uid = (member.user_id || member.vendor_id || member.users?.id || '').toString();
                         const ms = getDisplayedWorkedMs(uid);
                         const hours = getActualHoursFromWorkedMs(ms, true);
-                        return sum + computeBaseHourlyPay(hours, baseRate);
+                        return sum + computeBaseHourlyPay(hours, getPayrollBaseRateForUser(uid), uid);
                       }, 0);
                       return formatPayrollMoney(totalPayment);
                     })()}
@@ -9411,6 +9473,11 @@ export default function EventDashboardPage() {
                     <div className="text-2xl font-bold text-blue-900">
                       ${formatPayrollMoney(isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(event?.state || 'CA'))}/hr
                     </div>
+                    {isEventSanDiego && hasSanDiegoLaCommissionVendors && (
+                      <div className="text-xs text-blue-700 mt-1">
+                        LA-region vendors: commission, ${formatPayrollMoney(getBaseRateForState(event?.state || 'CA'))}/hr base
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -9444,13 +9511,14 @@ export default function EventDashboardPage() {
                       <tr>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700 w-[18rem]">Employee</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Regular Rate">Reg</th>
-                        {isEventSanDiego ? (
+                        {paymentTabColumnGroups.showHourly && (
                           <>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700">Regular Time</th>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700">Overtime</th>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700">Double Time</th>
                           </>
-                        ) : (
+                        )}
+                        {paymentTabColumnGroups.showCommission && (
                           <>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Rate in Effect</th>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
@@ -9470,7 +9538,15 @@ export default function EventDashboardPage() {
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={hideRestBreakColumn ? (isEventSanDiego ? 10 : 11) : (isEventSanDiego ? 11 : 12)} className="p-8 text-center text-gray-500">
+                          <td
+                            colSpan={
+                              7 +
+                              (paymentTabColumnGroups.showHourly ? 3 : 0) +
+                              (paymentTabColumnGroups.showCommission ? 3 : 0) +
+                              (hideRestBreakColumn ? 0 : 1)
+                            }
+                            className="p-8 text-center text-gray-500"
+                          >
                             No staff found matching filters
                           </td>
                         </tr>
@@ -9496,9 +9572,11 @@ export default function EventDashboardPage() {
                           const actualHours = getActualHoursFromWorkedMs(totalMs, true);
                           const hoursHHMM = formatHoursFromMs(totalMs);
 
-                          // Use rates from database based on venue state
+                          // Use rates from database based on venue state (San Diego hourly workers
+                          // use the San Diego rate; Los Angeles-region vendors there are on commission).
                           const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-                          const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
+                          const baseRate = getPayrollBaseRateForUser(uid);
+                          const rowPaysSanDiegoHourly = paysSanDiegoHourly(uid);
                           console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', baseRate);
 
                           // Commission pool (Net Sales × pool fraction)
@@ -9554,6 +9632,16 @@ export default function EventDashboardPage() {
                                         )}
                                       </div>
                                     )}
+                                    {isEventSanDiego && !rowPaysSanDiegoHourly && (
+                                      <div className="mt-0.5">
+                                        <span
+                                          className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 leading-none"
+                                          title="Los Angeles-region vendor: paid commission at this San Diego event instead of hourly"
+                                        >
+                                          LA vendor · Commission
+                                        </span>
+                                      </div>
+                                    )}
                                     <div className="text-[10px] text-gray-500 break-all">
                                       {member.users?.email || "N/A"}
                                     </div>
@@ -9568,7 +9656,7 @@ export default function EventDashboardPage() {
                                 </div>
                               </td>
 
-                              {isEventSanDiego ? (
+                              {paymentTabColumnGroups.showHourly && (rowPaysSanDiegoHourly ? (
                                 <>
                                   <td className="px-2 py-2 align-top">
                                     <div className="font-medium text-gray-900">
@@ -9594,6 +9682,19 @@ export default function EventDashboardPage() {
                                       ${formatPayrollMoney(displayedBreakdown.doubletimePay)}
                                     </div>
                                   </td>
+                                </>
+                              ) : (
+                                <>
+                                  <td className="px-2 py-2 align-top text-gray-400">—</td>
+                                  <td className="px-2 py-2 align-top text-gray-400">—</td>
+                                  <td className="px-2 py-2 align-top text-gray-400">—</td>
+                                </>
+                              ))}
+                              {paymentTabColumnGroups.showCommission && (rowPaysSanDiegoHourly ? (
+                                <>
+                                  <td className="px-2 py-2 align-top text-gray-400">—</td>
+                                  <td className="px-2 py-2 align-top text-gray-400">—</td>
+                                  <td className="px-2 py-2 align-top text-gray-400">—</td>
                                 </>
                               ) : (
                                 <>
@@ -9687,7 +9788,7 @@ export default function EventDashboardPage() {
                                   </td>
 
                                 </>
-                              )}
+                              ))}
 
                               {/* Variable Incentive - manual bonus, editable */}
                               <td className="px-2 py-2 align-top">

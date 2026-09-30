@@ -10,6 +10,7 @@ import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 import { normalizeEventEndDate, getInclusiveDateSpanDays } from '@/lib/non-event-timesheets';
 import { getRestBreakPay } from '@/lib/rest-breaks';
 import { fetchPayableRestBreakCounts } from '@/lib/rest-breaks-server';
+import { fetchRegionNameByUserId } from '@/lib/vendor-region-server';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -932,6 +933,24 @@ export async function GET(req: NextRequest) {
         eventPayment: eventPaymentSummary,
         eventInfo: eventsMetaById[eventId] || null,
       };
+    }
+
+    // Each worker's home region name, so /hr-dashboard can keep Los Angeles-region vendors on
+    // commission pay at San Diego events. A failed lookup only loses that exception (those
+    // vendors show as hourly), so it is logged rather than failing the whole payroll load.
+    try {
+      const allRows = Object.values(paymentsByEvent).flatMap((entry: any) =>
+        Array.isArray(entry?.vendorPayments) ? entry.vendorPayments : []
+      );
+      const regionNameByUserId = await fetchRegionNameByUserId(
+        supabaseAdmin,
+        allRows.map((row: any) => row?.user_id)
+      );
+      for (const row of allRows) {
+        row.vendor_region_name = regionNameByUserId[(row?.user_id || '').toString()] ?? null;
+      }
+    } catch (regionErr: any) {
+      console.error('[VENDOR-PAYMENTS] Failed to load vendor regions:', regionErr?.message || regionErr);
     }
 
     console.log('[VENDOR-PAYMENTS] done', {

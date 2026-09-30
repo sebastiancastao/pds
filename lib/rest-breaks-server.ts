@@ -2,7 +2,13 @@
 // Timesheet tab (table event_rest_breaks). Payroll routes call this so every one of
 // them prices rest breaks from the same numbers.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { isRestBreakRecordOnlyEvent, normalizeRestBreakCount, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import {
+  isRestBreakRecordOnlyEvent,
+  isRestBreakRecordOnlyForVendor,
+  normalizeRestBreakCount,
+  type RestBreakCountsByEvent,
+} from "@/lib/rest-breaks";
+import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
 
 // Keep the .in() list short enough for the request URL and page through results so
 // the API's default row cap never silently drops workers.
@@ -76,10 +82,12 @@ export async function fetchRestBreakCounts(
 
 /**
  * Rest break counts to price pay with: the same as fetchRestBreakCounts, minus every count
- * recorded on an hourly event (San Diego or non-event "special" timesheet). Managers record
- * those on the Timesheet tab for the record only; hourly events pay no rest break, so the
- * count must never change pay, a payroll export or a paystub. Every payroll route loads
- * counts through this; only the Timesheet tab itself reads the unfiltered counts.
+ * recorded for a worker paid hourly (everyone on a non-event "special" timesheet, and every
+ * non-Los Angeles-region worker on a San Diego event). Managers record those on the Timesheet
+ * tab for the record only; hourly pay includes no rest break, so the count must never change
+ * pay, a payroll export or a paystub. Los Angeles-region vendors keep commission pay on San
+ * Diego events, so their counts there are kept. Every payroll route loads counts through
+ * this; only the Timesheet tab itself reads the unfiltered counts.
  */
 export async function fetchPayableRestBreakCounts(
   client: SupabaseClient<any, any, any>,
@@ -87,6 +95,10 @@ export async function fetchPayableRestBreakCounts(
 ): Promise<RestBreakCountsByEvent> {
   const counts = await fetchRestBreakCounts(client, eventIds);
   const recordedEventIds = Object.keys(counts);
+  type EventRow = { id: string; event_type?: string | null; city?: string | null; venue?: string | null };
+  // Hourly events where some workers may still be paid commission (San Diego events can have
+  // Los Angeles-region vendors); their counts are filtered per worker below.
+  const perVendorEvents: EventRow[] = [];
 
   for (let i = 0; i < recordedEventIds.length; i += EVENT_ID_CHUNK_SIZE) {
     const chunk = recordedEventIds.slice(i, i + EVENT_ID_CHUNK_SIZE);
@@ -96,8 +108,26 @@ export async function fetchPayableRestBreakCounts(
       .in("id", chunk);
     // Fail loudly: without the event type a count on an hourly event could be paid.
     if (error) throw new Error(`Failed to load events for rest break counts: ${error.message}`);
-    for (const row of (data || []) as Array<{ id: string; event_type?: string | null; city?: string | null; venue?: string | null }>) {
-      if (isRestBreakRecordOnlyEvent(row)) delete counts[row.id];
+    for (const row of (data || []) as EventRow[]) {
+      if (!isRestBreakRecordOnlyEvent(row)) continue;
+      // Pass a Los Angeles region name: if the event is record-only even for an LA vendor
+      // (a non-event timesheet), every count on it is dropped.
+      if (isRestBreakRecordOnlyForVendor(row, "Los Angeles")) delete counts[row.id];
+      else perVendorEvents.push(row);
+    }
+  }
+
+  if (perVendorEvents.length > 0) {
+    const userIds = perVendorEvents.flatMap((row) => Object.keys(counts[row.id] || {}));
+    // Fail loudly here too: without the region an hourly worker's count could be paid.
+    const regionNameByUserId = await fetchRegionNameByUserId(client, userIds);
+    for (const row of perVendorEvents) {
+      const eventCounts = counts[row.id];
+      if (!eventCounts) continue;
+      for (const userId of Object.keys(eventCounts)) {
+        if (isRestBreakRecordOnlyForVendor(row, regionNameByUserId[userId])) delete eventCounts[userId];
+      }
+      if (Object.keys(eventCounts).length === 0) delete counts[row.id];
     }
   }
 

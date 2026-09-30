@@ -12,9 +12,11 @@
 //
 // Hourly events (San Diego and non-event "special" timesheets) pay no rest break at all.
 // Managers still record a count for them on the Timesheet tab, for the timesheet record only;
-// isRestBreakRecordOnlyEvent flags them so payroll never prices that count.
+// isRestBreakRecordOnlyEvent flags them so payroll never prices that count. The one exception
+// is a Los Angeles-region vendor working a San Diego event: they stay on commission pay there,
+// so their rest breaks are paid like at any commission event (isRestBreakRecordOnlyForVendor).
 
-import { isSanDiegoRegion } from "@/lib/commission-pool";
+import { isSanDiegoRegion, usesSanDiegoHourlyPay } from "@/lib/commission-pool";
 
 /** Dollars paid for each rest break, for events on or after REST_BREAK_RATE_CHANGE_DATE. */
 export const REST_BREAK_RATE = 4.5;
@@ -39,6 +41,20 @@ export function isRestBreakRecordOnlyEvent(
   if (!event) return false;
   if ((event.event_type || "").toString().trim().toLowerCase() === "special") return true;
   return isSanDiegoRegion({ city: event.city, venue: event.venue });
+}
+
+/**
+ * Per-vendor version of isRestBreakRecordOnlyEvent. A San Diego event is record-only for its
+ * hourly workers but not for Los Angeles-region vendors, who are paid commission there and so
+ * get rest break pay. `vendorRegionName` is the vendor's home region name (regions.name).
+ */
+export function isRestBreakRecordOnlyForVendor(
+  event: { event_type?: string | null; city?: string | null; venue?: string | null } | null | undefined,
+  vendorRegionName?: string | null
+): boolean {
+  if (!event) return false;
+  if ((event.event_type || "").toString().trim().toLowerCase() === "special") return true;
+  return usesSanDiegoHourlyPay({ city: event.city, venue: event.venue }, vendorRegionName);
 }
 
 /** Flat per-shift schedule used for events before REST_BREAK_RATE_CHANGE_DATE. */

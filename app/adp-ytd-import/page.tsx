@@ -14,13 +14,20 @@
 // needed for that employee going forward. This page is purely the
 // entry/review screen for that baseline; it does not generate paystubs.
 //
-// A row can come from an uploaded spreadsheet or be typed in by hand. Either
-// way it goes through the same review grid and the same employee-matching
-// (/api/match-employee) that /paystub-generator's own Excel import uses.
+// A row can come from an uploaded spreadsheet, an uploaded paystub PDF, or be
+// typed in by hand. Every path goes through the same review grid and the same
+// employee-matching (/api/match-employee) that /paystub-generator's own Excel
+// import uses.
+//
+// PDFs are read exactly the way /pdf-reader reads them: the pipeline lives in
+// lib/pdf-reader-extraction.ts (server text extraction via /api/extract-pdf,
+// and for scanned PDFs client-side OCR with LLM / regex / AI-vision fallbacks).
+// Each paystub page becomes one row built from its year-to-date column.
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import type { OcrProgress, PayrollData } from '@/lib/pdf-reader-extraction';
 
 type FieldKey =
   | 'federalIncomeYtd'
@@ -148,6 +155,160 @@ function toDisplayName(raw: string): string {
   return `${afterComma} ${lastName}`.trim();
 }
 
+// ---------- PDF import (same extraction as /pdf-reader) ----------
+
+type PdfReaderLib = typeof import('@/lib/pdf-reader-extraction');
+
+type PdfStatus = {
+  fileName: string;
+  index: number;
+  total: number;
+  ocr: OcrProgress | null;
+};
+
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+}
+
+// Positive dollar string for the grid, or '' when missing / zero (the same
+// convention the spreadsheet import uses, so empty cells stay empty).
+function ytdString(value: unknown): string {
+  const n = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(n) || n === 0) return '';
+  return Math.abs(n).toFixed(2);
+}
+
+function ytdOf(bucket: any, key: string): string {
+  return ytdString(bucket?.[key]?.yearToDate);
+}
+
+function isoFromParts(year: number, month: number, day: number): string | null {
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+// Pay dates come out of the PDF reader as "09/15/2026", "9/15/26",
+// "2026-09-15" or "Sep 15, 2026". Normalize to YYYY-MM-DD.
+function pdfDateToIso(raw: unknown): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return isoFromParts(Number(m[1]), Number(m[2]), Number(m[3]));
+  m = s.match(/(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
+  if (m) {
+    const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    return isoFromParts(year, Number(m[1]), Number(m[2]));
+  }
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) return isoFromParts(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  return null;
+}
+
+// Extractor keys for each state the grid supports (NY has no PDF extractor key).
+const PDF_STATE_KEYS: Record<string, { income: string; di?: string }> = {
+  CA: { income: 'californiaStateIncome', di: 'californiaStateDI' },
+  WI: { income: 'wisconsinStateIncome', di: 'wisconsinStateDI' },
+  AZ: { income: 'arizonaStateIncome' },
+};
+
+function pdfStateCode(data: PayrollData, lib: PdfReaderLib): string {
+  const sd = data?.statutoryDeductions || {};
+  // Prefer the state whose YTD withholding is present: a late-year stub can
+  // show $0 this period but still carry YTD state tax. WI/AZ win over CA the
+  // same way /pdf-reader's determineRowState orders them.
+  if (ytdOf(sd, 'wisconsinStateIncome')) return 'WI';
+  if (ytdOf(sd, 'arizonaStateIncome')) return 'AZ';
+  if (ytdOf(sd, 'californiaStateIncome') || ytdOf(sd, 'californiaStateDI')) return 'CA';
+  const fromDeductions = lib.determineRowState(data);
+  if (fromDeductions && STATE_CODES.includes(fromDeductions)) return fromDeductions;
+  const fromAddress = lib.detectState(data);
+  if (fromAddress && STATE_CODES.includes(fromAddress)) return fromAddress;
+  return 'CA';
+}
+
+function rowFromPdfPage(
+  payrollData: PayrollData,
+  fileName: string,
+  pageNumber: number,
+  extractionMethod: string | undefined,
+  lib: PdfReaderLib
+): Row {
+  const info = payrollData?.employeeInfo || {};
+  const sd = payrollData?.statutoryDeductions || {};
+  const vd = payrollData?.voluntaryDeductions || {};
+  const earnings = payrollData?.earnings || {};
+  const adj = payrollData?.netPayAdjustments || {};
+
+  // An overly long 'name' is garbled text from a PDF whose content could not
+  // be decoded. Leave it blank so the reviewer types the name instead.
+  const rawName = typeof info.name === 'string' && info.name.trim().length <= 80 ? info.name : '';
+  const row = newRow(toDisplayName(rawName));
+  row.asOfDate = pdfDateToIso(info.payDate) || pdfDateToIso(info.payPeriod?.end) || row.asOfDate;
+  row.stateCode = pdfStateCode(payrollData, lib);
+
+  const stateKeys = PDF_STATE_KEYS[row.stateCode];
+  row.stateIncomeYtd = stateKeys ? ytdOf(sd, stateKeys.income) : '';
+  row.stateDIYtd = stateKeys?.di ? ytdOf(sd, stateKeys.di) : '';
+
+  row.federalIncomeYtd = ytdOf(sd, 'federalIncome');
+  row.socialSecurityYtd = ytdOf(sd, 'socialSecurity');
+  row.medicareYtd = ytdOf(sd, 'medicare');
+  row.calSaversRothRetYtd = ytdOf(vd, 'calSaversRothRet');
+
+  row.regularYtd = ytdOf(earnings, 'regular');
+  row.overtimeYtd = ytdOf(earnings, 'overtime');
+  row.doubleTimeYtd = ytdOf(earnings, 'doubleTime');
+  row.commissionYtd = ytdOf(earnings, 'commission');
+  row.variableIncentiveYtd = ytdOf(earnings, 'variableIncentive');
+  row.creditCardTipsYtd = ytdOf(earnings, 'creditCardTips');
+  row.restBreakPayYtd = ytdOf(earnings, 'restBreakPay');
+  row.travelPayYtd = ytdOf(earnings, 'travelPay');
+  row.bonusYtd = ytdOf(earnings, 'bonus');
+  row.sickPayYtd = ytdOf(earnings, 'sickPay');
+  row.mealPremiumYtd = ytdOf(earnings, 'mealPremium');
+  row.grossPayYtd = ytdString(info.ytdGross);
+
+  row.equipmentReimbYtd = ytdOf(adj, 'equipmentReimbursement');
+  row.mileageReimbYtd = ytdOf(adj, 'mileageReimbursement');
+  row.miscReimbursementYtd = ytdOf(adj, 'miscReimbursement');
+
+  row.notes = `From PDF ${fileName}, page ${pageNumber}${extractionMethod ? ` (${extractionMethod})` : ''}`;
+  return row;
+}
+
+function hasAnyYtd(row: Row): boolean {
+  return FIELD_DEFS.some((f) => row[f.key] !== '');
+}
+
+// One carryover record per employee: the save API upserts on user_id, so a
+// PDF holding several pay periods for the same person must collapse to the
+// latest stub (latest as-of date, then highest gross YTD, then later page).
+function keepLatestPerEmployee(rows: Row[]): { kept: Row[]; dropped: number } {
+  const byName = new Map<string, Row>();
+  const unnamed: Row[] = [];
+  const order: string[] = [];
+  const grossOf = (r: Row) => parseFloat(r.grossPayYtd || '0') || 0;
+  for (const row of rows) {
+    const key = row.employeeName.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!key) {
+      unnamed.push(row);
+      continue;
+    }
+    const existing = byName.get(key);
+    if (!existing) {
+      byName.set(key, row);
+      order.push(key);
+      continue;
+    }
+    const newer =
+      row.asOfDate > existing.asOfDate ||
+      (row.asOfDate === existing.asOfDate && grossOf(row) >= grossOf(existing));
+    if (newer) byName.set(key, row);
+  }
+  const kept = [...order.map((k) => byName.get(k)!), ...unnamed];
+  return { kept, dropped: rows.length - kept.length };
+}
+
 async function matchEmployee(name: string): Promise<string | null> {
   const trimmed = name.trim();
   if (!trimmed) return null;
@@ -167,6 +328,7 @@ export default function AdpYtdImportPage() {
   const [onFile, setOnFile] = useState<OnFileRecord[]>([]);
   const [loadingOnFile, setLoadingOnFile] = useState(true);
   const [parsing, setParsing] = useState(false);
+  const [pdfStatus, setPdfStatus] = useState<PdfStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -205,6 +367,19 @@ export default function AdpYtdImportPage() {
     );
   }, []);
 
+  // Adds parsed rows to the grid, then matches each to an employee
+  // sequentially so we don't hammer the server.
+  const appendAndMatch = useCallback(async (parsed: Row[]) => {
+    setRows((prev) => [...prev, ...parsed]);
+    for (const row of parsed) {
+      if (!row.employeeName) {
+        setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, matchStatus: 'unmatched' } : r)));
+        continue;
+      }
+      await rematchRow(row.key, row.employeeName);
+    }
+  }, [rematchRow]);
+
   const handleAddManual = useCallback(() => {
     setRows((prev) => [...prev, newRow()]);
   }, []);
@@ -213,7 +388,7 @@ export default function AdpYtdImportPage() {
     setError(null);
     setSuccess(null);
     if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
-      setError('Please upload an Excel (.xlsx/.xls) or CSV file.');
+      setError('Please upload an Excel (.xlsx/.xls), CSV, or PDF file.');
       return;
     }
     setParsing(true);
@@ -311,17 +486,8 @@ export default function AdpYtdImportPage() {
         return row;
       });
 
-      setRows((prev) => [...prev, ...parsed]);
       setSuccess(`Parsed ${parsed.length} row(s) from ${file.name}. Matching employees…`);
-
-      // Match sequentially so we don't hammer the server.
-      for (const row of parsed) {
-        if (!row.employeeName) {
-          setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, matchStatus: 'unmatched' } : r)));
-          continue;
-        }
-        await rematchRow(row.key, row.employeeName);
-      }
+      await appendAndMatch(parsed);
       setSuccess(`Imported ${parsed.length} row(s) from ${file.name}.`);
     } catch (e: any) {
       setError(`Failed to read file: ${e?.message || e}`);
@@ -329,7 +495,73 @@ export default function AdpYtdImportPage() {
       setParsing(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  }, [rematchRow]);
+  }, [appendAndMatch]);
+
+  // PDF upload: same reader as /pdf-reader, one row per paystub page.
+  const handlePdfFiles = useCallback(async (files: File[]) => {
+    setError(null);
+    setSuccess(null);
+    setParsing(true);
+    const collected: Row[] = [];
+    const failures: string[] = [];
+    try {
+      const lib = await import('@/lib/pdf-reader-extraction');
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setPdfStatus({ fileName: file.name, index: i + 1, total: files.length, ocr: null });
+        try {
+          const result = await lib.extractPdfPayroll(file, {
+            onOcrStart: () => setPdfStatus((s) => (s ? { ...s, ocr: { page: 0, progress: 0, total: 0 } } : s)),
+            onOcrProgress: (progress) => setPdfStatus((s) => (s ? { ...s, ocr: progress } : s)),
+            onOcrEnd: () => setPdfStatus((s) => (s ? { ...s, ocr: null } : s)),
+          });
+          const pages =
+            result.payrollDataByPage && result.payrollDataByPage.length > 0
+              ? result.payrollDataByPage
+              : result.payrollData
+                ? [{ pageNumber: 1, text: result.text || '', payrollData: result.payrollData, extractionMethod: undefined }]
+                : [];
+          let fromThisFile = 0;
+          for (const page of pages) {
+            const row = rowFromPdfPage(page.payrollData, file.name, page.pageNumber, page.extractionMethod, lib);
+            // Skip pages that carry neither a name nor any YTD figure
+            // (cover pages, continuation pages, blank scans).
+            if (!row.employeeName && !hasAnyYtd(row)) continue;
+            collected.push(row);
+            fromThisFile++;
+          }
+          if (fromThisFile === 0) failures.push(`${file.name}: no paystub data found`);
+        } catch (e: any) {
+          failures.push(`${file.name}: ${e?.message || e}`);
+        }
+      }
+    } catch (e: any) {
+      failures.push(`Failed to load the PDF reader: ${e?.message || e}`);
+    } finally {
+      setPdfStatus(null);
+    }
+
+    try {
+      if (collected.length > 0) {
+        const { kept, dropped } = keepLatestPerEmployee(collected);
+        const dupNote = dropped > 0 ? ` Kept the most recent stub per employee (${dropped} older page(s) skipped).` : '';
+        setSuccess(`Read ${kept.length} employee row(s) from ${files.length} PDF(s). Matching employees…${dupNote}`);
+        await appendAndMatch(kept);
+        setSuccess(`Imported ${kept.length} row(s) from ${files.length} PDF(s).${dupNote} Review the YTD numbers before saving.`);
+      }
+      if (failures.length > 0) setError(failures.join('; '));
+    } finally {
+      setParsing(false);
+    }
+  }, [appendAndMatch]);
+
+  const handleFiles = useCallback(async (files: File[]) => {
+    const pdfFiles = files.filter(isPdfFile);
+    const sheetFiles = files.filter((f) => !isPdfFile(f));
+    for (const f of sheetFiles) await handleFile(f);
+    if (pdfFiles.length > 0) await handlePdfFiles(pdfFiles);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [handleFile, handlePdfFiles]);
 
   const updateRow = useCallback((key: string, patch: Partial<Row>) => {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -544,11 +776,12 @@ export default function AdpYtdImportPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx,.xls,.csv"
+              accept=".xlsx,.xls,.csv,.pdf,application/pdf"
+              multiple
               className="hidden"
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFile(f);
+                const files = Array.from(e.target.files || []);
+                if (files.length > 0) handleFiles(files);
               }}
             />
             <button
@@ -556,7 +789,7 @@ export default function AdpYtdImportPage() {
               disabled={parsing}
               className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
             >
-              {parsing ? 'Parsing…' : 'Upload ADP report (.xlsx/.xls/.csv)'}
+              {parsing ? 'Reading…' : 'Upload ADP report (.xlsx/.xls/.csv/.pdf)'}
             </button>
             <button
               onClick={handleAddManual}
@@ -565,6 +798,25 @@ export default function AdpYtdImportPage() {
               + Add employee manually
             </button>
           </div>
+          <p className="mt-3 text-xs text-gray-500 max-w-3xl">
+            PDF paystubs are read the same way as the{' '}
+            <Link href="/pdf-reader" className="text-blue-600 underline">
+              PDF Reader
+            </Link>
+            : text PDFs are parsed directly and scanned PDFs go through OCR. Each paystub page
+            becomes a row built from its year-to-date column. If one PDF has several pay periods
+            for the same employee, only the most recent is kept.
+          </p>
+          {pdfStatus && (
+            <p className="mt-2 text-sm text-gray-700">
+              Reading {pdfStatus.fileName} ({pdfStatus.index} of {pdfStatus.total})
+              {pdfStatus.ocr
+                ? ` — scanned PDF, OCR page ${pdfStatus.ocr.page || 1} of ${pdfStatus.ocr.total || '?'} (${Math.round(
+                    (pdfStatus.ocr.progress || 0) * 100
+                  )}%)`
+                : '…'}
+            </p>
+          )}
         </div>
 
         {/* Editable grid */}

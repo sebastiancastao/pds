@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
-import { isSanDiegoRegion } from "@/lib/commission-pool";
+import { isLosAngelesRegionName, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -13,6 +13,17 @@ import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRestBreakPay } from "@/lib/rest-breaks";
 import ReimbursementsPanel from "./ReimbursementsPanel";
+import PayrollUploadPanel, { type SystemPayrollTotal } from "./PayrollUploadPanel";
+import UploadedPayrollView from "./UploadedPayrollView";
+import { downloadUploadedPayroll } from "./payroll-upload-export";
+import type { PayrollUploadRow, PayrollUploadSummary } from "@/lib/payroll-upload";
+import {
+  buildPayrollCheck,
+  exportApprovedReimbursementsToExcel,
+  fetchReimbursementRequests,
+  isWithinPayrollDates,
+  payrollRangeFileLabel,
+} from "./reimbursements-export";
 import "@/app/global-calendar/dashboard-styles.css";
 import * as XLSX from 'xlsx';
 
@@ -132,17 +143,46 @@ const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200"
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
+// "2026-07-06" -> "Jul 6, 2026" for the uploaded-payroll banners on the Payroll tab.
+const formatUploadPeriodDate = (value: string | null | undefined): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  if (!m) return value ? String(value) : "";
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+};
+
 const isNonEventPayrollEvent = (eventLike?: any): boolean =>
   (eventLike?.event_type || eventLike?.eventType || eventLike?.type || "")
     .toString()
     .trim()
     .toLowerCase() === "special";
 
-const isHourlyPayrollEvent = (eventLike?: any, paymentLike?: any): boolean =>
-  isNonEventPayrollEvent(eventLike) ||
-  eventLike?.isSanDiegoHourly === true ||
-  paymentLike?.isSanDiegoHourly === true ||
-  isSanDiegoRegion(eventLike);
+// Pass `paymentLike` whenever the question is about one worker's row. San Diego events pay
+// hourly, except for Los Angeles-region vendors: their rows carry sanDiegoLaCommission and
+// stay on commission pay, so the event alone does not decide it.
+const isHourlyPayrollEvent = (eventLike?: any, paymentLike?: any): boolean => {
+  if (isNonEventPayrollEvent(eventLike)) return true;
+  if (paymentLike?.sanDiegoLaCommission === true) return false;
+  return (
+    eventLike?.isSanDiegoHourly === true ||
+    paymentLike?.isSanDiegoHourly === true ||
+    isSanDiegoRegion(eventLike)
+  );
+};
+
+// Which pay column groups an event's table needs. A San Diego event with Los Angeles-region
+// vendors has both hourly rows and commission rows, so it shows both groups.
+const getEventPayLayout = (eventLike?: any): { showHourly: boolean; showCommission: boolean } => {
+  const payments: any[] = Array.isArray(eventLike?.payments) ? eventLike.payments : [];
+  if (payments.length === 0) {
+    const hourly = isHourlyPayrollEvent(eventLike);
+    return { showHourly: hourly, showCommission: !hourly };
+  }
+  return {
+    showHourly: payments.some((payment) => isHourlyPayrollEvent(eventLike, payment)),
+    showCommission: payments.some((payment) => !isHourlyPayrollEvent(eventLike, payment)),
+  };
+};
 
 // Hard-coded straight-hourly rate overrides for specific vendors on non-event
 // ("special") timesheets, keyed by email (case-insensitive). Bypasses the
@@ -225,6 +265,24 @@ function HRDashboardContent() {
   const [showSickLeavePanels, setShowSickLeavePanels] = useState(false);
   // Toggle for the read-only Reimbursements visualization panel in the payroll tab
   const [showReimbursementsPanel, setShowReimbursementsPanel] = useState(false);
+  // Toggle for the Upload Payroll panel (upload, review and edit a period's payroll from Excel)
+  const [showPayrollUploadPanel, setShowPayrollUploadPanel] = useState(false);
+  // An uploaded payroll (payroll_period_uploads.is_active) replaces the system
+  // payroll for its exact period when Load Payments runs. The system payroll is
+  // never changed, and "Retrieve System Payroll" switches back to it.
+  const [payrollSource, setPayrollSource] = useState<"system" | "upload">("system");
+  const [activeUploadedPayroll, setActiveUploadedPayroll] = useState<{
+    upload: Omit<PayrollUploadSummary, "row_count" | "total_gross_pay" | "total_hours">;
+    rows: PayrollUploadRow[];
+  } | null>(null);
+  const [overlappingUploads, setOverlappingUploads] = useState<Array<{ id: string; period_start: string; period_end: string; file_name: string | null }>>([]);
+  // Period that Load Payments last checked for an uploaded payroll.
+  const [uploadedPayrollPeriod, setUploadedPayrollPeriod] = useState<{ start: string; end: string } | null>(null);
+  const [checkingUploadedPayroll, setCheckingUploadedPayroll] = useState(false);
+  const [uploadedPayrollCheckError, setUploadedPayrollCheckError] = useState("");
+  // "start|end" of the system payroll currently in paymentsByVenue, when loaded through Load Payments.
+  const [systemPayrollKey, setSystemPayrollKey] = useState("");
+  const [exportingReimbursements, setExportingReimbursements] = useState(false);
   const [loadingSickPaysheets, setLoadingSickPaysheets] = useState(false);
   const [sickPaysheetError, setSickPaysheetError] = useState<string>("");
   const [sickPaysheetSuccess, setSickPaysheetSuccess] = useState<string>("");
@@ -1207,8 +1265,20 @@ function HRDashboardContent() {
         const isEventSD = isSanDiegoRegion(eventInfo);
         const isNonEventPayroll = isNonEventPayrollEvent(eventInfo);
         const isHourlyPayroll = isEventSD || isNonEventPayroll;
+        // Los Angeles-region vendors keep commission pay when they work a San Diego event;
+        // everyone else there is paid hourly. Their share comes out of the event's commission
+        // pool split across the whole team, the same split every vendor would get.
+        const sanDiegoLaCommissionUserIds = new Set<string>(
+          isEventSD && !isNonEventPayroll && Array.isArray(eventPaymentData?.vendorPayments)
+            ? eventPaymentData.vendorPayments
+                .filter((payment: any) => isLosAngelesRegionName(payment?.vendor_region_name))
+                .map((payment: any) => (payment.user_id || payment.userId || payment?.users?.id || '').toString())
+                .filter(Boolean)
+            : []
+        );
+        const hasCommissionPool = !isNonEventPayroll && (!isEventSD || sanDiegoLaCommissionUserIds.size > 0);
         const commissionPoolPercent =
-          isHourlyPayroll ? 0 :
+          !hasCommissionPool ? 0 :
           Number(eventInfo.commission_pool ?? eventPaymentSummary.commission_pool_percent ?? 0) || 0;
         const eventCommissionDollarsRaw =
           adjustedGrossAmount * commissionPoolPercent;
@@ -1293,11 +1363,14 @@ function HRDashboardContent() {
                     const firstName = profile?.first_name || 'N/A';
                     const lastName = profile?.last_name || '';
                     const uid = (member.vendor_id || member.user_id || user?.id || '').toString();
+                    const memberLaCommission = isEventSD && !isNonEventPayroll && isLosAngelesRegionName(profile?.region_name);
 
                     const memberDayHours = isNonEventPayroll ? (nonEventDays[uid] || []) : [];
                     const memberBaseRate = isNonEventPayroll
                       ? getNonEventBaseRate(user?.email, fallbackBaseRate)
-                      : fallbackBaseRate;
+                      : memberLaCommission
+                        ? configuredBaseRate
+                        : fallbackBaseRate;
                     const dailyBreakdown: DailyPayBreakdown[] = memberDayHours.length > 0
                       ? computeDailyBreakdownList(memberDayHours, memberBaseRate)
                       : [];
@@ -1325,6 +1398,8 @@ function HRDashboardContent() {
                       adjustmentAmount: 0,
                       adjustmentType: DEFAULT_OTHER_ADJUSTMENT_TYPE,
                       finalPay: daySums ? daySums.totalPay : 0,
+                      isSanDiegoHourly: isEventSD && !memberLaCommission,
+                      sanDiegoLaCommission: memberLaCommission,
                       status: member.status // Include confirmation status
                     };
                   })
@@ -1398,18 +1473,18 @@ function HRDashboardContent() {
         // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
         const summaryBaseRate = Number(eventPaymentSummary.base_rate || 0);
-        const baseRate = isEventSD
-          ? SAN_DIEGO_BASE_RATE
-          : configuredBaseRate > 0
-            ? configuredBaseRate
-            : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
+        // Base rate for commission pay; San Diego's hourly workers use SAN_DIEGO_BASE_RATE instead.
+        const commissionBaseRate = configuredBaseRate > 0
+          ? configuredBaseRate
+          : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
+        const baseRate = isEventSD ? SAN_DIEGO_BASE_RATE : commissionBaseRate;
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
         // Total team members on this event
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
         // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
-        const commissionPoolDollars = isHourlyPayroll
+        const commissionPoolDollars = !hasCommissionPool
           ? 0
           : eventCommissionDollars > 0
           ? eventCommissionDollars
@@ -1489,12 +1564,18 @@ function HRDashboardContent() {
             const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
             const _divDisplay = normalizeDivision(memberDivision);
             const _isExplicitNonVendorDisplay = _divDisplay !== '' && !isVendorDivision(_divDisplay);
-            const commissionShare = (isHourlyPayroll || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
+            // Per-row pay structure: on a San Diego event only Los Angeles-region vendors are
+            // paid commission; every other worker there is paid hourly.
+            const isSanDiegoLaCommissionRow = sanDiegoLaCommissionUserIds.has(paymentUserId);
+            const isSanDiegoHourlyRow = isEventSD && !isSanDiegoLaCommissionRow;
+            const isHourlyRow = isSanDiegoHourlyRow || isNonEventPayroll;
+            const rowBaseRate = isSanDiegoHourlyRow ? baseRate : commissionBaseRate;
+            const commissionShare = (isHourlyRow || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
 
-            const priorWeeklyHours = (isAZorNY || isEventSD) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
+            const priorWeeklyHours = (isAZorNY || isSanDiegoHourlyRow) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
-            const extAmtRegular = Math.round(roundedPayrollHours * baseRate * 100) / 100;
-            const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * baseRate * 1.5 * 100) / 100;
+            const extAmtRegular = Math.round(roundedPayrollHours * rowBaseRate * 100) / 100;
+            const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * rowBaseRate * 1.5 * 100) / 100;
 
             // Keep AZ/NY weekly-OT logic unchanged, but mirror Event Dashboard math for CA/NV/WI.
             let commissionAmt = 0;
@@ -1502,7 +1583,7 @@ function HRDashboardContent() {
             let extAmtOnRegRate = extAmtOnRegRateNonAzNy;
             let totalFinalCommissionAmt = 0;
             let loadedRate = 0;
-            let effectiveRegRate = baseRate;
+            let effectiveRegRate = rowBaseRate;
             let regularHours = roundedPayrollHours;
             let overtimeHours = 0;
             let overtimePay = 0;
@@ -1511,7 +1592,7 @@ function HRDashboardContent() {
             let regularPay = extAmtOnRegRateNonAzNy;
             let dailyBreakdown: DailyPayBreakdown[] = [];
 
-            if (isEventSD) {
+            if (isSanDiegoHourlyRow) {
               const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(
                 roundedPayrollHours,
                 baseRate,
@@ -1589,7 +1670,7 @@ function HRDashboardContent() {
               totalFinalCommissionAmt = roundedPayrollHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
             }
 
-            if (!isEventSD) {
+            if (!isSanDiegoHourlyRow) {
               regularPay = extAmtOnRegRate;
             }
 
@@ -1598,7 +1679,7 @@ function HRDashboardContent() {
                 ? (totalFinalCommissionAmt + adjustmentAmount)
                 : totalFinalCommissionAmt;
             const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
-            loadedRate = isHourlyPayroll
+            loadedRate = isHourlyRow
               ? (roundedPayrollHours > 0 ? totalFinalCommissionAmt / roundedPayrollHours : effectiveRegRate)
               : roundedPayrollHours > 0
                 ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
@@ -1618,7 +1699,7 @@ function HRDashboardContent() {
             // of the same name shown elsewhere in this dashboard.
             const manualVariableIncentive = Number(payment.variable_incentive || 0);
 
-            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll, payment.rest_break_count, eventInfo.event_date);
+            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyRow, payment.rest_break_count, eventInfo.event_date);
             const totalPay = totalFinalCommissionAmt + manualVariableIncentive + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
@@ -1657,7 +1738,8 @@ function HRDashboardContent() {
               totalFinalCommissionAmt,
               restBreak,
               totalGrossPay: finalPay,
-              isSanDiegoHourly: isEventSD,
+              isSanDiegoHourly: isSanDiegoHourlyRow,
+              sanDiegoLaCommission: isSanDiegoLaCommissionRow,
               isNonEventHourly: isNonEventPayroll,
               dailyBreakdown,
             };
@@ -1667,7 +1749,7 @@ function HRDashboardContent() {
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
-        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isHourlyPayroll ? 0 : Number(p.restBreak || 0)), 0);
+        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + ((p.isSanDiegoHourly || p.isNonEventHourly) ? 0 : Number(p.restBreak || 0)), 0);
         const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const vendorsWithHoursByDivision = eventPayments.reduce((count: number, p: any) => {
           const hours = Number(p.actualHours || 0);
@@ -1947,7 +2029,12 @@ function HRDashboardContent() {
           // instead of recomputing blind to the linked partner via its own internal
           // per-event distributePoolByHoursRule. Standalone events are left alone so their
           // existing CA/NV/WI period-rate math is unaffected.
-          commissionShare: event?.isCommissionShared ? (payment?.commissionShare ?? null) : null,
+          // San Diego events also pass the resolved share: Los Angeles-region vendors (paid
+          // commission there) get their share of the whole team's split, and hourly workers
+          // get none, rather than letting the pool be re-split here.
+          commissionShare: (event?.isCommissionShared || event?.isSanDiegoHourly)
+            ? (payment?.commissionShare ?? null)
+            : null,
         })),
       })),
     });
@@ -2132,23 +2219,31 @@ function HRDashboardContent() {
     const eventHours = payments.reduce((sum: number, payment: any) => {
       return sum + Number(payment?.actualHours || 0);
     }, 0);
-    const totalRegularHours = payments.reduce((sum: number, payment: any) => {
+    // Regular / Overtime / Double Time totals only count hourly rows, and the commission
+    // total only counts commission rows, so a San Diego event with Los Angeles-region
+    // (commission) vendors adds each group up on its own.
+    const hourlyPayments = payments.filter((payment: any) => isHourlyPayrollEvent(event, payment));
+    const commissionPayments = payments.filter((payment: any) => !isHourlyPayrollEvent(event, payment));
+    const totalRegularHours = hourlyPayments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).regularHours;
     }, 0);
-    const totalRegularPay = payments.reduce((sum: number, payment: any) => {
+    const totalRegularPay = hourlyPayments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).regularPay;
     }, 0);
-    const totalOvertimeHours = payments.reduce((sum: number, payment: any) => {
+    const totalOvertimeHours = hourlyPayments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).overtimeHours;
     }, 0);
-    const totalOvertimePay = payments.reduce((sum: number, payment: any) => {
+    const totalOvertimePay = hourlyPayments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).overtimePay;
     }, 0);
-    const totalDoubletimeHours = payments.reduce((sum: number, payment: any) => {
+    const totalDoubletimeHours = hourlyPayments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).doubletimeHours;
     }, 0);
-    const totalDoubletimePay = payments.reduce((sum: number, payment: any) => {
+    const totalDoubletimePay = hourlyPayments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).doubletimePay;
+    }, 0);
+    const totalCommissionRowsPaid = commissionPayments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).commissionPaidTotal;
     }, 0);
     const totalCommissionPay = payments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).commissionPay;
@@ -2196,6 +2291,7 @@ function HRDashboardContent() {
       totalCommissionPay,
       totalVariableIncentive,
       totalCommissionPaid,
+      totalCommissionRowsPaid,
       totalTips,
       totalRestBreak,
       totalReimbursement,
@@ -2277,6 +2373,125 @@ function HRDashboardContent() {
     }
     return result;
   }, [getDisplayedPaymentBreakdown, getDisplayedMileagePay, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
+
+  // Per-employee totals from the loaded payroll, matching the Vendor view, so the
+  // Upload Payroll panel can compare an uploaded spreadsheet against them.
+  const uploadComparePayroll = useMemo<SystemPayrollTotal[] | null>(() => {
+    if (!showPayrollUploadPanel || paymentsByVenue.length === 0) return null;
+    return paymentsByVendor.map((vendor) => {
+      const totals = getDisplayedVendorTotals(vendor);
+      return {
+        userId: vendor.userId || '',
+        email: (vendor.email || '').toLowerCase(),
+        name: `${vendor.firstName || ''} ${vendor.lastName || ''}`.trim(),
+        hours: totals.totalHours,
+        gross: totals.totalGross,
+      };
+    });
+  }, [showPayrollUploadPanel, paymentsByVenue, paymentsByVendor, getDisplayedVendorTotals]);
+
+  const fetchActiveUploadedPayroll = useCallback(async (start: string, end: string) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const params = new URLSearchParams({ start, end });
+    const res = await fetch(`/api/hr/payroll-uploads/active?${params.toString()}`, {
+      headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      cache: 'no-store',
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
+    return json as {
+      upload: Omit<PayrollUploadSummary, "row_count" | "total_gross_pay" | "total_hours"> | null;
+      rows: PayrollUploadRow[];
+      overlapping?: Array<{ id: string; period_start: string; period_end: string; file_name: string | null }>;
+    };
+  }, []);
+
+  // Load Payments: use the uploaded payroll for this exact period when there is
+  // one, otherwise calculate the system payroll as before.
+  const handleLoadPayments = useCallback(async () => {
+    if (payrollLoadMode === "cw") {
+      setPayrollSource("system");
+      await loadPaymentsData({ mode: "cw" });
+      return;
+    }
+    const start = paymentsStartDate;
+    const end = paymentsEndDate;
+    let found: { upload: any; rows: PayrollUploadRow[] } | null = null;
+    let overlaps: Array<{ id: string; period_start: string; period_end: string; file_name: string | null }> = [];
+    setUploadedPayrollCheckError("");
+    if (start && end) {
+      setCheckingUploadedPayroll(true);
+      try {
+        const json = await fetchActiveUploadedPayroll(start, end);
+        found = json.upload ? { upload: json.upload, rows: Array.isArray(json.rows) ? json.rows : [] } : null;
+        overlaps = Array.isArray(json.overlapping) ? json.overlapping : [];
+      } catch (e: any) {
+        setUploadedPayrollCheckError(`Couldn't check for an uploaded payroll (${e?.message || 'request failed'}), so the system payroll is shown.`);
+      } finally {
+        setCheckingUploadedPayroll(false);
+      }
+    }
+    setUploadedPayrollPeriod(start && end ? { start, end } : null);
+    setOverlappingUploads(overlaps);
+    setActiveUploadedPayroll(found);
+    if (found) {
+      // Clear system rows from any earlier load so nothing stale is compared or exported.
+      setPaymentsByVenue([]);
+      setSystemPayrollKey("");
+      setPaymentsError("");
+      setPayrollLoadMode("all");
+      setPayrollGroupBy('vendor');
+      setPayrollSource("upload");
+      return;
+    }
+    setPayrollSource("system");
+    await loadPaymentsData({ mode: "all" });
+    setSystemPayrollKey(`${start}|${end}`);
+  }, [payrollLoadMode, paymentsStartDate, paymentsEndDate, fetchActiveUploadedPayroll, loadPaymentsData]);
+
+  // Show the payroll calculated from events even though an upload replaces it.
+  const retrieveSystemPayroll = useCallback(async () => {
+    const key = `${paymentsStartDate}|${paymentsEndDate}`;
+    setPayrollSource("system");
+    if (paymentsByVenue.length > 0 && systemPayrollKey === key) return;
+    await loadPaymentsData({ mode: "all" });
+    setSystemPayrollKey(key);
+  }, [paymentsStartDate, paymentsEndDate, paymentsByVenue.length, systemPayrollKey, loadPaymentsData]);
+
+  // Called by the Upload Payroll panel after uploads change: re-check which
+  // upload (if any) is the payroll for the loaded period.
+  const refreshUploadedPayroll = useCallback(async () => {
+    if (!uploadedPayrollPeriod || payrollLoadMode === "cw") return;
+    try {
+      const json = await fetchActiveUploadedPayroll(uploadedPayrollPeriod.start, uploadedPayrollPeriod.end);
+      const found = json.upload ? { upload: json.upload, rows: Array.isArray(json.rows) ? json.rows : [] } : null;
+      setOverlappingUploads(Array.isArray(json.overlapping) ? json.overlapping : []);
+      setUploadedPayrollCheckError("");
+      const hadUpload = activeUploadedPayroll !== null;
+      setActiveUploadedPayroll(found);
+      if (found && !hadUpload) {
+        // A newly saved or switched-on upload replaces the payroll for the period.
+        setPayrollSource("upload");
+      } else if (!found && payrollSource === "upload") {
+        // The upload was switched off or deleted: fall back to system payroll.
+        setPayrollSource("system");
+        const key = `${uploadedPayrollPeriod.start}|${uploadedPayrollPeriod.end}`;
+        const datesMatch = paymentsStartDate === uploadedPayrollPeriod.start && paymentsEndDate === uploadedPayrollPeriod.end;
+        if (datesMatch && !(paymentsByVenue.length > 0 && systemPayrollKey === key)) {
+          await loadPaymentsData({ mode: "all" });
+          setSystemPayrollKey(key);
+        }
+      }
+    } catch (e: any) {
+      setUploadedPayrollCheckError(`Couldn't refresh the uploaded payroll (${e?.message || 'request failed'}).`);
+    }
+  }, [uploadedPayrollPeriod, payrollLoadMode, fetchActiveUploadedPayroll, activeUploadedPayroll, payrollSource, paymentsStartDate, paymentsEndDate, paymentsByVenue.length, systemPayrollKey, loadPaymentsData]);
+
+  const showingUploadedPayroll = payrollLoadMode !== "cw" && payrollSource === "upload" && activeUploadedPayroll !== null;
+  const hasPayrollData = showingUploadedPayroll ? (activeUploadedPayroll?.rows.length ?? 0) > 0 : paymentsByVenue.length > 0;
+  const uploadedPayrollDatesChanged = Boolean(
+    uploadedPayrollPeriod && (paymentsStartDate !== uploadedPayrollPeriod.start || paymentsEndDate !== uploadedPayrollPeriod.end)
+  );
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];
@@ -2614,15 +2829,16 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
           return sum + breakdown.commissionPaidTotal;
         }, 0);
-        const isHourlyEvent = isHourlyPayrollEvent(event);
-        // Hourly wage total (Regular + Overtime + Double Time) for the event's pay period,
+        // Hourly only when no row is paid commission (a San Diego event with Los Angeles-region
+        // vendors is mixed, and its commission pool still applies to those vendors).
+        const isHourlyEvent = !getEventPayLayout(event).showCommission;
+        // Hourly wage total (Regular + Overtime + Double Time) of the event's hourly rows,
         // separate from any manual "Variable Incentive" bonus which has its own column.
-        const totalDisplayedHourlyLaborCost = isHourlyEvent
-          ? eventPayments.reduce((sum: number, p: any) => {
-              const breakdown = getDisplayedPaymentBreakdown(event, p);
-              return sum + breakdown.regularPay + breakdown.overtimePay + breakdown.doubletimePay;
-            }, 0)
-          : 0;
+        const totalDisplayedHourlyLaborCost = eventPayments.reduce((sum: number, p: any) => {
+          if (!isHourlyPayrollEvent(event, p)) return sum;
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          return sum + breakdown.regularPay + breakdown.overtimePay + breakdown.doubletimePay;
+        }, 0);
         const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)), 0);
         const totalDisplayedOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const totalDisplayedMileagePay = eventPayments.reduce((sum: number, p: any) => {
@@ -3259,6 +3475,32 @@ function HRDashboardContent() {
     const filePrefix = cwExportMode ? 'cw_payroll' : 'non_event_payroll';
     XLSX.writeFile(wb, `${filePrefix}_${startStr}_to_${endStr}.xlsx`);
   }, [paymentsByVenue, payrollLoadMode, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getDisplayedMileagePay, getMileageApproval, adjustmentTypes]);
+
+  // Approved reimbursements for the payroll Start/End dates (all dates when
+  // none are set), same workbook as the Reimbursements panel export. Works
+  // without loading payments; the Payroll Check column appears once they are.
+  const exportApprovedReimbursements = useCallback(async () => {
+    setExportingReimbursements(true);
+    try {
+      const all = await fetchReimbursementRequests();
+      const inRange = all.filter((r) => isWithinPayrollDates(r, paymentsStartDate, paymentsEndDate));
+      const payrollLoaded = paymentsByVenue.length > 0;
+      const exported = exportApprovedReimbursementsToExcel({
+        rows: inRange,
+        payrollCheck: payrollLoaded ? buildPayrollCheck(inRange, payrollReimbursementsByEventUser, true) : null,
+        fileLabel: payrollRangeFileLabel(paymentsStartDate, paymentsEndDate),
+      });
+      if (exported === 0) {
+        alert(paymentsStartDate || paymentsEndDate
+          ? 'No approved reimbursements found for these payroll dates.'
+          : 'No approved reimbursements found.');
+      }
+    } catch (err: any) {
+      alert(err?.message || 'Failed to export approved reimbursements');
+    } finally {
+      setExportingReimbursements(false);
+    }
+  }, [paymentsStartDate, paymentsEndDate, paymentsByVenue, payrollReimbursementsByEventUser]);
 
   const exportSalariedPayroll = useCallback(async () => {
     try {
@@ -4582,7 +4824,7 @@ function HRDashboardContent() {
                   type="button"
                   role="switch"
                   aria-checked={payrollLoadMode === "cw"}
-                  onClick={() => void loadPaymentsData({ mode: payrollLoadMode === "cw" ? "all" : "cw" })}
+                  onClick={() => { setPayrollSource("system"); void loadPaymentsData({ mode: payrollLoadMode === "cw" ? "all" : "cw" }); }}
                   className={`inline-flex h-10 items-center gap-2 rounded-full border px-3 text-sm font-semibold transition ${
                     payrollLoadMode === "cw"
                       ? "border-blue-500 bg-blue-50 text-blue-700"
@@ -4609,11 +4851,12 @@ function HRDashboardContent() {
               <div className="mt-4 space-y-3">
                 <div className="flex flex-wrap items-center gap-3">
                   <button
-                    onClick={() => void loadPaymentsData({ mode: payrollLoadMode === "cw" ? "cw" : "all" })}
-                    className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`}
-                    disabled={loadingPayments}
+                    onClick={() => void handleLoadPayments()}
+                    className={`apple-button ${loadingPayments || checkingUploadedPayroll ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                    disabled={loadingPayments || checkingUploadedPayroll}
+                    title="Shows the uploaded payroll when one is set for these exact dates, otherwise the system payroll."
                   >
-                    {loadingPayments ? 'Loading…' : 'Load Payments'}
+                    {loadingPayments || checkingUploadedPayroll ? 'Loading…' : 'Load Payments'}
                   </button>
 
                   {payrollLoadMode === "cw" ? (
@@ -4622,7 +4865,7 @@ function HRDashboardContent() {
                     </button>
                   ) : (
                     <button
-                      onClick={() => void loadPaymentsData({ mode: "nonEvent" })}
+                      onClick={() => { setPayrollSource("system"); void loadPaymentsData({ mode: "nonEvent" }); }}
                       className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`}
                       disabled={loadingPayments}
                     >
@@ -4635,14 +4878,38 @@ function HRDashboardContent() {
                   <>
                     <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
                       <span className="w-full text-xs font-semibold uppercase tracking-wide text-gray-400 sm:w-auto sm:min-w-20">Exports</span>
-                      <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                      <button
+                        onClick={() => {
+                          if (showingUploadedPayroll && activeUploadedPayroll) {
+                            downloadUploadedPayroll(activeUploadedPayroll.rows, activeUploadedPayroll.upload.period_start, activeUploadedPayroll.upload.period_end);
+                          } else {
+                            exportPaymentsToExcel();
+                          }
+                        }}
+                        className={`apple-button ${!hasPayrollData ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={!hasPayrollData}
+                        title={showingUploadedPayroll ? 'Downloads the uploaded payroll shown below.' : undefined}
+                      >
                         Export to Excel
                       </button>
-                      <button onClick={exportVenueViewToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                      <button
+                        onClick={exportVenueViewToExcel}
+                        className={`apple-button ${paymentsByVenue.length === 0 || showingUploadedPayroll ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={paymentsByVenue.length === 0 || showingUploadedPayroll}
+                        title={showingUploadedPayroll ? 'Needs event sales data. Retrieve the system payroll to use this export.' : undefined}
+                      >
                         Export by Venue
                       </button>
                       <button onClick={() => void exportSalariedPayroll()} className="apple-button apple-button-secondary">
                         Salaried Export
+                      </button>
+                      <button
+                        onClick={() => void exportApprovedReimbursements()}
+                        className={`apple-button ${exportingReimbursements ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={exportingReimbursements}
+                        title="Download approved reimbursements for the Start/End dates above as an Excel file."
+                      >
+                        {exportingReimbursements ? 'Exporting…' : 'Export Approved Reimbursements'}
                       </button>
                       <Link href="/salaried-paysheet">
                         <button className="apple-button apple-button-secondary">Salaried Paysheet</button>
@@ -4652,29 +4919,34 @@ function HRDashboardContent() {
                       <span className="w-full text-xs font-semibold uppercase tracking-wide text-gray-400 sm:w-auto sm:min-w-20">Views</span>
                       <button
                         onClick={() => setPayrollGroupBy('venue')}
-                        className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venue' ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                        disabled={paymentsByVenue.length === 0}
+                        className={`apple-button ${!hasPayrollData ? 'apple-button-disabled' : payrollGroupBy === 'venue' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={!hasPayrollData}
                       >
                         View by Event
                       </button>
                       <button
                         onClick={() => setPayrollGroupBy('vendor')}
-                        className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'vendor' ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                        disabled={paymentsByVenue.length === 0}
+                        className={`apple-button ${!hasPayrollData ? 'apple-button-disabled' : payrollGroupBy === 'vendor' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={!hasPayrollData}
                       >
                         View by Vendor
                       </button>
                       <button
                         onClick={() => setPayrollGroupBy('venueSummary')}
-                        className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venueSummary' ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                        disabled={paymentsByVenue.length === 0}
+                        className={`apple-button ${!hasPayrollData ? 'apple-button-disabled' : payrollGroupBy === 'venueSummary' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={!hasPayrollData}
                       >
                         View by Venue
                       </button>
                     </div>
                     <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
                       <span className="w-full text-xs font-semibold uppercase tracking-wide text-gray-400 sm:w-auto sm:min-w-20">Workflow</span>
-                      <button onClick={saveAllAdjustments} className={`apple-button ${savingAdjustment ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={savingAdjustment}>
+                      <button
+                        onClick={saveAllAdjustments}
+                        className={`apple-button ${savingAdjustment || showingUploadedPayroll ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={savingAdjustment || showingUploadedPayroll}
+                        title={showingUploadedPayroll ? 'Adjustments apply to the system payroll. Edit uploaded lines in Upload Payroll instead.' : undefined}
+                      >
                         {savingAdjustment ? 'Saving…' : 'Save All Adjustments'}
                       </button>
                       <button onClick={() => { setApprovalError(''); setShowApprovalModal(true); }} className="apple-button apple-button-primary">
@@ -4691,6 +4963,14 @@ function HRDashboardContent() {
                         {showSickLeavePanels ? 'Hide Sick Leave' : 'Sick Leave'}
                       </button>
                       <button
+                        onClick={() => setShowPayrollUploadPanel((prev) => !prev)}
+                        className={`apple-button ${showPayrollUploadPanel ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        aria-expanded={showPayrollUploadPanel}
+                        title="Upload a payroll spreadsheet for the Start/End dates above, then review and edit it."
+                      >
+                        {showPayrollUploadPanel ? 'Hide Upload Payroll' : 'Upload Payroll'}
+                      </button>
+                      <button
                         onClick={() => setShowReimbursementsPanel((prev) => !prev)}
                         className={`apple-button ${showReimbursementsPanel ? 'apple-button-primary' : 'apple-button-secondary'}`}
                         aria-expanded={showReimbursementsPanel}
@@ -4702,6 +4982,72 @@ function HRDashboardContent() {
                 )}
               </div>
             </div>
+
+            {payrollLoadMode !== "cw" && uploadedPayrollPeriod && (activeUploadedPayroll || overlappingUploads.length > 0 || uploadedPayrollCheckError) && (
+              <div className="mb-6 space-y-2">
+                {activeUploadedPayroll && showingUploadedPayroll && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+                    <div className="text-sm text-blue-900">
+                      <div className="font-semibold">
+                        Showing uploaded payroll for {formatUploadPeriodDate(activeUploadedPayroll.upload.period_start)} – {formatUploadPeriodDate(activeUploadedPayroll.upload.period_end)}
+                      </div>
+                      <div>
+                        {activeUploadedPayroll.upload.file_name || 'Uploaded file'} · {activeUploadedPayroll.rows.length} lines ·{' '}
+                        ${formatPayrollMoney(activeUploadedPayroll.rows.reduce((sum, r) => sum + Number(r.total_gross_pay || 0), 0))} total gross ·{' '}
+                        {activeUploadedPayroll.upload.status === 'reviewed' ? 'Reviewed' : 'Draft'}. It replaces the system payroll for these dates. The system payroll is not changed.
+                      </div>
+                      {uploadedPayrollDatesChanged && (
+                        <div className="mt-1 text-amber-800">The dates above changed. Click Load Payments to load them.</div>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => void retrieveSystemPayroll()}
+                        className={`apple-button ${loadingPayments || uploadedPayrollDatesChanged ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={loadingPayments || uploadedPayrollDatesChanged}
+                      >
+                        {loadingPayments ? 'Loading…' : 'Retrieve System Payroll'}
+                      </button>
+                      {!showPayrollUploadPanel && (
+                        <button onClick={() => setShowPayrollUploadPanel(true)} className="apple-button apple-button-secondary">
+                          Edit Upload
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {activeUploadedPayroll && !showingUploadedPayroll && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                    <div className="text-sm text-amber-900">
+                      <div className="font-semibold">Showing the system payroll calculated from events</div>
+                      <div>
+                        {activeUploadedPayroll.upload.file_name || 'An uploaded file'} is the payroll for {formatUploadPeriodDate(activeUploadedPayroll.upload.period_start)} – {formatUploadPeriodDate(activeUploadedPayroll.upload.period_end)}.
+                      </div>
+                    </div>
+                    <button onClick={() => setPayrollSource("upload")} className="apple-button apple-button-primary">
+                      Use Uploaded Payroll
+                    </button>
+                  </div>
+                )}
+                {!activeUploadedPayroll && overlappingUploads.map((u) => (
+                  <div key={u.id} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                    {u.file_name || 'An uploaded file'} is the payroll for {formatUploadPeriodDate(u.period_start)} – {formatUploadPeriodDate(u.period_end)}, which overlaps these dates. It is only used when exactly those dates are loaded.
+                  </div>
+                ))}
+                {uploadedPayrollCheckError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{uploadedPayrollCheckError}</div>
+                )}
+              </div>
+            )}
+
+            {payrollLoadMode !== "cw" && showPayrollUploadPanel && (
+              <PayrollUploadPanel
+                startDate={paymentsStartDate}
+                endDate={paymentsEndDate}
+                systemPayroll={uploadComparePayroll}
+                onUploadsChanged={() => void refreshUploadedPayroll()}
+              />
+            )}
 
             {payrollLoadMode !== "cw" && showReimbursementsPanel && (
               <ReimbursementsPanel
@@ -5236,6 +5582,9 @@ function HRDashboardContent() {
 
             {paymentsError && <div className="apple-alert apple-alert-error mb-6">{paymentsError}</div>}
 
+            {showingUploadedPayroll && activeUploadedPayroll ? (
+              <UploadedPayrollView rows={activeUploadedPayroll.rows} groupBy={payrollGroupBy} />
+            ) : (
             <div className="space-y-4">
               {paymentsByVenue.length === 0 && !loadingPayments ? (
                 <div className="apple-empty-state">
@@ -5786,34 +6135,36 @@ function HRDashboardContent() {
                                         <thead className="bg-gray-50">
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const isHourlyEvent = isHourlyPayrollEvent(ev);
-                                            const hideRest = isHourlyEvent;
+                                            // Mixed San Diego events (hourly workers plus Los Angeles-region
+                                            // vendors on commission) show both column groups.
+                                            const { showHourly, showCommission } = getEventPayLayout(ev);
+                                            const hideRest = !showCommission;
                                             const showOT = st === "AZ" || st === "NY";
                                             return (
                                               <tr>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Rate</th>
-                                                {isHourlyEvent ? (
+                                                {showCommission && (
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rate in Effect</th>
+                                                )}
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
+                                                {showCommission && showOT && (
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
+                                                )}
+                                                {showHourly && (
                                                   <>
-                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
                                                     <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Regular Time</th>
                                                     <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
                                                     <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Double Time</th>
                                                   </>
-                                                ) : (
-                                                  <>
-                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rate in Effect</th>
-                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
-                                                    {showOT && (
-                                                      <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
-                                                    )}
-                                                    <th
-                                                      className="p-2 text-left text-xs font-medium text-gray-500 uppercase"
-                                                      title="Vendor's total commission-eligible pay (the greater of their guaranteed hourly-rate extension or their pool share). The pool share alone is shown underneath for reference."
-                                                    >
-                                                      Commission Pay
-                                                    </th>
-                                                  </>
+                                                )}
+                                                {showCommission && (
+                                                  <th
+                                                    className="p-2 text-left text-xs font-medium text-gray-500 uppercase"
+                                                    title="Vendor's total commission-eligible pay (the greater of their guaranteed hourly-rate extension or their pool share). The pool share alone is shown underneath for reference."
+                                                  >
+                                                    Commission Pay
+                                                  </th>
                                                 )}
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
                                                 {!hideRest && (
@@ -5836,6 +6187,14 @@ function HRDashboardContent() {
                                                   <div>
                                                     <div className="text-sm font-medium text-gray-900">{p.firstName} {p.lastName}</div>
                                                     <div className="text-xs text-gray-500">{p.email}</div>
+                                                    {p.sanDiegoLaCommission === true && (
+                                                      <span
+                                                        className="mt-0.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200"
+                                                        title="Los Angeles-region vendor: paid commission at this San Diego event instead of hourly"
+                                                      >
+                                                        LA vendor · Commission
+                                                      </span>
+                                                    )}
                                                   </div>
                                                   {p.status && p.totalPay === 0 && (
                                                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${
@@ -5853,6 +6212,7 @@ function HRDashboardContent() {
                                                 const isHourlyEvent = isHourlyPayrollEvent(ev, p);
                                                 const hideRest = isHourlyEvent;
                                                 const showOT = st === "AZ" || st === "NY";
+                                                const eventLayout = getEventPayLayout(ev);
 
                                                 const breakdown = getDisplayedPaymentBreakdown(ev, p);
                                                 const regRate = breakdown.regRate;
@@ -5888,20 +6248,29 @@ function HRDashboardContent() {
                                                 return (
                                                   <>
                                                     <td className="p-2 text-sm">${formatPayrollMoney(regRate)}/hr</td>
-                                                    {isHourlyEvent ? (
+                                                    {eventLayout.showCommission && (
+                                                      <td className="p-2 text-sm">{isHourlyEvent ? '\u2014' : `$${formatPayrollMoney(loadedRate)}/hr`}</td>
+                                                    )}
+                                                    <td className="p-2 text-sm">{renderCombinedHours(hours, sickHours, "left")}</td>
+                                                    {eventLayout.showCommission && showOT && (
+                                                      <td className="p-2 text-sm">{!isHourlyEvent && otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
+                                                    )}
+                                                    {eventLayout.showHourly && (isHourlyEvent ? (
                                                       <>
-                                                        <td className="p-2 text-sm">{renderCombinedHours(hours, sickHours, "left")}</td>
                                                         <td className="p-2 text-sm text-gray-900">{`${formatHoursDecimal(breakdown.regularHours)}h / $${formatPayrollMoney(breakdown.regularPay)}`}</td>
                                                         <td className="p-2 text-sm text-orange-600">{`${formatHoursDecimal(breakdown.overtimeHours)}h / $${formatPayrollMoney(breakdown.overtimePay)}`}</td>
                                                         <td className="p-2 text-sm text-rose-600">{`${formatHoursDecimal(breakdown.doubletimeHours)}h / $${formatPayrollMoney(breakdown.doubletimePay)}`}</td>
                                                       </>
                                                     ) : (
                                                       <>
-                                                        <td className="p-2 text-sm">${formatPayrollMoney(loadedRate)}/hr</td>
-                                                        <td className="p-2 text-sm">{renderCombinedHours(hours, sickHours, "left")}</td>
-                                                        {showOT && (
-                                                          <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
-                                                        )}
+                                                        <td className="p-2 text-sm text-gray-400">{'\u2014'}</td>
+                                                        <td className="p-2 text-sm text-gray-400">{'\u2014'}</td>
+                                                        <td className="p-2 text-sm text-gray-400">{'\u2014'}</td>
+                                                      </>
+                                                    ))}
+                                                    {eventLayout.showCommission && (isHourlyEvent ? (
+                                                      <td className="p-2 text-sm text-gray-400">{'\u2014'}</td>
+                                                    ) : (
                                                         <td className="p-2 text-sm text-blue-600">
                                                           <div>${formatMoney3(displayedCommissionPay)}</div>
                                                           <div
@@ -5919,8 +6288,7 @@ function HRDashboardContent() {
                                                             </div>
                                                           )}
                                                         </td>
-                                                      </>
-                                                    )}
+                                                    ))}
                                                     <td className="p-2 text-sm text-orange-600">
                                                       ${formatMoney3(tips)}
                                                       {p.tipsEvenSplit !== undefined && (
@@ -5932,9 +6300,11 @@ function HRDashboardContent() {
                                                         </div>
                                                       )}
                                                     </td>
-                                                    {!hideRest && (
+                                                    {eventLayout.showCommission && (hideRest ? (
+                                                      <td className="p-2 text-sm text-gray-400">{'\u2014'}</td>
+                                                    ) : (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
-                                                    )}
+                                                    ))}
                                                     <td className="p-2 text-sm text-blue-600">
                                                       {_mileagePay > 0 || mileageOverrideS2 !== undefined || approval.company_vehicle ? (
                                                         <div className="flex flex-col gap-0.5">
@@ -6032,28 +6402,26 @@ function HRDashboardContent() {
                                           ))}
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const isHourlyEvent = isHourlyPayrollEvent(ev);
-                                            const hideRest = isHourlyEvent;
+                                            const { showHourly, showCommission } = getEventPayLayout(ev);
+                                            const hideRest = !showCommission;
                                             const showOT = st === "AZ" || st === "NY";
                                             const eventTotals = getDisplayedEventTotals(ev);
                                             return (
                                               <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                                                 <td className="p-2 uppercase tracking-wide">Total</td>
                                                 <td className="p-2"></td>
-                                                {isHourlyEvent ? (
+                                                {showCommission && <td className="p-2"></td>}
+                                                <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
+                                                {showCommission && showOT && <td className="p-2"></td>}
+                                                {showHourly && (
                                                   <>
-                                                    <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
                                                     <td className="p-2 text-gray-900">{`${formatHoursDecimal(eventTotals.totalRegularHours)}h / $${formatPayrollMoney(eventTotals.totalRegularPay)}`}</td>
                                                     <td className="p-2 text-orange-600">{`${formatHoursDecimal(eventTotals.totalOvertimeHours)}h / $${formatPayrollMoney(eventTotals.totalOvertimePay)}`}</td>
                                                     <td className="p-2 text-rose-600">{`${formatHoursDecimal(eventTotals.totalDoubletimeHours)}h / $${formatPayrollMoney(eventTotals.totalDoubletimePay)}`}</td>
                                                   </>
-                                                ) : (
-                                                  <>
-                                                    <td className="p-2"></td>
-                                                    <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
-                                                    {showOT && <td className="p-2"></td>}
-                                                    <td className="p-2 text-green-600">${formatMoney3(eventTotals.totalCommissionPaid)}</td>
-                                                  </>
+                                                )}
+                                                {showCommission && (
+                                                  <td className="p-2 text-green-600">${formatMoney3(eventTotals.totalCommissionRowsPaid)}</td>
                                                 )}
                                                 <td className="p-2 text-orange-600">${formatMoney3(eventTotals.totalTips)}</td>
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
@@ -6095,6 +6463,7 @@ function HRDashboardContent() {
                 )})
               )}
             </div>
+            )}
 
             {/* Approval Submissions History */}
             <div className="apple-card mt-6">

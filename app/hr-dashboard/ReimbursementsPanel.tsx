@@ -2,33 +2,22 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import {
+  approvedForReport,
+  buildPayrollCheck,
+  effectiveAmountOf,
+  exportApprovedReimbursementsToExcel,
+  fetchReimbursementRequests,
+  isWithinPayrollDates,
+  money,
+  payrollRangeFileLabel,
+  type ReimbursementRow,
+} from "./reimbursements-export";
 
 // Read-only visualization of vendor reimbursement requests for the HR dashboard
 // Payroll tab. Approve/reject stays on /payroll-approvals (exec-only); this panel
 // only shows totals, a per-vendor breakdown, and how each approved request lines
 // up with the reimbursement amount currently on the loaded payroll rows.
-
-type ReimbursementRow = {
-  id: string;
-  user_id: string;
-  vendor_name: string;
-  vendor_email: string | null;
-  event_id: string | null;
-  purchase_date: string;
-  description: string;
-  requested_amount: number;
-  approved_amount: number | null;
-  status: "submitted" | "approved" | "rejected" | "cancelled";
-  receipt_filename: string | null;
-  receipt_url: string | null;
-  approved_pay_date: string | null;
-  review_notes: string | null;
-  reviewed_by_name: string | null;
-  reviewed_at: string | null;
-  created_at: string;
-  event: { id: string; event_name: string; event_date: string | null; venue: string | null } | null;
-};
 
 type StatusFilter = "all" | ReimbursementRow["status"];
 
@@ -54,24 +43,12 @@ const STATUS_LABELS: Record<ReimbursementRow["status"], string> = {
   cancelled: "Cancelled",
 };
 
-const money = (n: number) =>
-  `$${(Number.isFinite(n) ? n : 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 const formatDate = (value: string | null | undefined) => {
   if (!value) return "—";
   const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
-
-// The date a reimbursement lands in payroll: the event date for event-linked
-// requests, the approved pay date for standalone ones, else the purchase date.
-const payDateOf = (row: ReimbursementRow): string =>
-  (row.event?.event_date || row.approved_pay_date || row.purchase_date || "").slice(0, 10);
-
-// The amount that matters for a row: approved amount once approved, otherwise requested.
-const effectiveAmountOf = (row: ReimbursementRow): number =>
-  row.status === "approved" && row.approved_amount != null ? Number(row.approved_amount) : Number(row.requested_amount || 0);
 
 export default function ReimbursementsPanel({ startDate, endDate, payrollReimbursements, payrollLoaded }: Props) {
   const [rows, setRows] = useState<ReimbursementRow[]>([]);
@@ -86,14 +63,7 @@ export default function ReimbursementsPanel({ startDate, endDate, payrollReimbur
     setLoading(true);
     setError("");
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch("/api/payroll/reimbursements", {
-        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-        cache: "no-store",
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error || "Failed to load reimbursements");
-      setRows(Array.isArray(json.requests) ? json.requests : []);
+      setRows(await fetchReimbursementRequests());
     } catch (err: any) {
       setError(err?.message || "Failed to load reimbursements");
     } finally {
@@ -106,24 +76,26 @@ export default function ReimbursementsPanel({ startDate, endDate, payrollReimbur
   }, [load]);
 
   const hasRange = Boolean(startDate || endDate);
+  const rangeActive = useDateRange && hasRange;
+
+  // Date filtered only. The payroll comparison sums from this set so a search
+  // never splits a vendor+event total.
+  const dateRows = useMemo(
+    () => (rangeActive ? rows.filter((row) => isWithinPayrollDates(row, startDate, endDate)) : rows),
+    [rows, rangeActive, startDate, endDate],
+  );
 
   // Date + search filtered, before the status filter so the summary tiles
   // always show every status for the chosen window.
   const windowRows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (useDateRange && hasRange) {
-        const d = payDateOf(row);
-        if (startDate && d < startDate) return false;
-        if (endDate && d > endDate) return false;
-      }
-      if (q) {
-        const hay = `${row.vendor_name} ${row.vendor_email || ""} ${row.description} ${row.event?.event_name || ""} ${row.event?.venue || ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [rows, search, useDateRange, hasRange, startDate, endDate]);
+    if (!q) return dateRows;
+    return dateRows.filter((row) =>
+      `${row.vendor_name} ${row.vendor_email || ""} ${row.description} ${row.event?.event_name || ""} ${row.event?.venue || ""}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [dateRows, search]);
 
   const visibleRows = useMemo(
     () => (statusFilter === "all" ? windowRows : windowRows.filter((r) => r.status === statusFilter)),
@@ -159,33 +131,22 @@ export default function ReimbursementsPanel({ startDate, endDate, payrollReimbur
   const chartVendors = byVendor.filter((v) => v.approved + v.pending > 0).slice(0, 10);
   const chartMax = Math.max(1, ...chartVendors.map((v) => v.approved + v.pending));
 
-  // Event-linked approved requests compared against the loaded payroll's
-  // reimbursement column. Payroll stores one amount per vendor per event, so
-  // approved requests are summed per event+vendor before comparing.
-  const payrollCheck = useMemo(() => {
-    const approvedByKey: Record<string, number> = {};
-    for (const r of windowRows) {
-      if (r.status !== "approved" || !r.event_id) continue;
-      const key = `${r.event_id}|${r.user_id}`;
-      approvedByKey[key] = (approvedByKey[key] || 0) + effectiveAmountOf(r);
-    }
-    return (row: ReimbursementRow): { label: string; className: string; title: string } | null => {
-      if (!payrollLoaded || row.status !== "approved") return null;
-      if (!row.event_id) return { label: "Standalone", className: "text-gray-500", title: "Not tied to an event; paid on the approved pay date." };
-      const eventMap = payrollReimbursements[row.event_id];
-      if (!eventMap) return { label: "Not in loaded payroll", className: "text-gray-400", title: "This event is not part of the payroll currently loaded." };
-      const onPayroll = Number(eventMap[row.user_id] || 0);
-      const approved = approvedByKey[`${row.event_id}|${row.user_id}`] || 0;
-      if (Math.abs(onPayroll - approved) < 0.005) {
-        return { label: `On payroll ${money(onPayroll)}`, className: "text-green-700", title: "Payroll reimbursement matches the approved total for this vendor and event." };
-      }
-      return {
-        label: `Payroll ${money(onPayroll)} vs ${money(approved)}`,
-        className: "text-red-600 font-semibold",
-        title: "Payroll reimbursement for this vendor and event differs from the approved total.",
-      };
-    };
-  }, [windowRows, payrollLoaded, payrollReimbursements]);
+  const payrollCheck = useMemo(
+    () => buildPayrollCheck(dateRows, payrollReimbursements, payrollLoaded),
+    [dateRows, payrollReimbursements, payrollLoaded],
+  );
+
+  // Approved requests for the Excel report. Follows the date-range and search
+  // filters but ignores the status filter, so it is always the approved set.
+  const approvedRows = useMemo(() => approvedForReport(windowRows), [windowRows]);
+
+  const exportApprovedToExcel = useCallback(() => {
+    exportApprovedReimbursementsToExcel({
+      rows: approvedRows,
+      payrollCheck: payrollLoaded ? payrollCheck : null,
+      fileLabel: rangeActive ? payrollRangeFileLabel(startDate, endDate) : "all_dates",
+    });
+  }, [approvedRows, payrollLoaded, payrollCheck, rangeActive, startDate, endDate]);
 
   const statusTiles: Array<{ key: ReimbursementRow["status"]; accent: string }> = [
     { key: "submitted", accent: "border-l-amber-400" },
@@ -270,6 +231,18 @@ export default function ReimbursementsPanel({ startDate, endDate, payrollReimbur
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={exportApprovedToExcel}
+            disabled={loading || approvedRows.length === 0}
+            className={`apple-button ${loading || approvedRows.length === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
+            title={
+              approvedRows.length === 0
+                ? "No approved reimbursements match the current dates and search."
+                : "Download approved reimbursements matching the current dates and search as an Excel file."
+            }
+          >
+            Export Approved Reimbursements to Excel ({approvedRows.length})
+          </button>
           <Link href="/payroll-approvals">
             <button className="apple-button apple-button-secondary">Review in Approvals</button>
           </Link>

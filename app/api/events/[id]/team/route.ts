@@ -1114,6 +1114,22 @@ export async function GET(
       };
     };
 
+    // Home region name per member (profiles.region_id -> regions.name). Payroll on the event
+    // dashboard uses it to keep Los Angeles-region vendors on commission pay at San Diego events.
+    const regionNameById: Record<string, string> = {};
+    {
+      const { data: regionRows, error: regionRowsError } = await supabaseAdmin
+        .from('regions')
+        .select('id, name');
+      if (regionRowsError) {
+        console.error('[TEAM] Failed to load region names for payroll:', regionRowsError.message);
+      } else {
+        for (const region of regionRows || []) {
+          if (region?.id && region?.name) regionNameById[region.id] = region.name;
+        }
+      }
+    }
+
     // Decrypt sensitive profile data and fallback to employee_information.phone when needed
     const decryptedTeamMembers = teamMembers?.map((member: any) => {
       if (!member?.users) return member;
@@ -1189,6 +1205,7 @@ export async function GET(
               : '',
             phone: profilePhone || employeeInfoPhone,
             region_id: profile?.region_id || null,
+            region_name: profile?.region_id ? (regionNameById[profile.region_id] || null) : null,
             profile_photo_url: null,
           }
         }
