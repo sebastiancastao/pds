@@ -15,6 +15,8 @@ import { getRestBreakPay } from "@/lib/rest-breaks";
 import ReimbursementsPanel from "./ReimbursementsPanel";
 import PayrollUploadPanel, { type SystemPayrollTotal } from "./PayrollUploadPanel";
 import UploadedPayrollView from "./UploadedPayrollView";
+import PayrollCompareView from "./PayrollCompareView";
+import type { CompareAmounts, SystemCompareLine, SystemCompareVendor } from "@/lib/payroll-compare";
 import { downloadUploadedPayroll } from "./payroll-upload-export";
 import type { PayrollUploadRow, PayrollUploadSummary } from "@/lib/payroll-upload";
 import {
@@ -270,7 +272,8 @@ function HRDashboardContent() {
   // An uploaded payroll (payroll_period_uploads.is_active) replaces the system
   // payroll for its exact period when Load Payments runs. The system payroll is
   // never changed, and "Retrieve System Payroll" switches back to it.
-  const [payrollSource, setPayrollSource] = useState<"system" | "upload">("system");
+  // "compare" shows the system payroll and the uploaded payroll side by side.
+  const [payrollSource, setPayrollSource] = useState<"system" | "upload" | "compare">("system");
   const [activeUploadedPayroll, setActiveUploadedPayroll] = useState<{
     upload: Omit<PayrollUploadSummary, "row_count" | "total_gross_pay" | "total_hours">;
     rows: PayrollUploadRow[];
@@ -2472,7 +2475,7 @@ function HRDashboardContent() {
       if (found && !hadUpload) {
         // A newly saved or switched-on upload replaces the payroll for the period.
         setPayrollSource("upload");
-      } else if (!found && payrollSource === "upload") {
+      } else if (!found && (payrollSource === "upload" || payrollSource === "compare")) {
         // The upload was switched off or deleted: fall back to system payroll.
         setPayrollSource("system");
         const key = `${uploadedPayrollPeriod.start}|${uploadedPayrollPeriod.end}`;
@@ -2488,7 +2491,76 @@ function HRDashboardContent() {
   }, [uploadedPayrollPeriod, payrollLoadMode, fetchActiveUploadedPayroll, activeUploadedPayroll, payrollSource, paymentsStartDate, paymentsEndDate, paymentsByVenue.length, systemPayrollKey, loadPaymentsData]);
 
   const showingUploadedPayroll = payrollLoadMode !== "cw" && payrollSource === "upload" && activeUploadedPayroll !== null;
+  const showingPayrollComparison = payrollLoadMode !== "cw" && payrollSource === "compare" && activeUploadedPayroll !== null;
   const hasPayrollData = showingUploadedPayroll ? (activeUploadedPayroll?.rows.length ?? 0) > 0 : paymentsByVenue.length > 0;
+
+  // System payroll next to the uploaded payroll. Loads the system payroll for
+  // the dates first when it isn't loaded yet.
+  const compareSideBySide = useCallback(async () => {
+    if (!activeUploadedPayroll) return;
+    const key = `${paymentsStartDate}|${paymentsEndDate}`;
+    if (!(paymentsByVenue.length > 0 && systemPayrollKey === key)) {
+      await loadPaymentsData({ mode: "all" });
+      setSystemPayrollKey(key);
+    } else if (payrollGroupBy === 'venueSummary') {
+      setPayrollGroupBy('vendor');
+    }
+    setPayrollSource("compare");
+  }, [activeUploadedPayroll, paymentsStartDate, paymentsEndDate, paymentsByVenue.length, systemPayrollKey, payrollGroupBy, loadPaymentsData]);
+
+  // One line per employee per event, and one total per employee, using the same
+  // helpers as the Event and Vendor views so the numbers match what HR sees.
+  const systemCompareData = useMemo<{ lines: SystemCompareLine[]; vendors: SystemCompareVendor[] } | null>(() => {
+    if (payrollSource !== "compare" || paymentsByVenue.length === 0) return null;
+    const toAmounts = (t: ReturnType<typeof getDisplayedVendorTotals>): CompareAmounts => ({
+      hours: t.totalHours,
+      regular_pay: t.totalRegularPay,
+      overtime_pay: t.totalOvertimePay,
+      doubletime_pay: t.totalDoubletimePay,
+      commission_pay: t.totalCommissionPay,
+      variable_incentive: t.totalVariableIncentive,
+      tips: t.totalTips,
+      rest_break: t.totalRestBreak,
+      mileage_pay: t.totalMileagePay,
+      travel_pay: null,
+      reimbursement: t.totalReimbursement,
+      other: t.totalOther,
+      bonus: null,
+      sick_pay: t.totalSickPay,
+      total_gross_pay: t.totalGross,
+    });
+    const lines: SystemCompareLine[] = [];
+    paymentsByVenue.forEach((v) => {
+      (v.events || []).forEach((ev: any) => {
+        (Array.isArray(ev.payments) ? ev.payments : []).forEach((p: any) => {
+          const totals = getDisplayedVendorTotals({
+            events: [{ event: ev, venue: v.venue, city: v.city ?? null, state: v.state ?? null, payment: p }],
+          });
+          lines.push({
+            userId: p.userId || '',
+            email: (p.email || '').toLowerCase(),
+            firstName: p.firstName || '',
+            lastName: p.lastName || '',
+            eventId: String(ev.id || `${v.venue}|${ev.name}|${ev.date}`),
+            eventName: ev.name || '',
+            eventDate: ev.date || '',
+            venue: v.venue || '',
+            city: v.city || '',
+            state: v.state || '',
+            amounts: toAmounts(totals),
+          });
+        });
+      });
+    });
+    const vendors: SystemCompareVendor[] = paymentsByVendor.map((vendor) => ({
+      userId: vendor.userId || '',
+      email: (vendor.email || '').toLowerCase(),
+      firstName: vendor.firstName || '',
+      lastName: vendor.lastName || '',
+      amounts: toAmounts(getDisplayedVendorTotals(vendor)),
+    }));
+    return { lines, vendors };
+  }, [payrollSource, paymentsByVenue, paymentsByVendor, getDisplayedVendorTotals]);
   const uploadedPayrollDatesChanged = Boolean(
     uploadedPayrollPeriod && (paymentsStartDate !== uploadedPayrollPeriod.start || paymentsEndDate !== uploadedPayrollPeriod.end)
   );
@@ -4933,10 +5005,26 @@ function HRDashboardContent() {
                       </button>
                       <button
                         onClick={() => setPayrollGroupBy('venueSummary')}
-                        className={`apple-button ${!hasPayrollData ? 'apple-button-disabled' : payrollGroupBy === 'venueSummary' ? 'apple-button-primary' : 'apple-button-secondary'}`}
-                        disabled={!hasPayrollData}
+                        className={`apple-button ${!hasPayrollData || showingPayrollComparison ? 'apple-button-disabled' : payrollGroupBy === 'venueSummary' ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={!hasPayrollData || showingPayrollComparison}
+                        title={showingPayrollComparison ? 'The side-by-side comparison is by vendor or by event.' : undefined}
                       >
                         View by Venue
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (showingPayrollComparison) setPayrollSource(activeUploadedPayroll ? "upload" : "system");
+                          else void compareSideBySide();
+                        }}
+                        className={`apple-button ${!activeUploadedPayroll || loadingPayments || uploadedPayrollDatesChanged ? 'apple-button-disabled' : showingPayrollComparison ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        disabled={!activeUploadedPayroll || loadingPayments || uploadedPayrollDatesChanged}
+                        title={
+                          !activeUploadedPayroll
+                            ? 'Load a period that has an uploaded payroll to compare it with the system payroll.'
+                            : 'Show the system payroll and the uploaded payroll side by side, by vendor or by event.'
+                        }
+                      >
+                        System vs Upload
                       </button>
                     </div>
                     <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
@@ -5008,6 +5096,13 @@ function HRDashboardContent() {
                       >
                         {loadingPayments ? 'Loading…' : 'Retrieve System Payroll'}
                       </button>
+                      <button
+                        onClick={() => void compareSideBySide()}
+                        className={`apple-button ${loadingPayments || uploadedPayrollDatesChanged ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={loadingPayments || uploadedPayrollDatesChanged}
+                      >
+                        Compare Side by Side
+                      </button>
                       {!showPayrollUploadPanel && (
                         <button onClick={() => setShowPayrollUploadPanel(true)} className="apple-button apple-button-secondary">
                           Edit Upload
@@ -5016,7 +5111,7 @@ function HRDashboardContent() {
                     </div>
                   </div>
                 )}
-                {activeUploadedPayroll && !showingUploadedPayroll && (
+                {activeUploadedPayroll && payrollSource === "system" && (
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
                     <div className="text-sm text-amber-900">
                       <div className="font-semibold">Showing the system payroll calculated from events</div>
@@ -5024,9 +5119,39 @@ function HRDashboardContent() {
                         {activeUploadedPayroll.upload.file_name || 'An uploaded file'} is the payroll for {formatUploadPeriodDate(activeUploadedPayroll.upload.period_start)} – {formatUploadPeriodDate(activeUploadedPayroll.upload.period_end)}.
                       </div>
                     </div>
-                    <button onClick={() => setPayrollSource("upload")} className="apple-button apple-button-primary">
-                      Use Uploaded Payroll
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => void compareSideBySide()}
+                        className={`apple-button ${loadingPayments || uploadedPayrollDatesChanged ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                        disabled={loadingPayments || uploadedPayrollDatesChanged}
+                      >
+                        Compare Side by Side
+                      </button>
+                      <button onClick={() => setPayrollSource("upload")} className="apple-button apple-button-primary">
+                        Use Uploaded Payroll
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {activeUploadedPayroll && payrollSource === "compare" && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+                    <div className="text-sm text-indigo-900">
+                      <div className="font-semibold">
+                        System payroll vs {activeUploadedPayroll.upload.file_name || 'uploaded payroll'}, side by side
+                      </div>
+                      <div>
+                        {formatUploadPeriodDate(activeUploadedPayroll.upload.period_start)} – {formatUploadPeriodDate(activeUploadedPayroll.upload.period_end)}.
+                        Use View by Vendor or View by Event above to switch the grouping. Nothing is changed by comparing.
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => setPayrollSource("system")} className="apple-button apple-button-secondary">
+                        Show System Payroll
+                      </button>
+                      <button onClick={() => setPayrollSource("upload")} className="apple-button apple-button-primary">
+                        Show Uploaded Payroll
+                      </button>
+                    </div>
                   </div>
                 )}
                 {!activeUploadedPayroll && overlappingUploads.map((u) => (
@@ -5582,7 +5707,23 @@ function HRDashboardContent() {
 
             {paymentsError && <div className="apple-alert apple-alert-error mb-6">{paymentsError}</div>}
 
-            {showingUploadedPayroll && activeUploadedPayroll ? (
+            {showingPayrollComparison && activeUploadedPayroll ? (
+              loadingPayments ? (
+                <div className="apple-empty-state">
+                  <p className="text-gray-500">Loading the system payroll to compare…</p>
+                </div>
+              ) : (
+                <PayrollCompareView
+                  systemLines={systemCompareData?.lines ?? []}
+                  systemVendors={systemCompareData?.vendors ?? []}
+                  uploadRows={activeUploadedPayroll.rows}
+                  groupBy={payrollGroupBy === 'vendor' ? 'vendor' : 'event'}
+                  uploadLabel={activeUploadedPayroll.upload.file_name || 'Uploaded file'}
+                  periodStart={activeUploadedPayroll.upload.period_start}
+                  periodEnd={activeUploadedPayroll.upload.period_end}
+                />
+              )
+            ) : showingUploadedPayroll && activeUploadedPayroll ? (
               <UploadedPayrollView rows={activeUploadedPayroll.rows} groupBy={payrollGroupBy} />
             ) : (
             <div className="space-y-4">

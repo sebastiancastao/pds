@@ -124,8 +124,10 @@ export async function POST(req: NextRequest) {
     .insert({
       period_start: periodStart,
       period_end: periodEnd,
-      file_name: typeof body?.fileName === "string" ? body.fileName.slice(0, 255) : null,
-      sheet_name: typeof body?.sheetName === "string" ? body.sheetName.slice(0, 120) : null,
+      // One or more files, comma-separated, when several were combined.
+      file_name: typeof body?.fileName === "string" ? body.fileName.slice(0, 1000) : null,
+      // One or more sheets, comma-separated, when several were combined.
+      sheet_name: typeof body?.sheetName === "string" ? body.sheetName.slice(0, 1000) : null,
       notes: typeof body?.notes === "string" && body.notes.trim() ? body.notes.trim().slice(0, 2000) : null,
       uploaded_by: auth.userId,
     })
@@ -136,10 +138,12 @@ export async function POST(req: NextRequest) {
   }
 
   const insertRows = cleaned.rows.map((row, index) => {
-    const { id: _ignored, sort_order: _sort, source_row, extra, ...fields } = row;
+    const { id: _ignored, sort_order: _sort, from_file: _fromFile, source_file, source_sheet, source_row, extra, ...fields } = row;
     return {
       upload_id: upload.id,
       sort_order: index,
+      source_file,
+      source_sheet,
       source_row,
       user_id: fields.email ? userIdByEmail.get(fields.email) || null : null,
       ...fields,

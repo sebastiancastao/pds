@@ -29,6 +29,8 @@ export const ROW_COLUMNS = [
   "id",
   "upload_id",
   "sort_order",
+  "source_file",
+  "source_sheet",
   "source_row",
   "user_id",
   ...PAYROLL_UPLOAD_FIELD_KEYS,
@@ -63,6 +65,11 @@ export async function fetchAllPages<T>(
 export type CleanRow = PayrollUploadFields & {
   id?: string;
   sort_order: number;
+  source_file: string | null;
+  source_sheet: string | null;
+  // True for lines read from a file after the upload was saved: their values
+  // are kept as the "as uploaded" copy, like the lines of the first file.
+  from_file: boolean;
   source_row: number | null;
   extra: Record<string, string | number | boolean | null>;
 };
@@ -86,6 +93,9 @@ export function cleanRows(input: unknown): { rows: CleanRow[] } | { error: strin
       ...result.fields,
       id: typeof body.id === "string" && UUID_RE.test(body.id) ? body.id : undefined,
       sort_order: Number.isInteger(sortOrder) && sortOrder >= 0 ? sortOrder : i,
+      source_file: typeof body.source_file === "string" && body.source_file.trim() ? body.source_file.trim().slice(0, 255) : null,
+      source_sheet: typeof body.source_sheet === "string" && body.source_sheet.trim() ? body.source_sheet.trim().slice(0, 120) : null,
+      from_file: body.from_file === true,
       source_row: Number.isInteger(sourceRow) && sourceRow > 0 ? sourceRow : null,
       extra: sanitizePayrollExtra(body.extra),
     });

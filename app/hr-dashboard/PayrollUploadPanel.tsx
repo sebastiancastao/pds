@@ -17,6 +17,8 @@ import {
   newTempRowId,
   parsePayrollNumber,
   parsePayrollSheet,
+  combinePayrollSheets,
+  defaultPayrollSheetSelection,
   payrollRowIssues,
   payrollRowName,
   payrollRowPersonKey,
@@ -54,9 +56,12 @@ type UploadMeta = Omit<PayrollUploadSummary, "row_count" | "total_gross_pay" | "
 type Editor =
   | {
       mode: "new";
-      fileName: string;
+      fileNames: string[];
       sheets: ParsedPayrollSheet[];
-      sheetName: string;
+      // Keys of the sheets whose lines are combined into this upload.
+      selectedSheets: string[];
+      // Sheets with no payroll lines (summaries, recaps), as "file › sheet".
+      ignoredSheets: string[];
       rows: PayrollUploadRow[];
     }
   | {
@@ -65,7 +70,38 @@ type Editor =
       rows: PayrollUploadRow[];
       baseline: Map<string, PayrollUploadRow>;
       deletedIds: Set<string>;
+      // Files whose lines were added since the last save.
+      addedFiles: string[];
     };
+
+// Files read for adding lines to a saved upload, waiting for "Add lines".
+type PendingAdd = { fileNames: string[]; sheets: ParsedPayrollSheet[]; selectedSheets: string[]; ignoredSheets: string[] };
+
+// Reads every sheet of every file. Files with the same name get a number so
+// their sheets stay apart.
+async function readPayrollFiles(files: File[], takenNames: string[] = []) {
+  const sheets: ParsedPayrollSheet[] = [];
+  const ignoredSheets: string[] = [];
+  const fileNames: string[] = [];
+  const taken = new Set(takenNames);
+  for (const file of files) {
+    let name = file.name;
+    for (let n = 2; taken.has(name); n += 1) name = `${file.name} (${n})`;
+    taken.add(name);
+    fileNames.push(name);
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true, dense: true });
+    workbook.SheetNames.forEach((sheetName) => {
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], { header: 1, defval: null, raw: true });
+      const parsed = parsePayrollSheet(sheetName, rows, name);
+      if (parsed && parsed.rows.length > 0) sheets.push(parsed);
+      else ignoredSheets.push(files.length > 1 || takenNames.length > 0 ? `${name} › ${sheetName.trim()}` : sheetName.trim());
+    });
+  }
+  return { sheets, ignoredSheets, fileNames };
+}
+
+const sheetLabel = (sheet: { fileName: string; sheetName: string }, withFile: boolean) =>
+  withFile && sheet.fileName ? `${sheet.fileName} › ${sheet.sheetName.trim()}` : sheet.sheetName.trim() || "(unnamed)";
 
 const PAGE_SIZE = 50;
 const NO_ROWS: PayrollUploadRow[] = [];
@@ -233,7 +269,14 @@ const RowView = memo(function RowView({
     <tr className={issues.length > 0 ? "bg-red-50/40" : isNew ? "bg-blue-50/40" : ""}>
       <td className="sticky left-0 z-10 whitespace-nowrap border-r border-gray-100 bg-white px-2 py-1 text-xs text-gray-500">
         <div className="flex items-center gap-1.5">
-          <span className="w-8 tabular-nums" title={row.source_row ? `Sheet row ${row.source_row}` : "Added during review"}>
+          <span
+            className="w-8 tabular-nums"
+            title={
+              row.source_row
+                ? `${row.source_file ? `${row.source_file}, ` : ""}${row.source_sheet ? `sheet "${row.source_sheet.trim()}", ` : ""}row ${row.source_row}`
+                : "Added during review"
+            }
+          >
             {lineNumber}
           </span>
           {issues.length > 0 ? (
@@ -298,6 +341,130 @@ const RowView = memo(function RowView({
   );
 });
 
+// ---------- Sheet picker: which sheets of which files make up the payroll ----------
+
+function SheetPicker({
+  sheets,
+  selected,
+  ignored,
+  duplicatesBySheet,
+  onChange,
+  intro,
+}: {
+  sheets: ParsedPayrollSheet[];
+  selected: string[];
+  ignored: string[];
+  duplicatesBySheet: Map<string, number>;
+  onChange: (keys: string[]) => void;
+  intro: string;
+}) {
+  const files = Array.from(new Set(sheets.map((sh) => sh.fileName)));
+  const withFile = files.length > 1;
+  const chosen = sheets.filter((sh) => selected.includes(sh.key));
+  const lines = chosen.reduce((sum, sh) => sum + sh.rows.length, 0);
+  const gross = roundMoney(chosen.reduce((sum, sh) => sum + sh.totalGross, 0));
+  const extraColumns = Array.from(new Set(chosen.flatMap((sh) => sh.unrecognizedColumns))).filter((c) => c && !/^column\s*\d+$/i.test(c));
+  const toggle = (key: string) => onChange(selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key]);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-medium text-gray-800">
+            {files.length === 1 ? "Sheets in this file" : `Sheets in these ${files.length} files`}
+          </div>
+          <div className="text-xs text-gray-500">{intro}</div>
+        </div>
+        {sheets.length > 1 && (
+          <div className="flex gap-2 text-xs">
+            <button type="button" className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50" onClick={() => onChange(sheets.map((sh) => sh.key))}>
+              Check all
+            </button>
+            <button type="button" className="rounded px-2 py-1 text-blue-700 hover:bg-blue-50" onClick={() => onChange(defaultPayrollSheetSelection(sheets))}>
+              Suggested
+            </button>
+            <button type="button" className="rounded px-2 py-1 text-gray-600 hover:bg-gray-100" onClick={() => onChange([])}>
+              Clear
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="max-h-72 overflow-auto rounded border border-gray-100">
+        <table className="min-w-full text-xs">
+          <thead className="sticky top-0 bg-gray-50 text-gray-500">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-medium uppercase">{withFile ? "File › Sheet" : "Sheet"}</th>
+              <th className="px-2 py-1.5 text-right font-medium uppercase">Lines</th>
+              <th className="px-2 py-1.5 text-right font-medium uppercase">Total Gross</th>
+              <th className="px-2 py-1.5 text-left font-medium uppercase">What the upload did</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {sheets.map((sheet) => {
+              const checked = selected.includes(sheet.key);
+              const details: string[] = [];
+              if (sheet.layout === "reimbursements") details.push("Reimbursement list: the Approved amount is paid");
+              if (sheet.totalRowAdjustments > 0)
+                details.push(`${sheet.totalRowAdjustments} employee${sheet.totalRowAdjustments === 1 ? "" : "s"} set to their Total row (variable incentive top-ups)`);
+              if (sheet.skippedRows > 0) details.push(`${sheet.skippedRows} total or subtotal row${sheet.skippedRows === 1 ? "" : "s"} skipped`);
+              if (sheet.unreadableCells > 0) details.push(`${sheet.unreadableCells} unreadable cell${sheet.unreadableCells === 1 ? "" : "s"} left blank`);
+              const dupes = checked ? duplicatesBySheet.get(sheet.key) || 0 : 0;
+              return (
+                <tr key={sheet.key} className={checked ? "bg-blue-50/40" : ""}>
+                  <td className="px-2 py-1.5">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={checked} onChange={() => toggle(sheet.key)} />
+                      <span className="font-medium text-gray-900">{sheetLabel(sheet, withFile)}</span>
+                    </label>
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{sheet.rows.length}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{money(sheet.totalGross)}</td>
+                  <td className="px-2 py-1.5 text-gray-600">
+                    {details.join(" · ") || "—"}
+                    {dupes > 0 && (
+                      <div className="mt-0.5 text-amber-800">
+                        {dupes} line{dupes === 1 ? " repeats" : "s repeat"} a line from another checked sheet (same employee, event and date). Uncheck one of them.
+                      </div>
+                    )}
+                    {sheet.notes.length > 0 && (
+                      <div className="mt-0.5 text-red-700">
+                        Notes the upload couldn&apos;t read: {sheet.notes.map((n) => `row ${n.row} "${n.text}"`).join(", ")}. The lines next to them are flagged.
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot className="bg-gray-50 font-semibold">
+            <tr>
+              <td className="px-2 py-1.5 text-gray-800">
+                {selected.length} of {sheets.length} sheets checked
+              </td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{lines}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{money(gross)}</td>
+              <td />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {ignored.length > 0 && <p className="text-xs text-gray-500">Sheets without employee lines, not used: {ignored.join(", ")}.</p>}
+      {extraColumns.length > 0 && <p className="text-xs text-gray-500">Kept as extra data (not editable here): {extraColumns.join(", ")}.</p>}
+    </div>
+  );
+}
+
+// Lines per sheet (by key) that repeat a line from another sheet.
+const duplicatesPerSheet = (rows: PayrollUploadRow[]): Map<string, number> => {
+  const dupIds = duplicateLineIds(rows);
+  const out = new Map<string, number>();
+  rows.forEach((row) => {
+    if (!dupIds.has(row.id) || !row.source_sheet) return;
+    const key = row.source_file ? `${row.source_file}::${row.source_sheet}` : row.source_sheet;
+    out.set(key, (out.get(key) || 0) + 1);
+  });
+  return out;
+};
+
 // ---------- Panel ----------
 
 export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, onUploadsChanged }: Props) {
@@ -323,6 +490,10 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
   const [compareOnlyDiffs, setCompareOnlyDiffs] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // What the file picker is for: a new upload, more files for the new upload,
+  // or lines to add to the saved upload that is open.
+  const fileTargetRef = useRef<"new" | "more" | "add">("new");
+  const [pendingAdd, setPendingAdd] = useState<PendingAdd | null>(null);
   const hasPeriod = Boolean(startDate && endDate && endDate >= startDate);
 
   // ----- list of saved uploads for the dates above -----
@@ -396,7 +567,9 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
         rows: saved,
         baseline: new Map(saved.map((r) => [r.id, r])),
         deletedIds: new Set(),
+        addedFiles: [],
       });
+      setPendingAdd(null);
       setNotesDraft(upload.notes || "");
     },
     []
@@ -422,32 +595,69 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
   );
 
   // ----- reading a spreadsheet -----
-  const handleFile = useCallback(
-    async (file: File) => {
+  const handleFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const target = fileTargetRef.current;
       setError("");
       setNotice("");
       setParsing(true);
       try {
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
-        const sheets: ParsedPayrollSheet[] = [];
-        workbook.SheetNames.forEach((name) => {
-          const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[name], { header: 1, defval: null, raw: true });
-          const parsed = parsePayrollSheet(name, rows);
-          if (parsed && parsed.rows.length > 0) sheets.push(parsed);
-        });
-        if (sheets.length === 0) {
-          setError(
-            "No payroll lines found. The sheet needs a header row with an employee column (First/Last Name, Name or Email) and pay columns such as Hours or Total Gross Pay."
-          );
+        if (target === "new") {
+          const read = await readPayrollFiles(files);
+          if (read.sheets.length === 0) {
+            setError(
+              "No payroll lines found. A sheet needs a header row with an employee column (First/Last Name, Name or Email) and pay columns such as Hours or Total Gross Pay."
+            );
+            return;
+          }
+          const selectedSheets = defaultPayrollSheetSelection(read.sheets);
+          setEditor({
+            mode: "new",
+            fileNames: read.fileNames,
+            sheets: read.sheets,
+            selectedSheets,
+            ignoredSheets: read.ignoredSheets,
+            rows: combinePayrollSheets(read.sheets, selectedSheets),
+          });
+          setPendingAdd(null);
+          setNotesDraft("");
+          resetView();
           return;
         }
-        const preferred =
-          sheets.find((s) => s.sheetName.trim().toLowerCase() === "vendor payments") ||
-          [...sheets].sort((a, b) => b.rows.length - a.rows.length)[0];
-        setEditor({ mode: "new", fileName: file.name, sheets, sheetName: preferred.sheetName, rows: preferred.rows });
-        setNotesDraft("");
-        resetView();
+
+        const current = editor;
+        if (!current) return;
+        const taken = current.mode === "new" ? current.fileNames : [...current.addedFiles, ...String(current.upload.file_name || "").split(", ")];
+        const read = await readPayrollFiles(files, taken);
+        if (read.sheets.length === 0) {
+          setError(`No payroll lines found in ${read.fileNames.join(", ")}.`);
+          return;
+        }
+        if (target === "more" && current.mode === "new") {
+          // More files for the unsaved upload: their suggested sheets are added,
+          // and edits made so far are kept.
+          const added = defaultPayrollSheetSelection(read.sheets);
+          const newRows = combinePayrollSheets(read.sheets, added, current.rows.length);
+          setEditor({
+            ...current,
+            fileNames: [...current.fileNames, ...read.fileNames],
+            sheets: [...current.sheets, ...read.sheets],
+            selectedSheets: [...current.selectedSheets, ...added],
+            ignoredSheets: [...current.ignoredSheets, ...read.ignoredSheets],
+            rows: [...current.rows, ...newRows],
+          });
+          setNotice(`Added ${newRows.length} line${newRows.length === 1 ? "" : "s"} from ${read.fileNames.join(", ")}. Check the sheets below.`);
+          return;
+        }
+        if (target === "add" && current.mode === "saved") {
+          setPendingAdd({
+            fileNames: read.fileNames,
+            sheets: read.sheets,
+            selectedSheets: defaultPayrollSheetSelection(read.sheets),
+            ignoredSheets: read.ignoredSheets,
+          });
+        }
       } catch (e: any) {
         setError(e?.message ? `Couldn't read that file: ${e.message}` : "Couldn't read that file");
       } finally {
@@ -455,21 +665,44 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    []
+    [editor]
   );
 
   const pickFile = () => {
     if (!confirmDiscard()) return;
+    fileTargetRef.current = "new";
+    fileInputRef.current?.click();
+  };
+  const pickMoreFiles = () => {
+    fileTargetRef.current = editor?.mode === "saved" ? "add" : "more";
     fileInputRef.current?.click();
   };
 
-  const changeSheet = (sheetName: string) => {
+  // Lines from the pending files go into the open saved upload as new lines
+  // (saved with "Save changes").
+  const addPendingLines = () => {
+    if (!pendingAdd || !editor || editor.mode !== "saved") return;
+    const startAt = editor.rows.reduce((max, r) => Math.max(max, r.sort_order), -1) + 1;
+    const newRows = combinePayrollSheets(pendingAdd.sheets, pendingAdd.selectedSheets, startAt);
+    const usedFiles = Array.from(new Set(pendingAdd.sheets.filter((sh) => pendingAdd.selectedSheets.includes(sh.key)).map((sh) => sh.fileName)));
+    setEditor({ ...editor, rows: [...editor.rows, ...newRows], addedFiles: [...editor.addedFiles, ...usedFiles] });
+    setPendingAdd(null);
+    setOnlyIssues(false);
+    setOnlyEdited(false);
+    setSearch("");
+    setPage(Math.floor(editor.rows.length / PAGE_SIZE));
+    setNotice(`Added ${newRows.length} line${newRows.length === 1 ? "" : "s"}. Review them, then Save changes.`);
+  };
+
+  // Choose which sheets make up the payroll. Lines are re-read from the file,
+  // so edits made so far are dropped (after a warning).
+  const setSelectedSheets = (selectedSheets: string[]) => {
     if (!editor || editor.mode !== "new") return;
-    const sheet = editor.sheets.find((s) => s.sheetName === sheetName);
-    if (!sheet) return;
     const edited = editor.rows.some((r) => isPayrollRowEdited(r));
-    if (edited && !window.confirm("Switching sheets drops the edits you made to this one. Continue?")) return;
-    setEditor({ ...editor, sheetName, rows: sheet.rows });
+    if (edited && !window.confirm("Changing the sheets re-reads the lines from the file and drops the edits you made. Continue?")) return;
+    const order = new Map(editor.sheets.map((sheet, i) => [sheet.key, i]));
+    const sorted = [...selectedSheets].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    setEditor({ ...editor, selectedSheets: sorted, rows: combinePayrollSheets(editor.sheets, sorted) });
     resetView();
   };
 
@@ -515,6 +748,8 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
       ...blank,
       id: newTempRowId(),
       sort_order: nextOrder,
+      source_file: null,
+      source_sheet: null,
       source_row: null,
       user_id: null,
       extra: {},
@@ -557,7 +792,14 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
       const issues = issuesFor(row);
       if (issues.length > 0) withIssues += 1;
       issues.forEach((i) => {
-        const label = i.code === "total-mismatch" ? "Total Gross Pay doesn't equal the sum of the pay columns" : i.message;
+        const label =
+          i.code === "total-mismatch"
+            ? "Total Gross Pay doesn't equal the sum of the pay columns"
+            : i.code === "file-notes"
+              ? "The file has notes next to these lines (such as paid or short). Hover the red badge to read them"
+              : i.code === "shifted"
+                ? "Columns look shifted: the email is in another column than the header says"
+                : i.message;
         issueCounts[i.code] = { message: label, count: (issueCounts[i.code]?.count || 0) + 1 };
       });
       if (isPayrollRowEdited(row)) edited += 1;
@@ -582,7 +824,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
         if (onlyIssues && issuesFor(row).length === 0) return false;
         if (onlyEdited && !isPayrollRowEdited(row)) return false;
         if (!q) return true;
-        return [row.first_name, row.last_name, row.email, row.event_name, row.venue, row.category]
+        return [row.first_name, row.last_name, row.email, row.event_name, row.venue, row.category, row.source_sheet, row.source_file]
           .some((v) => (v || "").toLowerCase().includes(q));
       });
   }, [rows, search, onlyIssues, onlyEdited, issuesFor]);
@@ -672,7 +914,11 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
     ...Object.fromEntries(PAYROLL_UPLOAD_FIELD_KEYS.map((k) => [k, row[k] ?? null])),
     id: isTempRowId(row.id) ? undefined : row.id,
     sort_order: index ?? row.sort_order,
+    source_file: row.source_file ?? null,
+    source_sheet: row.source_sheet ?? null,
     source_row: row.source_row,
+    // New lines read from a file keep their values as the "as uploaded" copy.
+    from_file: isTempRowId(row.id) && row.original !== null,
     extra: row.extra,
   });
 
@@ -700,8 +946,11 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
         body: JSON.stringify({
           periodStart: startDate,
           periodEnd: endDate,
-          fileName: editor.fileName,
-          sheetName: editor.sheetName,
+          fileName: editor.fileNames.join(", "),
+          sheetName: editor.sheets
+            .filter((sh) => editor.selectedSheets.includes(sh.key))
+            .map((sh) => sheetLabel(sh, editor.fileNames.length > 1))
+            .join(", "),
           notes: notesDraft,
           rows: editor.rows.map((r, i) => rowPayload(r, i)),
         }),
@@ -738,6 +987,10 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
         body.deletes = Array.from(editor.deletedIds);
       }
       if ((editor.upload.notes || "") !== notesDraft.trim()) body.notes = notesDraft;
+      if (editor.addedFiles.length > 0) {
+        const names = [...String(editor.upload.file_name || "").split(", ").filter(Boolean), ...editor.addedFiles];
+        body.fileName = Array.from(new Set(names)).join(", ");
+      }
       const json = await api<{ upload: UploadMeta; rows: any[] }>(`/api/hr/payroll-uploads/${editor.upload.id}`, {
         method: "PATCH",
         body: JSON.stringify(body),
@@ -838,7 +1091,14 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
   };
 
   // ----- render -----
-  const currentSheet = editor?.mode === "new" ? editor.sheets.find((s) => s.sheetName === editor.sheetName) : null;
+  const newUploadDuplicates = useMemo(
+    () => (editor?.mode === "new" ? duplicatesPerSheet(editor.rows) : new Map<string, number>()),
+    [editor]
+  );
+  const pendingDuplicates = useMemo(() => {
+    if (!pendingAdd || !editor) return new Map<string, number>();
+    return duplicatesPerSheet([...editor.rows, ...combinePayrollSheets(pendingAdd.sheets, pendingAdd.selectedSheets)]);
+  }, [pendingAdd, editor]);
   const periodLabel =
     editor?.mode === "saved"
       ? `${formatDate(editor.upload.period_start)} – ${formatDate(editor.upload.period_end)}`
@@ -852,8 +1112,8 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
         <div>
           <h2 className="text-xl font-semibold">Upload Payroll</h2>
           <p className="text-sm text-gray-500">
-            Upload a payroll spreadsheet for the Start and End dates above, review it, and edit any line before saving. Saved uploads don&apos;t
-            change event payments.
+            Upload one or more payroll spreadsheets for the Start and End dates above, pick the sheets that make up the payroll, review
+            them, and edit any line before saving. Saved uploads don&apos;t change event payments.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -861,10 +1121,11 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             ref={fileInputRef}
             type="file"
             accept=".xlsx,.xls,.xlsm,.csv"
+            multiple
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void handleFile(file);
+              const files = Array.from(e.target.files || []);
+              if (files.length > 0) void handleFiles(files);
             }}
           />
           <button
@@ -873,7 +1134,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             disabled={parsing || saving}
             className={`apple-button ${parsing || saving ? "apple-button-disabled" : "apple-button-primary"}`}
           >
-            {parsing ? "Reading…" : "Upload Excel"}
+            {parsing ? "Reading…" : "Upload Excel Files"}
           </button>
           <button
             type="button"
@@ -930,7 +1191,11 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
                     <tr key={u.id} className={isOpen ? "bg-blue-50/60" : ""}>
                       <td className="px-3 py-2">
                         <div className="font-medium text-gray-900">{u.file_name || "(no file name)"}</div>
-                        {u.sheet_name && <div className="text-xs text-gray-500">Sheet: {u.sheet_name}</div>}
+                        {u.sheet_name && (
+                          <div className="max-w-xs truncate text-xs text-gray-500" title={u.sheet_name}>
+                            {u.sheet_name.includes(",") ? "Sheets" : "Sheet"}: {u.sheet_name}
+                          </div>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-3 py-2 text-gray-700">
                         {formatDate(u.period_start)} – {formatDate(u.period_end)}
@@ -1007,7 +1272,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-lg font-semibold text-gray-900">
-                  {editor.mode === "new" ? editor.fileName : editor.upload.file_name || "Upload"}
+                  {editor.mode === "new" ? editor.fileNames.join(", ") : editor.upload.file_name || "Upload"}
                 </h3>
                 {editor.mode === "new" ? (
                   <span className="rounded-full border border-blue-200 bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">Not saved yet</span>
@@ -1047,38 +1312,59 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             </button>
           </div>
 
-          {editor.mode === "new" && currentSheet && (
-            <div className="mb-3 space-y-2 rounded-lg border border-gray-200 bg-white p-3 text-sm">
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="text-gray-600" htmlFor="payroll-upload-sheet">
-                  Sheet
-                </label>
-                <select
-                  id="payroll-upload-sheet"
-                  value={editor.sheetName}
-                  onChange={(e) => changeSheet(e.target.value)}
-                  className="apple-select max-w-xs"
-                >
-                  {editor.sheets.map((s) => (
-                    <option key={s.sheetName} value={s.sheetName}>
-                      {s.sheetName} ({s.rows.length} lines)
-                    </option>
-                  ))}
-                </select>
-                <span className="text-gray-500">
-                  Header on row {currentSheet.headerRowNumber}.{" "}
-                  {currentSheet.skippedRows > 0 && `Skipped ${currentSheet.skippedRows} total or subtotal row${currentSheet.skippedRows === 1 ? "" : "s"}.`}
-                  {currentSheet.unreadableCells > 0 && ` ${currentSheet.unreadableCells} cell${currentSheet.unreadableCells === 1 ? " wasn't" : "s weren't"} a number and were left blank.`}
-                </span>
-              </div>
-              <p className="text-xs text-gray-600">
-                Saving makes this file the payroll for {periodLabel} on this tab. The system payroll is not changed and can still be retrieved.
-              </p>
-              {currentSheet.unrecognizedColumns.length > 0 && (
-                <p className="text-xs text-gray-500">
-                  Kept as extra data (not editable here): {currentSheet.unrecognizedColumns.join(", ")}
+          {editor.mode === "new" && (
+            <div className="mb-3 space-y-3 rounded-lg border border-gray-200 bg-white p-3 text-sm">
+              <SheetPicker
+                sheets={editor.sheets}
+                selected={editor.selectedSheets}
+                ignored={editor.ignoredSheets}
+                duplicatesBySheet={newUploadDuplicates}
+                onChange={setSelectedSheets}
+                intro={
+                  editor.sheets.length === 1
+                    ? "One sheet has payroll lines."
+                    : "Check the sheets that make up the payroll; their lines are combined. The Payroll tab export only suggests Vendor Payments, because its other sheets repeat those lines."
+                }
+              />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-gray-600">
+                  Saving makes these files the payroll for {periodLabel} on this tab. The system payroll is not changed and can still be retrieved.
                 </p>
-              )}
+                <button
+                  type="button"
+                  onClick={pickMoreFiles}
+                  disabled={parsing || saving}
+                  className={`apple-button ${parsing || saving ? "apple-button-disabled" : "apple-button-secondary"}`}
+                >
+                  {parsing ? "Reading…" : "Add Another File"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {editor.mode === "saved" && pendingAdd && (
+            <div className="mb-3 space-y-3 rounded-lg border border-blue-200 bg-blue-50/40 p-3 text-sm">
+              <SheetPicker
+                sheets={pendingAdd.sheets}
+                selected={pendingAdd.selectedSheets}
+                ignored={pendingAdd.ignoredSheets}
+                duplicatesBySheet={pendingDuplicates}
+                onChange={(keys) => setPendingAdd({ ...pendingAdd, selectedSheets: keys })}
+                intro="Check the sheets whose lines should be added to this upload. Lines that repeat a line already in the upload are flagged."
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={addPendingLines}
+                  disabled={pendingAdd.selectedSheets.length === 0}
+                  className={`apple-button ${pendingAdd.selectedSheets.length === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
+                >
+                  Add {pendingAdd.sheets.filter((sh) => pendingAdd.selectedSheets.includes(sh.key)).reduce((sum, sh) => sum + sh.rows.length, 0)} Lines
+                </button>
+                <button type="button" onClick={() => setPendingAdd(null)} className="apple-button apple-button-secondary">
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
 
@@ -1301,6 +1587,17 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
               {!readOnly && (
                 <button type="button" onClick={addLine} className="apple-button apple-button-secondary">
                   Add line
+                </button>
+              )}
+              {!readOnly && editor.mode === "saved" && !pendingAdd && (
+                <button
+                  type="button"
+                  onClick={pickMoreFiles}
+                  disabled={parsing || saving}
+                  className={`apple-button ${parsing || saving ? "apple-button-disabled" : "apple-button-secondary"}`}
+                  title="Read lines from more payroll files and add them to this upload."
+                >
+                  {parsing ? "Reading…" : "Add Lines From File"}
                 </button>
               )}
               <span className="text-xs text-gray-500">

@@ -1,7 +1,7 @@
 // app/api/hr/payroll-uploads/[id]/route.ts
 //
 // GET    -> one uploaded payroll file with all of its lines
-// PATCH  { upserts?, deletes?, notes?, status?, active?, periodStart?, periodEnd? }
+// PATCH  { upserts?, deletes?, notes?, status?, active?, periodStart?, periodEnd?, fileName? }
 //        upserts: changed or new lines (lines with an existing id are updated,
 //        the rest are added); deletes: ids of lines to remove.
 //        status "reviewed" locks the lines until status "draft" reopens them.
@@ -94,6 +94,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       uploadPatch.is_active = false;
     }
   }
+  if (typeof body?.fileName === "string") {
+    uploadPatch.file_name = body.fileName.trim() ? body.fileName.trim().slice(0, 1000) : null;
+  }
   if (body?.notes !== undefined) {
     uploadPatch.notes = typeof body.notes === "string" && body.notes.trim() ? body.notes.trim().slice(0, 2000) : null;
   }
@@ -126,10 +129,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       const updates: Record<string, unknown>[] = [];
       const inserts: Record<string, unknown>[] = [];
       cleaned.rows.forEach((row) => {
-        const { id, sort_order, source_row, extra, ...fields } = row;
+        const { id, sort_order, from_file, source_file, source_sheet, source_row, extra, ...fields } = row;
         const base = {
           upload_id: params.id,
           sort_order,
+          source_file,
+          source_sheet,
           source_row,
           user_id: fields.email ? userIdByEmail.get(fields.email) || null : null,
           ...fields,
@@ -138,7 +143,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
         };
         // Ids from another upload are treated as new lines, never moved over.
         if (id && existingIds.has(id) && !deleted.has(id)) updates.push({ id, ...base });
-        else inserts.push({ ...base, original: null });
+        // Lines read from another file keep their values as uploaded; lines typed in have none.
+        else inserts.push({ ...base, original: from_file ? fields : null });
       });
 
       for (let i = 0; i < updates.length; i += 500) {

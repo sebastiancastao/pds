@@ -34,6 +34,8 @@ const PAY_KEYS: PayrollUploadNumericKey[] = [
   "travel_pay",
   "reimbursement",
   "other",
+  "bonus",
+  "sick_pay",
 ];
 const LABELS = Object.fromEntries(PAYROLL_UPLOAD_NUMERIC_FIELDS.map((f) => [f.key, f.label])) as Record<PayrollUploadNumericKey, string>;
 

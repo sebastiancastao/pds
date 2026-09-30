@@ -4,8 +4,12 @@
 // public.payroll_period_upload_rows so no mapping layer is needed.
 //
 // The parser accepts this dashboard's own "Export to Excel" workbook (the
-// "Vendor Payments" sheet, per-vendor TOTAL rows skipped) as well as simpler
-// sheets with columns like "Employee Name", "Email", "Hours", "Gross Pay".
+// "Vendor Payments" sheet, per-vendor TOTAL rows skipped), HR's final payroll
+// workbooks (one sheet per region or event, the header repeated above each
+// employee, "Rate in effect" / "Variable incentive" / "Total" helper rows under
+// an employee, a sick leave sheet, a reimbursements sheet) and simpler sheets
+// with columns like "Employee Name", "Email", "Hours", "Gross Pay". Sheets
+// from several files can be combined into one upload.
 
 export const PAYROLL_UPLOAD_TEXT_FIELDS = [
   { key: "first_name", label: "First Name", aliases: ["first name", "firstname", "first", "employee first name"] },
@@ -23,11 +27,11 @@ export const PAYROLL_UPLOAD_NUMERIC_FIELDS = [
   { key: "reg_rate", label: "Reg Rate", money: true, aliases: ["reg rate", "regular rate", "pay rate", "hourly rate", "rate"] },
   { key: "rate_in_effect", label: "Rate in Effect", money: true, aliases: ["rate in effect", "loaded rate", "effective rate"] },
   { key: "hours", label: "Hours", money: false, aliases: ["hours in decimal", "decimal hours", "total hours", "hours worked", "hours"] },
-  { key: "regular_hours", label: "Reg Hours", money: false, aliases: ["regular time hours", "regular hours", "reg hours", "regular hrs"] },
-  { key: "regular_pay", label: "Reg Pay", money: true, aliases: ["regular time pay", "regular pay", "reg pay"] },
-  { key: "overtime_hours", label: "OT Hours", money: false, aliases: ["overtime hours", "ot hours", "overtime hrs"] },
+  { key: "regular_hours", label: "Reg Hours", money: false, aliases: ["regular time hours", "regular hours", "reg hours", "regular hrs", "reg hrs"] },
+  { key: "regular_pay", label: "Reg Pay", money: true, aliases: ["regular time pay", "regular pay", "reg pay", "reg hrs pay", "regular hrs pay", "reg hours pay"] },
+  { key: "overtime_hours", label: "OT Hours", money: false, aliases: ["overtime hours", "ot hours", "overtime hrs", "ot hrs"] },
   { key: "overtime_pay", label: "OT Pay", money: true, aliases: ["overtime pay", "ot pay"] },
-  { key: "doubletime_hours", label: "DT Hours", money: false, aliases: ["double time hours", "doubletime hours", "dt hours"] },
+  { key: "doubletime_hours", label: "DT Hours", money: false, aliases: ["double time hours", "doubletime hours", "dt hours", "dt hrs", "double time hrs"] },
   { key: "doubletime_pay", label: "DT Pay", money: true, aliases: ["double time pay", "doubletime pay", "dt pay"] },
   { key: "commission_pay", label: "Commission", money: true, aliases: ["commission pay", "commission"] },
   { key: "variable_incentive", label: "Var. Incentive", money: true, aliases: ["variable incentive", "incentive"] },
@@ -38,6 +42,8 @@ export const PAYROLL_UPLOAD_NUMERIC_FIELDS = [
   { key: "travel_pay", label: "Travel Pay", money: true, aliases: ["travel pay"] },
   { key: "reimbursement", label: "Reimbursement", money: true, aliases: ["reimbursement", "reimbursements"] },
   { key: "other", label: "Other", money: true, aliases: ["other", "adjustment", "adjustments"] },
+  { key: "bonus", label: "Bonus", money: true, aliases: ["bonus", "bonus pay"] },
+  { key: "sick_pay", label: "Sick Pay", money: true, aliases: ["sick pay", "sick leave pay", "sick leave", "sick"] },
   { key: "total_gross_pay", label: "Total Gross", money: true, aliases: ["total gross pay", "gross pay", "total gross", "gross", "total pay"] },
 ] as const;
 
@@ -51,6 +57,10 @@ export const PAYROLL_UPLOAD_FIELD_KEYS: PayrollUploadFieldKey[] = [
 ];
 
 const NUMERIC_KEY_SET = new Set<string>(PAYROLL_UPLOAD_NUMERIC_FIELDS.map((f) => f.key));
+export const PAYROLL_FIELD_LABELS = Object.fromEntries(
+  [...PAYROLL_UPLOAD_TEXT_FIELDS, ...PAYROLL_UPLOAD_NUMERIC_FIELDS].map((f) => [f.key, f.label])
+) as Record<PayrollUploadFieldKey, string>;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const isNumericPayrollField = (key: string): key is PayrollUploadNumericKey => NUMERIC_KEY_SET.has(key);
 
 export type PayrollUploadFields = { [K in PayrollUploadTextKey]: string | null } & {
@@ -60,6 +70,9 @@ export type PayrollUploadFields = { [K in PayrollUploadTextKey]: string | null }
 export type PayrollUploadRow = PayrollUploadFields & {
   id: string;
   sort_order: number;
+  // File, sheet and row the line came from (null for lines added by hand).
+  source_file: string | null;
+  source_sheet: string | null;
   source_row: number | null;
   user_id: string | null;
   extra: Record<string, string | number | boolean | null>;
@@ -101,6 +114,8 @@ export const GROSS_COMPONENT_KEYS: PayrollUploadNumericKey[] = [
   "travel_pay",
   "reimbursement",
   "other",
+  "bonus",
+  "sick_pay",
 ];
 
 export const GROSS_MISMATCH_TOLERANCE = 0.05;
@@ -136,6 +151,8 @@ export const parsePayrollNumber = (value: unknown, allowDuration = false): numbe
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
   if (typeof value === "boolean") return undefined;
   let raw = String(value).trim();
+  // Accounting number format shows zero as "$ -".
+  if (/^\$\s*-+$/.test(raw)) return 0;
   if (raw === "" || /^(n\/?a|none|-+|—)$/i.test(raw)) return null;
   if (allowDuration && /^\d{1,3}:\d{2}$/.test(raw)) {
     const [h, m] = raw.split(":").map(Number);
@@ -168,6 +185,8 @@ export const parsePayrollText = (value: unknown, key?: string): string | null =>
   if (value === null || value === undefined) return null;
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) return null;
+    // A time with no date comes back as a day in December 1899.
+    if (value.getFullYear() < 1900) return `${value.getHours()}:${pad2(value.getMinutes())}`;
     return `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`;
   }
   if (key === "event_date" && typeof value === "number") {
@@ -182,6 +201,9 @@ type HeaderMapping = {
   byColumn: Record<number, PayrollUploadFieldKey | "__full_name">;
   recognized: string[];
   unrecognized: string[];
+  // "reimbursements" = the reimbursement export (Vendor, Event, Requested, Approved …).
+  layout: "payroll" | "reimbursements";
+  hasTotalColumn: boolean;
 };
 
 const FULL_NAME_ALIASES = ["employee name", "name", "employee", "vendor name", "vendor", "full name", "worker"];
@@ -216,6 +238,13 @@ export const mapPayrollHeaders = (headerRow: unknown[]): HeaderMapping => {
     const idx = claim(FULL_NAME_ALIASES);
     if (idx >= 0) byColumn[idx] = "__full_name";
   }
+  // Reimbursement export: the "Approved" amount is what gets paid.
+  const layout: HeaderMapping["layout"] =
+    normalized.includes("approved") && (normalized.includes("requested") || normalized.includes("receipt")) ? "reimbursements" : "payroll";
+  if (layout === "reimbursements" && !Object.values(byColumn).includes("reimbursement")) {
+    const idx = claim(["approved"]);
+    if (idx >= 0) byColumn[idx] = "reimbursement";
+  }
 
   const recognized: string[] = [];
   const unrecognized: string[] = [];
@@ -225,7 +254,7 @@ export const mapPayrollHeaders = (headerRow: unknown[]): HeaderMapping => {
     if (byColumn[i]) recognized.push(label);
     else unrecognized.push(label);
   });
-  return { byColumn, recognized, unrecognized };
+  return { byColumn, recognized, unrecognized, layout, hasTotalColumn: Object.values(byColumn).includes("total_gross_pay") };
 };
 
 // Finds the header row within the first rows of a sheet: the row that maps
@@ -256,11 +285,26 @@ const splitFullName = (full: string): { first: string | null; last: string | nul
   return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
 };
 
+export type SheetNote = { row: number; text: string };
+
 export type ParsedPayrollSheet = {
+  // Unique across files: "<file>::<sheet>", or just the sheet name with no file.
+  key: string;
+  fileName: string;
   sheetName: string;
   headerRowNumber: number; // 1-based, as Excel shows it
+  layout: "payroll" | "reimbursements";
   rows: PayrollUploadRow[];
+  totalGross: number;
+  // TOTAL/subtotal rows and other rows with amounts but no employee.
   skippedRows: number;
+  // Header rows repeated further down the sheet (a new block of employees).
+  repeatedHeaders: number;
+  // Employee blocks whose last line was adjusted to match the block's "Total" row
+  // (usually a variable-incentive top-up to the hourly floor).
+  totalRowAdjustments: number;
+  // Rows with text the parser doesn't understand, such as "paid" or "short".
+  notes: SheetNote[];
   unreadableCells: number;
   recognizedColumns: string[];
   unrecognizedColumns: string[];
@@ -270,91 +314,328 @@ let tempIdCounter = 0;
 export const newTempRowId = () => `tmp-${Date.now().toString(36)}-${(tempIdCounter += 1)}`;
 export const isTempRowId = (id: string) => id.startsWith("tmp-");
 
+const IDENTITY_KEYS = new Set(["email", "first_name", "last_name", "__full_name"]);
+
+// A row is a (repeated) header when it names at least three payroll columns,
+// one of them an employee column.
+const headerScore = (cells: unknown[]): number => {
+  if (!cells.some((c) => typeof c === "string" && c.trim() !== "")) return 0;
+  const keys = Object.values(mapPayrollHeaders(cells).byColumn);
+  return keys.some((k) => IDENTITY_KEYS.has(k)) ? keys.length : 0;
+};
+
+// Labels found in the name/email columns of helper rows under an employee.
+type HelperKind = "rate" | "vi" | "total";
+const helperKindOf = (text: string): HelperKind | null => {
+  const t = normalizeHeader(text);
+  if (t === "rate in effect" || t === "rate") return "rate";
+  if (t === "variable incentive" || t === "variable" || t === "vi") return "vi";
+  if (t === "total" || t === "totals" || t === "subtotal" || t === "sub total" || t === "grand total") return "total";
+  return null;
+};
+
+// Words that show up in these workbooks as layout, not as notes about pay.
+const IGNORED_NOTE_WORDS = new Set(["rates", "rate", "hourly", "commission"]);
+
+const cellText = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const t = value.replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  if (parsePayrollNumber(t, true) !== undefined) return null; // numbers, "$ -", "N/A"
+  return t;
+};
+
+// Amount columns reconciled against an employee block's "Total" row.
+const TOTAL_ROW_KEYS: PayrollUploadNumericKey[] = [
+  "regular_pay",
+  "overtime_pay",
+  "doubletime_pay",
+  "commission_pay",
+  "variable_incentive",
+  "tips",
+  "rest_break",
+  "mileage_pay",
+  "travel_pay",
+  "reimbursement",
+  "other",
+  "bonus",
+  "sick_pay",
+  "total_gross_pay",
+];
+
 // Turns a sheet (as an array of rows from XLSX.utils.sheet_to_json with
-// header: 1) into payroll lines. Blank rows and TOTAL/subtotal rows are skipped.
-export const parsePayrollSheet = (sheetName: string, rows: unknown[][]): ParsedPayrollSheet | null => {
+// header: 1) into payroll lines. Handles what HR's payroll workbooks contain:
+// - the header repeated above each employee block, sometimes with different columns;
+// - TOTAL / subtotal rows, which are skipped;
+// - helper rows under an employee ("Rate in effect", "Variable incentive",
+//   "Total"), where the "Total" row is the final pay for that employee's block;
+// - reimbursement exports, where each record takes two rows (name, then email).
+export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName = ""): ParsedPayrollSheet | null => {
   const header = detectPayrollHeaderRow(rows);
   if (header.index < 0) return null;
-  const mapping = mapPayrollHeaders(rows[header.index] || []);
+
+  let headerCells: unknown[] = rows[header.index] || [];
+  let mapping = mapPayrollHeaders(headerCells);
+  const firstMapping = mapping;
+  const recognized = new Set<string>(mapping.recognized);
+  const unrecognized = new Set<string>(mapping.unrecognized);
   const out: PayrollUploadRow[] = [];
+  const notes: SheetNote[] = [];
   let skipped = 0;
   let unreadable = 0;
+  let repeatedHeaders = 0;
+  let totalRowAdjustments = 0;
+
+  // Lines of the employee block being read, and a "Variable incentive" helper
+  // row waiting for the block's "Total" row.
+  let block: PayrollUploadRow[] = [];
+  let pendingVi = null as { amount: number; gross: number; row: number } | null;
+
+  const refreshOriginal = (line: PayrollUploadRow) => {
+    line.original = pickPayrollFields(line);
+  };
+  const closeBlock = () => {
+    // No "Total" row came: add the variable-incentive helper row to the last line.
+    if (pendingVi && block.length > 0) {
+      const last = block[block.length - 1];
+      last.variable_incentive = roundMoney(Number(last.variable_incentive || 0) + pendingVi.amount);
+      last.total_gross_pay = roundMoney(Number(last.total_gross_pay || 0) + pendingVi.gross);
+      last.extra["Variable incentive top-up"] = roundMoney(pendingVi.amount);
+      last.extra["Top-up from sheet row"] = pendingVi.row;
+      refreshOriginal(last);
+      totalRowAdjustments += 1;
+    }
+    pendingVi = null;
+    block = [];
+  };
+  const noteOnBlock = (row: number, text: string) => {
+    notes.push({ row, text });
+    block.forEach((line) => {
+      const prior = line.extra["Notes in file"];
+      line.extra["Notes in file"] = prior ? `${prior}; ${text}` : text;
+    });
+  };
 
   for (let r = header.index + 1; r < rows.length; r += 1) {
     const cells = rows[r] || [];
+    if (cells.every((c) => c === null || c === undefined || String(c).trim() === "")) continue;
+
+    if (headerScore(cells) >= 3) {
+      closeBlock();
+      headerCells = cells;
+      mapping = mapPayrollHeaders(cells);
+      mapping.recognized.forEach((h) => recognized.add(h));
+      mapping.unrecognized.forEach((h) => unrecognized.add(h));
+      repeatedHeaders += 1;
+      continue;
+    }
+
     const fields = emptyPayrollFields() as Record<string, string | number | null>;
     const extra: PayrollUploadRow["extra"] = {};
+    let hasAmount = false;
     let hasAnyValue = false;
     let fullName = null as string | null;
+    let emailCellText = null as string | null;
+    const texts: string[] = [];
 
-    const headerCells = rows[header.index] || [];
     for (let c = 0; c < cells.length; c += 1) {
       const cell = cells[c];
+      if (cell === null || cell === undefined || String(cell).trim() === "") continue;
+      hasAnyValue = true;
       const key = mapping.byColumn[c];
+      const text = cellText(cell);
       if (!key) {
         const headerLabel = String(headerCells[c] ?? "").trim();
-        if (headerLabel && cell !== null && cell !== undefined && String(cell).trim() !== "") {
-          extra[headerLabel] = cell instanceof Date ? parsePayrollText(cell) : (cell as string | number | boolean);
-        }
+        if (text) texts.push(text);
+        if (headerLabel) extra[headerLabel] = cell instanceof Date ? parsePayrollText(cell) : (cell as string | number | boolean);
         continue;
       }
       if (key === "__full_name") {
         fullName = parsePayrollText(cell);
-        if (fullName) hasAnyValue = true;
         continue;
       }
       if (isNumericPayrollField(key)) {
         const num = parsePayrollNumber(cell, key.endsWith("hours"));
         if (num === undefined) {
           unreadable += 1;
+          if (text) texts.push(text);
           extra[`${String(headerCells[c] ?? key).trim()} (unreadable)`] = String(cell);
           continue;
         }
         fields[key] = num;
-        if (num !== null) hasAnyValue = true;
+        if (num !== null && key !== "reg_rate" && key !== "rate_in_effect" && key !== "hours") hasAmount = true;
       } else {
-        const text = parsePayrollText(cell, key);
-        fields[key] = key === "email" && text ? text.toLowerCase() : text;
-        if (text) hasAnyValue = true;
+        if ((key === "first_name" || key === "last_name") && (cell instanceof Date || typeof cell === "number")) {
+          // A date or number in a name column is a note, not a name.
+          const headerLabel = String(headerCells[c] ?? key).trim();
+          extra[headerLabel] = cell instanceof Date ? parsePayrollText(cell) : (cell as number);
+          continue;
+        }
+        const value = parsePayrollText(cell, key);
+        if (key === "email") {
+          emailCellText = value;
+          fields.email = value && EMAIL_RE.test(value) ? value.toLowerCase() : null;
+          if (text && !fields.email && !helperKindOf(text)) texts.push(text);
+        } else {
+          fields[key] = value;
+          if (text && key !== "event_name" && key !== "venue" && key !== "category" && key !== "city" && key !== "state") texts.push(text);
+        }
       }
     }
+    if (!hasAnyValue) continue;
 
     if (fullName) {
-      const { first, last } = splitFullName(fullName);
-      fields.first_name = first;
-      fields.last_name = last;
+      if (EMAIL_RE.test(fullName)) {
+        fields.email = fullName.toLowerCase();
+      } else {
+        const { first, last } = splitFullName(fullName);
+        fields.first_name = first;
+        fields.last_name = last;
+      }
+    }
+    const nameText = `${fields.first_name ?? ""} ${fields.last_name ?? ""}`.trim();
+    const email = fields.email as string | null;
+
+    // ---- rows without an employee: helper, continuation, subtotal or note rows ----
+    if (!nameText && !email) {
+      const helper = helperKindOf(emailCellText || "") || helperKindOf(String(fields.first_name || ""));
+      const otherTexts = texts.filter((t) => !helperKindOf(t) && !IGNORED_NOTE_WORDS.has(normalizeHeader(t)));
+      if (helper === "rate") {
+        if (otherTexts.length) noteOnBlock(r + 1, otherTexts.join(", "));
+        continue;
+      }
+      if (helper === "vi" && block.length > 0) {
+        const amount = Number(fields.variable_incentive ?? fields.total_gross_pay ?? 0);
+        const gross = Number(fields.total_gross_pay ?? amount);
+        pendingVi = { amount: (pendingVi?.amount || 0) + amount, gross: (pendingVi?.gross || 0) + gross, row: r + 1 };
+        continue;
+      }
+      if (helper === "total" && block.length > 0) {
+        // The block's final figures: move any difference onto its last line.
+        const last = block[block.length - 1];
+        const changes: string[] = [];
+        TOTAL_ROW_KEYS.forEach((k) => {
+          const target = fields[k];
+          if (typeof target !== "number") return;
+          const current = block.reduce((sum, line) => sum + Number(line[k] || 0), 0);
+          const delta = roundMoney(target - current);
+          if (Math.abs(delta) < 0.005) return;
+          last[k] = roundMoney(Number(last[k] || 0) + delta);
+          changes.push(`${PAYROLL_FIELD_LABELS[k]} ${delta > 0 ? "+" : ""}${delta.toFixed(2)}`);
+        });
+        if (changes.length > 0) {
+          last.extra["Adjusted to Total row"] = `Row ${r + 1}: ${changes.join(", ")}`;
+          refreshOriginal(last);
+          totalRowAdjustments += 1;
+        }
+        pendingVi = null;
+        block = [];
+        if (otherTexts.length) notes.push({ row: r + 1, text: otherTexts.join(", ") });
+        continue;
+      }
+      if (otherTexts.length) noteOnBlock(r + 1, otherTexts.join(", "));
+      if (hasAmount) skipped += 1;
+      continue;
     }
 
-    const nameText = `${fields.first_name ?? ""} ${fields.last_name ?? ""}`.trim();
+    // ---- second row of a two-row record (reimbursement exports): email only ----
+    if (!nameText && email && !hasAmount && out.length > 0 && !out[out.length - 1].email) {
+      const prev = out[out.length - 1];
+      prev.email = email;
+      Object.entries(extra).forEach(([k, v]) => {
+        if (v !== null && v !== "") prev.extra[`${k} (2nd row)`] = v;
+      });
+      if (fields.event_name) prev.extra["Event (2nd row)"] = fields.event_name;
+      refreshOriginal(prev);
+      continue;
+    }
+
+    // ---- TOTAL rows from this dashboard's own export ("TOTAL - Name") ----
     const isTotalRow = /^(grand\s+)?(sub)?totals?\b/i.test(nameText) || /^(grand\s+)?(sub)?totals?\b/i.test(String(fields.venue ?? ""));
-    const hasIdentity = Boolean(nameText || fields.email);
-    if (!hasAnyValue) continue;
-    if (isTotalRow || !hasIdentity) {
+    if (isTotalRow) {
+      closeBlock();
       skipped += 1;
       continue;
     }
 
+    // ---- an employee line ----
+    if (emailCellText && !email) {
+      // The Email column holds something else: the row's columns may be shifted.
+      const found = cells.map((c) => (typeof c === "string" ? c.trim() : "")).find((c) => EMAIL_RE.test(c));
+      extra["Email column had"] = emailCellText;
+      if (found) extra["Email found in another column"] = found.toLowerCase();
+    }
+    if (mapping.layout === "reimbursements" && fields.event_name && !fields.event_date) {
+      // Keep the record readable: "Standalone" reimbursement with its description.
+      const description = extra["Description"];
+      if (typeof description === "string" && description.trim()) fields.event_name = `${fields.event_name}: ${description.trim()}`;
+    }
     const typed = fields as unknown as PayrollUploadFields;
-    out.push({
+    if (!mapping.hasTotalColumn && typed.total_gross_pay === null && hasAnyGrossComponent(typed)) {
+      typed.total_gross_pay = grossComponentSum(typed);
+      extra["Total Gross Pay"] = "computed from the pay columns";
+    }
+
+    const line: PayrollUploadRow = {
       ...typed,
       id: newTempRowId(),
       sort_order: out.length,
+      source_file: fileName || null,
+      source_sheet: sheetName,
       source_row: r + 1,
       user_id: null,
       extra,
       original: { ...typed },
-    });
+    };
+    const lastInBlock = block[block.length - 1];
+    if (lastInBlock && payrollRowPersonKey(lastInBlock) !== payrollRowPersonKey(line)) closeBlock();
+    block.push(line);
+    out.push(line);
   }
+  closeBlock();
 
   return {
+    key: fileName ? `${fileName}::${sheetName}` : sheetName,
+    fileName,
     sheetName,
     headerRowNumber: header.index + 1,
+    layout: firstMapping.layout,
     rows: out,
+    totalGross: roundMoney(out.reduce((s, l) => s + Number(l.total_gross_pay || 0), 0)),
     skippedRows: skipped,
+    repeatedHeaders,
+    totalRowAdjustments,
+    notes,
     unreadableCells: unreadable,
-    recognizedColumns: mapping.recognized,
-    unrecognizedColumns: mapping.unrecognized,
+    recognizedColumns: Array.from(recognized),
+    unrecognizedColumns: Array.from(unrecognized).filter((h) => !recognized.has(h)),
   };
+};
+
+// Which sheets to include by default, per file: this dashboard's own export
+// keeps its "Vendor Payments" sheet (the other sheets repeat the same lines);
+// any other workbook includes every sheet that has payroll lines.
+export const defaultPayrollSheetSelection = (sheets: ParsedPayrollSheet[]): string[] => {
+  const byFile = new Map<string, ParsedPayrollSheet[]>();
+  sheets.forEach((sheet) => byFile.set(sheet.fileName, [...(byFile.get(sheet.fileName) || []), sheet]));
+  const keys: string[] = [];
+  byFile.forEach((fileSheets) => {
+    const vendorPayments = fileSheets.find((sh) => sh.sheetName.trim().toLowerCase() === "vendor payments");
+    if (vendorPayments) keys.push(vendorPayments.key);
+    else fileSheets.forEach((sh) => keys.push(sh.key));
+  });
+  return keys;
+};
+
+// Lines from the chosen sheets (by key), in file and sheet order, numbered for review.
+export const combinePayrollSheets = (sheets: ParsedPayrollSheet[], selectedKeys: string[], startAt = 0): PayrollUploadRow[] => {
+  const chosen = new Set(selectedKeys);
+  const rows: PayrollUploadRow[] = [];
+  sheets.forEach((sheet) => {
+    if (!chosen.has(sheet.key)) return;
+    sheet.rows.forEach((row) => rows.push({ ...row, id: newTempRowId(), sort_order: startAt + rows.length }));
+  });
+  return rows;
 };
 
 export const roundMoney = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -374,8 +655,6 @@ export const payrollRowPersonKey = (row: Partial<PayrollUploadFields>): string =
   if (email) return `email:${email}`;
   return `name:${payrollRowName(row).toLowerCase()}`;
 };
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type PayrollRowIssue = { code: string; message: string };
 
@@ -404,6 +683,17 @@ export const payrollRowIssues = (row: PayrollUploadRow, opts?: { duplicate?: boo
   if (negativeField) issues.push({ code: "negative-field", message: `${negativeField.label} is negative` });
   if (row.hours !== null && row.hours > 24 * 16) issues.push({ code: "hours-high", message: "Hours look too high for one pay period" });
   if (opts?.duplicate) issues.push({ code: "duplicate", message: "Same employee, event and date appear on another line" });
+  const shiftedEmail = row.extra?.["Email found in another column"];
+  if (typeof shiftedEmail === "string" && shiftedEmail && !row.email) {
+    issues.push({
+      code: "shifted",
+      message: `Columns look shifted on this line: the Email column had "${row.extra?.["Email column had"] ?? ""}" and ${shiftedEmail} is in another column. Check it against the file.`,
+    });
+  }
+  const fileNotes = row.extra?.["Notes in file"];
+  if (typeof fileNotes === "string" && fileNotes) {
+    issues.push({ code: "file-notes", message: `The file has notes next to this line: ${fileNotes}` });
+  }
   if (row.user_id === null && row.email && EMAIL_RE.test(row.email) && row.id && !isTempRowId(row.id)) {
     issues.push({ code: "unmatched", message: "Email doesn't match any employee account" });
   }
@@ -507,6 +797,8 @@ export const PAYROLL_EXPORT_HEADERS: Record<PayrollUploadFieldKey, string> = {
   travel_pay: "Travel Pay",
   reimbursement: "Reimbursement",
   other: "Other",
+  bonus: "Bonus",
+  sick_pay: "Sick Pay",
   total_gross_pay: "Total Gross Pay",
 };
 
@@ -538,7 +830,7 @@ export const buildPayrollExportRows = (
 
   const summable = new Set<PayrollUploadNumericKey>([
     "hours", "regular_hours", "regular_pay", "overtime_hours", "overtime_pay", "doubletime_hours", "doubletime_pay",
-    "commission_pay", "variable_incentive", "tips", "rest_break", "mileage_pay", "travel_pay", "reimbursement", "other", "total_gross_pay",
+    "commission_pay", "variable_incentive", "tips", "rest_break", "mileage_pay", "travel_pay", "reimbursement", "other", "bonus", "sick_pay", "total_gross_pay",
   ]);
   if (rows.length > 0) {
     const total: Record<string, string | number | boolean | null> = {};
