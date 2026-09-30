@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 import { downloadUploadedPayroll } from "./payroll-upload-export";
+import UploadedPayrollView, { type PayrollViewEditing } from "./UploadedPayrollView";
 import {
   PAYROLL_UPLOAD_FIELD_KEYS,
   PAYROLL_UPLOAD_NUMERIC_FIELDS,
@@ -485,6 +486,8 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
   const [onlyIssues, setOnlyIssues] = useState(false);
   const [onlyEdited, setOnlyEdited] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  // How the lines are reviewed: laid out like the Payroll tab, or as a spreadsheet.
+  const [reviewView, setReviewView] = useState<"vendor" | "venue" | "venueSummary" | "grid">("vendor");
   const [page, setPage] = useState(0);
   const [showCompare, setShowCompare] = useState(true);
   const [compareOnlyDiffs, setCompareOnlyDiffs] = useState(true);
@@ -720,6 +723,14 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
     [updateRows]
   );
 
+  const onCommitMany = useCallback(
+    (rowIds: string[], changes: Partial<Record<PayrollUploadFieldKey, string | number | null>>) => {
+      const ids = new Set(rowIds);
+      updateRows((rows) => rows.map((r) => (ids.has(r.id) ? ({ ...r, ...changes } as PayrollUploadRow) : r)));
+    },
+    [updateRows]
+  );
+
   const onUseSum = useCallback(
     (rowId: string) => {
       updateRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, total_gross_pay: grossComponentSum(r) } : r)));
@@ -816,6 +827,11 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
   }).join(",");
   const columns = useMemo(() => columnsKey.split(",") as PayrollUploadFieldKey[], [columnsKey]);
 
+  const payrollViewEditing = useMemo<PayrollViewEditing>(
+    () => ({ readOnly: Boolean(readOnly), onCommit: onCommitMany, onDelete, onUseSum, issuesFor }),
+    [readOnly, onCommitMany, onDelete, onUseSum, issuesFor]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows
@@ -829,6 +845,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
       });
   }, [rows, search, onlyIssues, onlyEdited, issuesFor]);
 
+  const filteredRows = useMemo(() => filtered.map((f) => f.row), [filtered]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageRows = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
@@ -1496,6 +1513,29 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             </p>
           )}
 
+          {/* View switch: the same views as the Payroll tab, or a spreadsheet */}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Review</span>
+            {(
+              [
+                ["venue", "View by Event"],
+                ["vendor", "View by Vendor"],
+                ["venueSummary", "View by Venue"],
+                ["grid", "Spreadsheet"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setReviewView(value)}
+                className={`apple-button ${reviewView === value ? "apple-button-primary" : "apple-button-secondary"}`}
+                aria-pressed={reviewView === value}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           {/* Filters */}
           <div className="mb-2 flex flex-wrap items-center gap-3 text-sm">
             <input
@@ -1531,16 +1571,23 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
               />
               Only edited lines
             </label>
-            <label className="flex items-center gap-2 text-gray-700">
-              <input type="checkbox" checked={showDetails} onChange={(e) => setShowDetails(e.target.checked)} />
-              Show venue, rate and empty columns
-            </label>
+            {reviewView === "grid" && (
+              <label className="flex items-center gap-2 text-gray-700">
+                <input type="checkbox" checked={showDetails} onChange={(e) => setShowDetails(e.target.checked)} />
+                Show venue, rate and empty columns
+              </label>
+            )}
             <span className="ml-auto text-xs text-gray-500">
               Showing {filtered.length} of {rows.length} lines
             </span>
           </div>
 
           {/* Lines */}
+          {reviewView !== "grid" ? (
+            <div className="rounded-lg bg-gray-50 p-1">
+              <UploadedPayrollView rows={filteredRows} groupBy={reviewView} editing={payrollViewEditing} />
+            </div>
+          ) : (
           <div className="max-h-[36rem] overflow-auto rounded-lg border border-gray-200 bg-white">
             <table className="min-w-full text-xs">
               <thead className="sticky top-0 z-20 bg-gray-100">
@@ -1581,6 +1628,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
               </tbody>
             </table>
           </div>
+          )}
 
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
             <div className="flex items-center gap-2">
@@ -1601,10 +1649,12 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
                 </button>
               )}
               <span className="text-xs text-gray-500">
-                Amber cells differ from the uploaded file. Hover a cell or the red badge for details.
+                {reviewView === "grid"
+                  ? "Amber cells differ from the uploaded file. Hover a cell or the red badge for details."
+                  : "Click a value to change it. Amber values differ from the uploaded file; hover a red badge to see what needs a look."}
               </span>
             </div>
-            {pageCount > 1 && (
+            {reviewView === "grid" && pageCount > 1 && (
               <div className="flex items-center gap-2">
                 <button
                   type="button"

@@ -23,11 +23,19 @@
 // lib/pdf-reader-extraction.ts (server text extraction via /api/extract-pdf,
 // and for scanned PDFs client-side OCR with LLM / regex / AI-vision fallbacks).
 // Each paystub page becomes one row built from its year-to-date column.
+//
+// Several documents can be uploaded at once (file picker multi-select or drag
+// and drop, spreadsheets and PDFs mixed), and more can be added later. Each
+// upload is read one file at a time and listed in the "Documents" panel with
+// its own status, so one bad file never hides the others. Within an upload the
+// most recent row per employee name is kept; across uploads, rows that match
+// the same employee are flagged "Duplicate" and only the most recent is saved,
+// because the save API upserts one baseline per user_id.
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo, type DragEvent } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import type { OcrProgress, PayrollData } from '@/lib/pdf-reader-extraction';
+import type { OcrHooks, OcrProgress, PayrollData } from '@/lib/pdf-reader-extraction';
 
 type FieldKey =
   | 'federalIncomeYtd'
@@ -60,7 +68,20 @@ type Row = {
   asOfDate: string;
   stateCode: string;
   notes: string;
+  // UI-only: which uploaded document produced this row ('' for manual rows
+  // and rows loaded from "On file"). Never sent to the save API.
+  sourceDocId: string;
+  sourceName: string;
 } & Record<FieldKey, string>;
+
+type UploadedDoc = {
+  id: string;
+  name: string;
+  kind: 'pdf' | 'sheet' | 'other';
+  status: 'queued' | 'reading' | 'done' | 'error';
+  rowsRead: number;
+  message: string | null;
+};
 
 type OnFileRecord = {
   id: string;
@@ -128,8 +149,14 @@ function newRow(employeeName = ''): Row {
     asOfDate: new Date().toISOString().slice(0, 10),
     stateCode: 'CA',
     notes: '',
+    sourceDocId: '',
+    sourceName: '',
     ...emptyFields(),
   };
+}
+
+function makeId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function normalizeHeaderText(value: any): string {
@@ -159,7 +186,8 @@ function toDisplayName(raw: string): string {
 
 type PdfReaderLib = typeof import('@/lib/pdf-reader-extraction');
 
-type PdfStatus = {
+// Progress of the document currently being read in an upload batch.
+type ReadStatus = {
   fileName: string;
   index: number;
   total: number;
@@ -168,6 +196,10 @@ type PdfStatus = {
 
 function isPdfFile(file: File): boolean {
   return file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+}
+
+function isSpreadsheetFile(file: File): boolean {
+  return /\.(xlsx|xls|csv)$/i.test(file.name);
 }
 
 // Positive dollar string for the grid, or '' when missing / zero (the same
@@ -309,6 +341,147 @@ function keepLatestPerEmployee(rows: Row[]): { kept: Row[]; dropped: number } {
   return { kept, dropped: rows.length - kept.length };
 }
 
+// Save-time twin of keepLatestPerEmployee, keyed on the matched user_id. Rows
+// from separate uploads (or name spellings that match the same person) would
+// otherwise send the same user_id twice, which the upsert rejects outright.
+// Latest as-of date wins, then higher gross YTD, then the later row in the grid.
+function keepLatestPerUser(rows: Row[]): { kept: Row[]; dropped: number } {
+  const byUser = new Map<string, Row>();
+  const grossOf = (r: Row) => parseFloat(String(r.grossPayYtd || '0').replace(/,/g, '')) || 0;
+  for (const row of rows) {
+    if (!row.userId) continue;
+    const existing = byUser.get(row.userId);
+    if (
+      !existing ||
+      row.asOfDate > existing.asOfDate ||
+      (row.asOfDate === existing.asOfDate && grossOf(row) >= grossOf(existing))
+    ) {
+      byUser.set(row.userId, row);
+    }
+  }
+  const keptSet = new Set(byUser.values());
+  const kept = rows.filter((r) => keptSet.has(r));
+  return { kept, dropped: rows.filter((r) => r.userId).length - kept.length };
+}
+
+// ---------- Per-document readers (one file in, rows out; throw on failure) ----------
+
+async function readSpreadsheetFile(file: File): Promise<Row[]> {
+  const XLSX = await import('xlsx');
+  const data = await file.arrayBuffer();
+  const workbook = XLSX.read(new Uint8Array(data), { type: 'array' });
+  const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!worksheet) throw new Error('the workbook has no sheets');
+  const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
+
+  if (jsonData.length < 2) {
+    throw new Error('the file needs a header row and at least one employee row');
+  }
+
+  const normalizedHeaders = jsonData[0].map((h: any) => normalizeHeaderText(h));
+  const findHeaderIndex = (possibleNames: string[]) => {
+    for (const name of possibleNames) {
+      const normalizedName = normalizeHeaderText(name);
+      const exact = normalizedHeaders.findIndex((h) => h === normalizedName);
+      if (exact !== -1) return exact;
+    }
+    for (const name of possibleNames) {
+      const normalizedName = normalizeHeaderText(name);
+      if (!normalizedName || normalizedName.length < 5) continue;
+      const nameTokens = normalizedName.split(' ').filter(Boolean);
+      const tokenMatch = normalizedHeaders.findIndex((h) => {
+        const headerTokens = new Set(h.split(' ').filter(Boolean));
+        return nameTokens.every((t) => headerTokens.has(t));
+      });
+      if (tokenMatch !== -1) return tokenMatch;
+    }
+    return -1;
+  };
+  const getValue = (valuesRow: any[], possibleNames: string[]): string => {
+    const idx = findHeaderIndex(possibleNames);
+    if (idx === -1 || valuesRow[idx] == null || valuesRow[idx] === '') return '';
+    const val = valuesRow[idx];
+    if (typeof val === 'number' && val === 0) return '';
+    return String(val).trim();
+  };
+  const getAbsolute = (valuesRow: any[], possibleNames: string[]): string => {
+    const v = getValue(valuesRow, possibleNames);
+    if (!v) return '';
+    const n = parseFloat(v.replace(/,/g, ''));
+    return Number.isNaN(n) ? v : String(Math.abs(n));
+  };
+  const formatDate = (value: any): string => {
+    if (!value) return new Date().toISOString().slice(0, 10);
+    try {
+      if (typeof value === 'number') {
+        const d = XLSX.SSF.parse_date_code(value);
+        return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+      }
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    } catch {
+      /* fall through */
+    }
+    return new Date().toISOString().slice(0, 10);
+  };
+
+  const dataRows = jsonData
+    .slice(1)
+    .filter((row) => Array.isArray(row) && row.some((c) => c != null && String(c).trim() !== ''));
+
+  if (dataRows.length === 0) throw new Error('no employee rows found');
+
+  return dataRows.map((valuesRow) => {
+    const rawName = getValue(valuesRow, ['employee name', 'employee full name', 'full name', 'name', 'employee']);
+    const employeeName = toDisplayName(rawName);
+
+    let stateCode = 'CA';
+    for (const code of STATE_CODES) {
+      if (getValue(valuesRow, STATE_INCOME_ALIASES[code])) {
+        stateCode = code;
+        break;
+      }
+    }
+
+    const row = newRow(employeeName);
+    row.asOfDate = formatDate(getValue(valuesRow, ['as of date', 'pay date', 'period end', 'pay period end']));
+    row.stateCode = stateCode;
+    row.stateIncomeYtd = getAbsolute(valuesRow, STATE_INCOME_ALIASES[stateCode]);
+
+    for (const f of FIELD_DEFS) {
+      if (f.key === 'stateIncomeYtd' || f.aliases.length === 0) continue;
+      row[f.key] = getAbsolute(valuesRow, f.aliases);
+    }
+    row.notes = `From ${file.name}`;
+    return row;
+  });
+}
+
+// Same reader as /pdf-reader, one row per paystub page.
+async function readPdfFile(
+  file: File,
+  lib: PdfReaderLib,
+  hooks: OcrHooks
+): Promise<Row[]> {
+  const result = await lib.extractPdfPayroll(file, hooks);
+  const pages =
+    result.payrollDataByPage && result.payrollDataByPage.length > 0
+      ? result.payrollDataByPage
+      : result.payrollData
+        ? [{ pageNumber: 1, text: result.text || '', payrollData: result.payrollData, extractionMethod: undefined }]
+        : [];
+  const rows: Row[] = [];
+  for (const page of pages) {
+    const row = rowFromPdfPage(page.payrollData, file.name, page.pageNumber, page.extractionMethod, lib);
+    // Skip pages that carry neither a name nor any YTD figure
+    // (cover pages, continuation pages, blank scans).
+    if (!row.employeeName && !hasAnyYtd(row)) continue;
+    rows.push(row);
+  }
+  if (rows.length === 0) throw new Error('no paystub data found');
+  return rows;
+}
+
 async function matchEmployee(name: string): Promise<string | null> {
   const trimmed = name.trim();
   if (!trimmed) return null;
@@ -328,7 +501,11 @@ export default function AdpYtdImportPage() {
   const [onFile, setOnFile] = useState<OnFileRecord[]>([]);
   const [loadingOnFile, setLoadingOnFile] = useState(true);
   const [parsing, setParsing] = useState(false);
-  const [pdfStatus, setPdfStatus] = useState<PdfStatus | null>(null);
+  // Guards against a second upload (drop or picker) starting mid-read.
+  const busyRef = useRef(false);
+  const [readStatus, setReadStatus] = useState<ReadStatus | null>(null);
+  const [docs, setDocs] = useState<UploadedDoc[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -384,184 +561,108 @@ export default function AdpYtdImportPage() {
     setRows((prev) => [...prev, newRow()]);
   }, []);
 
-  const handleFile = useCallback(async (file: File) => {
-    setError(null);
-    setSuccess(null);
-    if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
-      setError('Please upload an Excel (.xlsx/.xls), CSV, or PDF file.');
-      return;
-    }
-    setParsing(true);
-    try {
-      const XLSX = await import('xlsx');
-      const data = await file.arrayBuffer();
-      const workbook = XLSX.read(new Uint8Array(data), { type: 'array' });
-      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
-
-      if (jsonData.length < 2) {
-        setError('File must have at least a header row and one employee row.');
-        return;
-      }
-
-      const normalizedHeaders = jsonData[0].map((h: any) => normalizeHeaderText(h));
-      const findHeaderIndex = (possibleNames: string[]) => {
-        for (const name of possibleNames) {
-          const normalizedName = normalizeHeaderText(name);
-          const exact = normalizedHeaders.findIndex((h) => h === normalizedName);
-          if (exact !== -1) return exact;
-        }
-        for (const name of possibleNames) {
-          const normalizedName = normalizeHeaderText(name);
-          if (!normalizedName || normalizedName.length < 5) continue;
-          const nameTokens = normalizedName.split(' ').filter(Boolean);
-          const tokenMatch = normalizedHeaders.findIndex((h) => {
-            const headerTokens = new Set(h.split(' ').filter(Boolean));
-            return nameTokens.every((t) => headerTokens.has(t));
-          });
-          if (tokenMatch !== -1) return tokenMatch;
-        }
-        return -1;
-      };
-      const getValue = (valuesRow: any[], possibleNames: string[]): string => {
-        const idx = findHeaderIndex(possibleNames);
-        if (idx === -1 || valuesRow[idx] == null || valuesRow[idx] === '') return '';
-        const val = valuesRow[idx];
-        if (typeof val === 'number' && val === 0) return '';
-        return String(val).trim();
-      };
-      const getAbsolute = (valuesRow: any[], possibleNames: string[]): string => {
-        const v = getValue(valuesRow, possibleNames);
-        if (!v) return '';
-        const n = parseFloat(v.replace(/,/g, ''));
-        return Number.isNaN(n) ? v : String(Math.abs(n));
-      };
-      const formatDate = (value: any): string => {
-        if (!value) return new Date().toISOString().slice(0, 10);
-        try {
-          if (typeof value === 'number') {
-            const d = XLSX.SSF.parse_date_code(value);
-            return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
-          }
-          const d = new Date(value);
-          if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-        } catch {
-          /* fall through */
-        }
-        return new Date().toISOString().slice(0, 10);
-      };
-
-      const dataRows = jsonData
-        .slice(1)
-        .filter((row) => Array.isArray(row) && row.some((c) => c != null && String(c).trim() !== ''));
-
-      if (dataRows.length === 0) {
-        setError('No employee rows found in the file.');
-        return;
-      }
-
-      const parsed: Row[] = dataRows.map((valuesRow) => {
-        const rawName = getValue(valuesRow, ['employee name', 'employee full name', 'full name', 'name', 'employee']);
-        const employeeName = toDisplayName(rawName);
-
-        let stateCode = 'CA';
-        for (const code of STATE_CODES) {
-          if (getValue(valuesRow, STATE_INCOME_ALIASES[code])) {
-            stateCode = code;
-            break;
-          }
-        }
-
-        const row = newRow(employeeName);
-        row.asOfDate = formatDate(
-          getValue(valuesRow, ['as of date', 'pay date', 'period end', 'pay period end'])
-        );
-        row.stateCode = stateCode;
-        row.stateIncomeYtd = getAbsolute(valuesRow, STATE_INCOME_ALIASES[stateCode]);
-
-        for (const f of FIELD_DEFS) {
-          if (f.key === 'stateIncomeYtd' || f.aliases.length === 0) continue;
-          row[f.key] = getAbsolute(valuesRow, f.aliases);
-        }
-        return row;
-      });
-
-      setSuccess(`Parsed ${parsed.length} row(s) from ${file.name}. Matching employees…`);
-      await appendAndMatch(parsed);
-      setSuccess(`Imported ${parsed.length} row(s) from ${file.name}.`);
-    } catch (e: any) {
-      setError(`Failed to read file: ${e?.message || e}`);
-    } finally {
-      setParsing(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  }, [appendAndMatch]);
-
-  // PDF upload: same reader as /pdf-reader, one row per paystub page.
-  const handlePdfFiles = useCallback(async (files: File[]) => {
+  // Reads every document in one upload (any mix of spreadsheets and PDFs),
+  // one file at a time, recording each file's outcome in the Documents list.
+  // A failed file is marked and skipped; the rest of the upload still imports.
+  const handleFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0 || busyRef.current) return;
+    busyRef.current = true;
     setError(null);
     setSuccess(null);
     setParsing(true);
+
+    const batch: UploadedDoc[] = files.map((file) => ({
+      id: makeId(),
+      name: file.name,
+      kind: isPdfFile(file) ? 'pdf' : isSpreadsheetFile(file) ? 'sheet' : 'other',
+      status: 'queued',
+      rowsRead: 0,
+      message: null,
+    }));
+    setDocs((prev) => [...prev, ...batch]);
+    const updateDoc = (id: string, patch: Partial<UploadedDoc>) =>
+      setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+
     const collected: Row[] = [];
     const failures: string[] = [];
+    let lib: PdfReaderLib | null = null;
+
     try {
-      const lib = await import('@/lib/pdf-reader-extraction');
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        setPdfStatus({ fileName: file.name, index: i + 1, total: files.length, ocr: null });
+        const doc = batch[i];
+        updateDoc(doc.id, { status: 'reading' });
+        setReadStatus({ fileName: file.name, index: i + 1, total: files.length, ocr: null });
         try {
-          const result = await lib.extractPdfPayroll(file, {
-            onOcrStart: () => setPdfStatus((s) => (s ? { ...s, ocr: { page: 0, progress: 0, total: 0 } } : s)),
-            onOcrProgress: (progress) => setPdfStatus((s) => (s ? { ...s, ocr: progress } : s)),
-            onOcrEnd: () => setPdfStatus((s) => (s ? { ...s, ocr: null } : s)),
-          });
-          const pages =
-            result.payrollDataByPage && result.payrollDataByPage.length > 0
-              ? result.payrollDataByPage
-              : result.payrollData
-                ? [{ pageNumber: 1, text: result.text || '', payrollData: result.payrollData, extractionMethod: undefined }]
-                : [];
-          let fromThisFile = 0;
-          for (const page of pages) {
-            const row = rowFromPdfPage(page.payrollData, file.name, page.pageNumber, page.extractionMethod, lib);
-            // Skip pages that carry neither a name nor any YTD figure
-            // (cover pages, continuation pages, blank scans).
-            if (!row.employeeName && !hasAnyYtd(row)) continue;
-            collected.push(row);
-            fromThisFile++;
+          let parsed: Row[];
+          if (doc.kind === 'pdf') {
+            if (!lib) lib = await import('@/lib/pdf-reader-extraction');
+            parsed = await readPdfFile(file, lib, {
+              onOcrStart: () => setReadStatus((s) => (s ? { ...s, ocr: { page: 0, progress: 0, total: 0 } } : s)),
+              onOcrProgress: (progress) => setReadStatus((s) => (s ? { ...s, ocr: progress } : s)),
+              onOcrEnd: () => setReadStatus((s) => (s ? { ...s, ocr: null } : s)),
+            });
+          } else if (doc.kind === 'sheet') {
+            parsed = await readSpreadsheetFile(file);
+          } else {
+            throw new Error('unsupported file type (use .xlsx, .xls, .csv or .pdf)');
           }
-          if (fromThisFile === 0) failures.push(`${file.name}: no paystub data found`);
+          for (const row of parsed) {
+            row.sourceDocId = doc.id;
+            row.sourceName = file.name;
+          }
+          collected.push(...parsed);
+          updateDoc(doc.id, { status: 'done', rowsRead: parsed.length });
         } catch (e: any) {
-          failures.push(`${file.name}: ${e?.message || e}`);
+          const message = e?.message || String(e);
+          failures.push(`${file.name}: ${message}`);
+          updateDoc(doc.id, { status: 'error', message });
         }
       }
-    } catch (e: any) {
-      failures.push(`Failed to load the PDF reader: ${e?.message || e}`);
     } finally {
-      setPdfStatus(null);
+      setReadStatus(null);
     }
 
     try {
+      const docWord = files.length === 1 ? 'document' : 'documents';
       if (collected.length > 0) {
+        // One baseline per employee: across every document in this upload keep
+        // the most recent row per name (latest as-of date, then gross YTD).
         const { kept, dropped } = keepLatestPerEmployee(collected);
-        const dupNote = dropped > 0 ? ` Kept the most recent stub per employee (${dropped} older page(s) skipped).` : '';
-        setSuccess(`Read ${kept.length} employee row(s) from ${files.length} PDF(s). Matching employees…${dupNote}`);
+        const dupNote =
+          dropped > 0 ? ` Kept the most recent row per employee (${dropped} older row(s) skipped).` : '';
+        setSuccess(`Read ${kept.length} employee row(s) from ${files.length} ${docWord}. Matching employees…${dupNote}`);
         await appendAndMatch(kept);
-        setSuccess(`Imported ${kept.length} row(s) from ${files.length} PDF(s).${dupNote} Review the YTD numbers before saving.`);
+        setSuccess(
+          `Imported ${kept.length} row(s) from ${files.length - failures.length} of ${files.length} ${docWord}.${dupNote} Review the YTD numbers before saving.`
+        );
       }
-      if (failures.length > 0) setError(failures.join('; '));
+      if (failures.length > 0) {
+        setError(`Could not read ${failures.length} of ${files.length} ${docWord}: ${failures.join('; ')}`);
+      }
     } finally {
       setParsing(false);
+      busyRef.current = false;
     }
   }, [appendAndMatch]);
 
-  const handleFiles = useCallback(async (files: File[]) => {
-    const pdfFiles = files.filter(isPdfFile);
-    const sheetFiles = files.filter((f) => !isPdfFile(f));
-    for (const f of sheetFiles) await handleFile(f);
-    if (pdfFiles.length > 0) await handlePdfFiles(pdfFiles);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [handleFile, handlePdfFiles]);
+  // Removes an uploaded document from the list together with its rows that
+  // are still pending (saved rows are already gone from the grid).
+  const removeDoc = useCallback((docId: string) => {
+    setDocs((prev) => prev.filter((d) => d.id !== docId));
+    setRows((prev) => prev.filter((r) => r.sourceDocId !== docId));
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      setDragActive(false);
+      if (busyRef.current) return;
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length > 0) handleFiles(files);
+    },
+    [handleFiles]
+  );
 
   const updateRow = useCallback((key: string, patch: Partial<Row>) => {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -579,11 +680,14 @@ export default function AdpYtdImportPage() {
       setError('No matched employees to save. Match at least one row first.');
       return;
     }
+    // Rows from different documents can match the same employee; send only the
+    // most recent one per user_id (the upsert rejects a repeated user_id).
+    const { kept, dropped } = keepLatestPerUser(matched);
     setSaving(true);
     try {
       const headers = await authHeader();
       const payload = {
-        rows: matched.map((r) => ({
+        rows: kept.map((r) => ({
           userId: r.userId,
           asOfDate: r.asOfDate,
           stateCode: r.stateCode,
@@ -600,12 +704,22 @@ export default function AdpYtdImportPage() {
       if (!res.ok) throw new Error(data?.error || 'Failed to save');
       setSuccess(
         `Saved ${data.saved} record(s).` +
+          (dropped
+            ? ` ${dropped} older duplicate row(s) for the same employee were not saved; the most recent was kept.`
+            : '') +
           (data.skipped ? ` ${data.skipped} row(s) skipped — see below.` : '')
       );
+      // Rows the API rejected (e.g. a non-numeric cell) stay in the grid so
+      // they can be fixed; everything else that was matched is now on file.
+      const failedUserIds = new Set<string>();
       if (data.problems?.length) {
         setError(data.problems.map((p: any) => p.message).join('; '));
+        for (const p of data.problems) {
+          const uid = kept[p?.index]?.userId;
+          if (uid) failedUserIds.add(uid);
+        }
       }
-      setRows((prev) => prev.filter((r) => !r.userId));
+      setRows((prev) => prev.filter((r) => !r.userId || failedUserIds.has(r.userId)));
       loadOnFile();
     } catch (e: any) {
       setError(e?.message || 'Failed to save');
@@ -670,6 +784,25 @@ export default function AdpYtdImportPage() {
     setRows((prev) => [...prev, row]);
   }, []);
 
+  // user_ids matched by more than one pending row (flagged "Duplicate"; only
+  // the most recent of them is saved).
+  const duplicateUserIds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of rows) if (r.userId) counts.set(r.userId, (counts.get(r.userId) || 0) + 1);
+    return new Set(Array.from(counts).filter(([, n]) => n > 1).map(([id]) => id));
+  }, [rows]);
+
+  const saveableCount = useMemo(
+    () => new Set(rows.filter((r) => r.userId).map((r) => r.userId)).size,
+    [rows]
+  );
+
+  const pendingByDoc = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of rows) if (r.sourceDocId) counts.set(r.sourceDocId, (counts.get(r.sourceDocId) || 0) + 1);
+    return counts;
+  }, [rows]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <div className="container mx-auto max-w-7xl py-10 px-6">
@@ -677,7 +810,8 @@ export default function AdpYtdImportPage() {
           <div>
             <h1 className="text-3xl font-semibold text-gray-900">ADP Year-to-Date Import</h1>
             <p className="text-gray-600 mt-1 max-w-3xl">
-              Upload an ADP year-to-date report (or type numbers in by hand) to set each
+              Upload ADP year-to-date reports or paystub PDFs (several at once) or type
+              numbers in by hand to set each
               employee&apos;s YTD carryover baseline — federal/state taxes, social security,
               medicare, gross pay, etc. <strong>/api/generate-paystub</strong> reads this
               automatically, so paystubs generated on{' '}
@@ -772,50 +906,135 @@ export default function AdpYtdImportPage() {
         {/* Import controls */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6 p-5">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Import</h2>
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls,.csv,.pdf,application/pdf"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || []);
-                if (files.length > 0) handleFiles(files);
-              }}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={parsing}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-            >
-              {parsing ? 'Reading…' : 'Upload ADP report (.xlsx/.xls/.csv/.pdf)'}
-            </button>
-            <button
-              onClick={handleAddManual}
-              className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50"
-            >
-              + Add employee manually
-            </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv,.pdf,application/pdf"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files || []);
+              // Reset now so picking the same file(s) again still fires onChange.
+              e.target.value = '';
+              if (files.length > 0) handleFiles(files);
+            }}
+          />
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (!parsing) setDragActive(true);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragActive(false);
+            }}
+            onDrop={handleDrop}
+            className={`rounded-lg border-2 border-dashed p-5 transition-colors ${
+              dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-gray-50'
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={parsing}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {parsing ? 'Reading…' : 'Upload documents (.xlsx/.xls/.csv/.pdf)'}
+              </button>
+              <button
+                onClick={handleAddManual}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50"
+              >
+                + Add employee manually
+              </button>
+              <span className="text-sm text-gray-500">
+                {parsing ? 'Wait for the current upload to finish…' : 'or drag and drop files here'}
+              </span>
+            </div>
+            <p className="mt-3 text-xs text-gray-500 max-w-3xl">
+              Select several files at once (Ctrl/Shift-click) and mix spreadsheets and PDFs; you can
+              keep uploading more and new rows are added to the pending list. PDF paystubs are read the
+              same way as the{' '}
+              <Link href="/pdf-reader" className="text-blue-600 underline">
+                PDF Reader
+              </Link>
+              : text PDFs are parsed directly and scanned PDFs go through OCR. Each paystub page becomes
+              a row built from its year-to-date column. When one upload has several rows for the same
+              employee, only the most recent is kept; rows from separate uploads that match the same
+              employee are marked Duplicate and only the most recent is saved.
+            </p>
           </div>
-          <p className="mt-3 text-xs text-gray-500 max-w-3xl">
-            PDF paystubs are read the same way as the{' '}
-            <Link href="/pdf-reader" className="text-blue-600 underline">
-              PDF Reader
-            </Link>
-            : text PDFs are parsed directly and scanned PDFs go through OCR. Each paystub page
-            becomes a row built from its year-to-date column. If one PDF has several pay periods
-            for the same employee, only the most recent is kept.
-          </p>
-          {pdfStatus && (
-            <p className="mt-2 text-sm text-gray-700">
-              Reading {pdfStatus.fileName} ({pdfStatus.index} of {pdfStatus.total})
-              {pdfStatus.ocr
-                ? ` — scanned PDF, OCR page ${pdfStatus.ocr.page || 1} of ${pdfStatus.ocr.total || '?'} (${Math.round(
-                    (pdfStatus.ocr.progress || 0) * 100
+          {readStatus && (
+            <p className="mt-3 text-sm text-gray-700">
+              Reading {readStatus.fileName} ({readStatus.index} of {readStatus.total})
+              {readStatus.ocr
+                ? ` — scanned PDF, OCR page ${readStatus.ocr.page || 1} of ${readStatus.ocr.total || '?'} (${Math.round(
+                    (readStatus.ocr.progress || 0) * 100
                   )}%)`
                 : '…'}
             </p>
+          )}
+          {docs.length > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-gray-800">Documents ({docs.length})</h3>
+                <button
+                  onClick={() => setDocs([])}
+                  disabled={parsing}
+                  className="text-xs text-gray-500 hover:underline disabled:opacity-50"
+                  title="Clears this list only; pending rows stay in the grid"
+                >
+                  Clear list
+                </button>
+              </div>
+              <div className="overflow-x-auto border border-gray-100 rounded-lg">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">File</th>
+                      <th className="px-3 py-2 text-left font-medium">Type</th>
+                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                      <th className="px-3 py-2 text-right font-medium">Rows read</th>
+                      <th className="px-3 py-2 text-right font-medium">Pending</th>
+                      <th className="px-3 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {docs.map((doc) => (
+                      <tr key={doc.id}>
+                        <td className="px-3 py-2 text-gray-900 break-all">{doc.name}</td>
+                        <td className="px-3 py-2 text-gray-600">
+                          {doc.kind === 'pdf' ? 'PDF' : doc.kind === 'sheet' ? 'Spreadsheet' : 'Unsupported'}
+                        </td>
+                        <td className="px-3 py-2">
+                          {doc.status === 'queued' && <span className="text-gray-500">Waiting</span>}
+                          {doc.status === 'reading' && <span className="text-blue-600">Reading…</span>}
+                          {doc.status === 'done' && <span className="text-green-700">Read</span>}
+                          {doc.status === 'error' && (
+                            <span className="text-red-600">Failed: {doc.message}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right text-gray-700">
+                          {doc.status === 'done' ? doc.rowsRead : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-gray-700">
+                          {doc.status === 'done' ? pendingByDoc.get(doc.id) || 0 : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={() => removeDoc(doc.id)}
+                            disabled={parsing}
+                            className="text-red-600 hover:underline text-xs disabled:opacity-50"
+                            title="Remove this document and its pending rows"
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
         </div>
 
@@ -836,7 +1055,7 @@ export default function AdpYtdImportPage() {
                   disabled={saving}
                   className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50"
                 >
-                  {saving ? 'Saving…' : `Save ${rows.filter((r) => r.userId).length} matched row(s)`}
+                  {saving ? 'Saving…' : `Save ${saveableCount} matched employee(s)`}
                 </button>
               </div>
             </div>
@@ -867,10 +1086,23 @@ export default function AdpYtdImportPage() {
                           className="w-40 border border-gray-200 rounded px-2 py-1"
                           placeholder="Employee name"
                         />
+                        {row.sourceName && (
+                          <div className="mt-1 w-40 truncate text-[11px] text-gray-400" title={row.sourceName}>
+                            {row.sourceName}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 whitespace-nowrap">
                         {row.matchStatus === 'matched' && (
                           <span className="inline-block px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">Matched</span>
+                        )}
+                        {row.userId && duplicateUserIds.has(row.userId) && (
+                          <span
+                            className="ml-1 inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs"
+                            title="Another pending row matches the same employee. Only the one with the latest As Of date is saved."
+                          >
+                            Duplicate
+                          </span>
                         )}
                         {row.matchStatus === 'unmatched' && (
                           <span className="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs">No match</span>
