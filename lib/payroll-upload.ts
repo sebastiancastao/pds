@@ -11,6 +11,8 @@
 // with columns like "Employee Name", "Email", "Hours", "Gross Pay". Sheets
 // from several files can be combined into one upload.
 
+import { matchName, normalizeName, prepareDirectory } from "./employee-name-match";
+
 export const PAYROLL_UPLOAD_TEXT_FIELDS = [
   { key: "first_name", label: "First Name", aliases: ["first name", "firstname", "first", "employee first name"] },
   { key: "last_name", label: "Last Name", aliases: ["last name", "lastname", "last", "surname", "employee last name"] },
@@ -44,7 +46,7 @@ export const PAYROLL_UPLOAD_NUMERIC_FIELDS = [
   { key: "other", label: "Other", money: true, aliases: ["other", "adjustment", "adjustments"] },
   { key: "bonus", label: "Bonus", money: true, aliases: ["bonus", "bonus pay"] },
   { key: "sick_pay", label: "Sick Pay", money: true, aliases: ["sick pay", "sick leave pay", "sick leave", "sick"] },
-  { key: "total_gross_pay", label: "Total Gross", money: true, aliases: ["total gross pay", "gross pay", "total gross", "gross", "total pay"] },
+  { key: "total_gross_pay", label: "Total Gross", money: true, aliases: ["total gross pay", "gross pay", "total gross", "gross", "total pay", "total paid"] },
 ] as const;
 
 export type PayrollUploadTextKey = (typeof PAYROLL_UPLOAD_TEXT_FIELDS)[number]["key"];
@@ -202,7 +204,9 @@ type HeaderMapping = {
   recognized: string[];
   unrecognized: string[];
   // "reimbursements" = the reimbursement export (Vendor, Event, Requested, Approved …).
-  layout: "payroll" | "reimbursements";
+  // "register" = ADP's Payroll Summary: one row per employee actually paid
+  // (Name, Hours, Total Paid, Tax Withheld, Net Pay …).
+  layout: "payroll" | "reimbursements" | "register";
   hasTotalColumn: boolean;
 };
 
@@ -240,7 +244,11 @@ export const mapPayrollHeaders = (headerRow: unknown[]): HeaderMapping => {
   }
   // Reimbursement export: the "Approved" amount is what gets paid.
   const layout: HeaderMapping["layout"] =
-    normalized.includes("approved") && (normalized.includes("requested") || normalized.includes("receipt")) ? "reimbursements" : "payroll";
+    normalized.includes("approved") && (normalized.includes("requested") || normalized.includes("receipt"))
+      ? "reimbursements"
+      : normalized.includes("total paid") && (normalized.includes("net pay") || normalized.includes("tax withheld"))
+        ? "register"
+        : "payroll";
   if (layout === "reimbursements" && !Object.values(byColumn).includes("reimbursement")) {
     const idx = claim(["approved"]);
     if (idx >= 0) byColumn[idx] = "reimbursement";
@@ -293,7 +301,7 @@ export type ParsedPayrollSheet = {
   fileName: string;
   sheetName: string;
   headerRowNumber: number; // 1-based, as Excel shows it
-  layout: "payroll" | "reimbursements";
+  layout: "payroll" | "reimbursements" | "register";
   rows: PayrollUploadRow[];
   totalGross: number;
   // TOTAL/subtotal rows and other rows with amounts but no employee.
@@ -533,8 +541,8 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
         if (otherTexts.length) notes.push({ row: r + 1, text: otherTexts.join(", ") });
         continue;
       }
-      if (otherTexts.length) noteOnBlock(r + 1, otherTexts.join(", "));
-      if (hasAmount) skipped += 1;
+      if (otherTexts.length && mapping.layout !== "register") noteOnBlock(r + 1, otherTexts.join(", "));
+      if (hasAmount || mapping.layout === "register") skipped += 1;
       continue;
     }
 
@@ -564,6 +572,16 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
       const found = cells.map((c) => (typeof c === "string" ? c.trim() : "")).find((c) => EMAIL_RE.test(c));
       extra["Email column had"] = emailCellText;
       if (found) extra["Email found in another column"] = found.toLowerCase();
+    }
+    if (mapping.layout === "register") {
+      extra[REGISTER_KEY] = true;
+      if (fullName) extra[REGISTER_NAME_KEY] = fullName;
+      fields.venue = fields.venue || "Payroll Summary";
+      fields.event_name = fields.event_name || "Paid per Payroll Summary";
+      fields.category = fields.category || "Payroll Summary";
+      const check = String(extra["Check Date"] ?? "").trim();
+      const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(check);
+      if (!fields.event_date && m) fields.event_date = `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
     }
     if (mapping.layout === "reimbursements" && fields.event_name && !fields.event_date) {
       // Keep the record readable: "Standalone" reimbursement with its description.
@@ -635,7 +653,105 @@ export const combinePayrollSheets = (sheets: ParsedPayrollSheet[], selectedKeys:
     if (!chosen.has(sheet.key)) return;
     sheet.rows.forEach((row) => rows.push({ ...row, id: newTempRowId(), sort_order: startAt + rows.length }));
   });
-  return rows;
+  return reconcilePayrollRegister(rows).map((row, i) => ({ ...row, sort_order: startAt + i }));
+};
+
+// ---------- ADP Payroll Summary ("register") ----------
+//
+// The Payroll Summary lists every employee actually paid, one line each, with
+// no event detail. The other sheets have the event lines but not everyone
+// (salaried staff, for example, only appear in the summary). Combined, every
+// employee on the summary is counted once:
+// - employees with event lines keep them, and what the summary paid them is
+//   kept on their lines to check against (see payrollRegisterChecks);
+// - employees with no event lines get their summary line;
+// - event-line employees missing from the summary are flagged.
+export const REGISTER_KEY = "From Payroll Summary";
+export const REGISTER_NAME_KEY = "Name on Payroll Summary";
+export const REGISTER_PAID_KEY = "Payroll Summary Total Paid";
+export const REGISTER_SIMILAR_KEY = "Matched to Payroll Summary by a similar name";
+export const NOT_ON_REGISTER_KEY = "Not on Payroll Summary";
+const REGISTER_AMBIGUOUS_KEY = "Payroll Summary name fits more than one employee";
+
+export const isRegisterLine = (row: PayrollUploadRow) => row.extra?.[REGISTER_KEY] === true;
+
+// Groups an employee's lines by name, so lines with and without an email land together.
+export const payrollNameKey = (row: Partial<PayrollUploadFields>): string => normalizeName(payrollRowName(row)) || payrollRowPersonKey(row);
+
+export const reconcilePayrollRegister = (rows: PayrollUploadRow[]): PayrollUploadRow[] => {
+  const register = rows.filter(isRegisterLine);
+  const detail = rows.filter((r) => !isRegisterLine(r));
+  if (register.length === 0 || detail.length === 0) return rows;
+
+  const names = new Map<string, string>();
+  detail.forEach((r) => {
+    const key = payrollNameKey(r);
+    if (!names.has(key)) names.set(key, payrollRowName(r) || r.email || key);
+  });
+  const dir = prepareDirectory(Array.from(names.entries()).map(([key, name]) => ({ userId: key, names: [name], label: name })));
+
+  const matched = new Map<string, { paid: number; registerName: string; similar: boolean }>();
+  const keptRegister = new Set<PayrollUploadRow>();
+  const registerNotes = new Map<PayrollUploadRow, Record<string, string | boolean>>();
+  register.forEach((line) => {
+    const query = String(line.extra[REGISTER_NAME_KEY] || payrollRowName(line));
+    const res = matchName(query, dir);
+    let key: string | null = res.status === "matched" ? res.userId : null;
+    let similar = false;
+    if (!key && res.status === "suggested") {
+      // A nickname or shortened name ("Jess" for "Jessica R"): take it when it
+      // clearly fits one employee, and flag it for a look.
+      const [top, next] = res.candidates;
+      if (top && top.score >= 0.8 && (!next || top.score - next.score >= 0.05)) {
+        key = top.userId;
+        similar = true;
+      }
+    }
+    if (key) {
+      const prior = matched.get(key);
+      matched.set(key, {
+        paid: roundMoney((prior?.paid || 0) + Number(line.total_gross_pay || 0)),
+        registerName: prior ? `${prior.registerName}; ${query}` : query,
+        similar: Boolean(prior?.similar) || similar,
+      });
+      return;
+    }
+    keptRegister.add(line);
+    if (res.status === "ambiguous") registerNotes.set(line, { [REGISTER_AMBIGUOUS_KEY]: true });
+  });
+
+  return rows
+    .filter((r) => !isRegisterLine(r) || keptRegister.has(r))
+    .map((r) => {
+      if (isRegisterLine(r)) {
+        const note = registerNotes.get(r);
+        return note ? { ...r, extra: { ...r.extra, ...note } } : r;
+      }
+      const m = matched.get(payrollNameKey(r));
+      const extra = { ...r.extra };
+      if (m) {
+        extra[REGISTER_PAID_KEY] = m.paid;
+        extra[REGISTER_NAME_KEY] = m.registerName;
+        if (m.similar) extra[REGISTER_SIMILAR_KEY] = m.registerName;
+      } else {
+        extra[NOT_ON_REGISTER_KEY] = true;
+      }
+      return { ...r, extra };
+    });
+};
+
+// Per employee (name key): what the Payroll Summary paid and what their lines add up to.
+export const payrollRegisterChecks = (rows: PayrollUploadRow[]): Map<string, { paid: number; total: number }> => {
+  const out = new Map<string, { paid: number; total: number }>();
+  rows.forEach((r) => {
+    const paid = r.extra?.[REGISTER_PAID_KEY];
+    if (typeof paid !== "number") return;
+    const key = payrollNameKey(r);
+    const cur = out.get(key) || { paid, total: 0 };
+    cur.total = roundMoney(cur.total + Number(r.total_gross_pay || 0));
+    out.set(key, cur);
+  });
+  return out;
 };
 
 export const roundMoney = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -658,7 +774,10 @@ export const payrollRowPersonKey = (row: Partial<PayrollUploadFields>): string =
 
 export type PayrollRowIssue = { code: string; message: string };
 
-export const payrollRowIssues = (row: PayrollUploadRow, opts?: { duplicate?: boolean }): PayrollRowIssue[] => {
+export const payrollRowIssues = (
+  row: PayrollUploadRow,
+  opts?: { duplicate?: boolean; registerCheck?: { paid: number; total: number } }
+): PayrollRowIssue[] => {
   const issues: PayrollRowIssue[] = [];
   if (!payrollRowName(row)) issues.push({ code: "no-name", message: "No employee name" });
   if (!row.email) issues.push({ code: "no-email", message: "No email, so the line can't be matched to an employee" });
@@ -683,6 +802,22 @@ export const payrollRowIssues = (row: PayrollUploadRow, opts?: { duplicate?: boo
   if (negativeField) issues.push({ code: "negative-field", message: `${negativeField.label} is negative` });
   if (row.hours !== null && row.hours > 24 * 16) issues.push({ code: "hours-high", message: "Hours look too high for one pay period" });
   if (opts?.duplicate) issues.push({ code: "duplicate", message: "Same employee, event and date appear on another line" });
+  if (opts?.registerCheck && Math.abs(opts.registerCheck.paid - opts.registerCheck.total) > GROSS_MISMATCH_TOLERANCE) {
+    issues.push({
+      code: "register-mismatch",
+      message: `The Payroll Summary paid this employee $${opts.registerCheck.paid.toFixed(2)}; their lines add up to $${opts.registerCheck.total.toFixed(2)}`,
+    });
+  }
+  if (row.extra?.[NOT_ON_REGISTER_KEY] === true) {
+    issues.push({ code: "not-on-register", message: "This employee isn't on the Payroll Summary" });
+  }
+  const similarName = row.extra?.[REGISTER_SIMILAR_KEY];
+  if (typeof similarName === "string" && similarName) {
+    issues.push({ code: "register-similar", message: `Matched to "${similarName}" on the Payroll Summary by a similar name. Check it's the same person` });
+  }
+  if (row.extra?.[REGISTER_AMBIGUOUS_KEY] === true) {
+    issues.push({ code: "register-ambiguous", message: "More than one employee on the other sheets has this name, so this Payroll Summary line was kept on its own" });
+  }
   const shiftedEmail = row.extra?.["Email found in another column"];
   if (typeof shiftedEmail === "string" && shiftedEmail && !row.email) {
     issues.push({
@@ -814,7 +949,10 @@ export const buildPayrollExportRows = (
     (k) => always.has(k) || rows.some((r) => r[k] !== null && r[k] !== undefined && r[k] !== "")
   );
   const known = new Set<string>(keys.map((k) => PAYROLL_EXPORT_HEADERS[k]));
-  const extraKeys = Array.from(new Set(rows.flatMap((r) => Object.keys(r.extra || {})))).filter((k) => !known.has(k));
+  // Internal Payroll Summary markers stay out of the file, so a downloaded
+  // upload re-reads as plain lines.
+  const internal = new Set<string>([REGISTER_KEY, REGISTER_PAID_KEY, REGISTER_SIMILAR_KEY, NOT_ON_REGISTER_KEY, "Payroll Summary name fits more than one employee"]);
+  const extraKeys = Array.from(new Set(rows.flatMap((r) => Object.keys(r.extra || {})))).filter((k) => !known.has(k) && !internal.has(k));
   const header = [...keys.map((k) => PAYROLL_EXPORT_HEADERS[k]), ...extraKeys];
 
   const data: Array<Record<string, string | number | boolean | null>> = rows.map((row) => {

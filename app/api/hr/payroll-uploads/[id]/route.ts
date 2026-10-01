@@ -20,7 +20,7 @@ import {
   fetchAllPages,
   insertRowsInChunks,
   loadUploadWithRows,
-  matchUserIdsByEmail,
+  resolveAccounts,
   parseIsoDate,
   requireHr,
   setUploadActive,
@@ -123,20 +123,25 @@ export async function PATCH(req: NextRequest, { params }: Params) {
         if (error) throw new Error(error.message);
       }
 
-      const userIdByEmail = await matchUserIdsByEmail(cleaned.rows.map((r) => r.email));
+      const accounts = await resolveAccounts(cleaned.rows);
       const now = new Date().toISOString();
       const deleted = new Set(toDelete);
       const updates: Record<string, unknown>[] = [];
       const inserts: Record<string, unknown>[] = [];
-      cleaned.rows.forEach((row) => {
+      cleaned.rows.forEach((row, index) => {
         const { id, sort_order, from_file, source_file, source_sheet, source_row, extra, ...fields } = row;
+        const account = accounts[index];
+        if (!fields.email && account.email) {
+          fields.email = account.email;
+          extra["Email from employee account"] = true;
+        }
         const base = {
           upload_id: params.id,
           sort_order,
           source_file,
           source_sheet,
           source_row,
-          user_id: fields.email ? userIdByEmail.get(fields.email) || null : null,
+          user_id: account.userId,
           ...fields,
           extra,
           updated_at: now,

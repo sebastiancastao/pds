@@ -23,6 +23,12 @@ import {
   payrollRowIssues,
   payrollRowName,
   payrollRowPersonKey,
+  payrollNameKey,
+  payrollRegisterChecks,
+  isRegisterLine,
+  REGISTER_NAME_KEY,
+  REGISTER_PAID_KEY,
+  NOT_ON_REGISTER_KEY,
   roundMoney,
   type ParsedPayrollSheet,
   type PayrollRowIssue,
@@ -404,6 +410,10 @@ function SheetPicker({
               const checked = selected.includes(sheet.key);
               const details: string[] = [];
               if (sheet.layout === "reimbursements") details.push("Reimbursement list: the Approved amount is paid");
+              if (sheet.layout === "register")
+                details.push(
+                  "Payroll Summary (everyone paid): employees with lines on the other checked sheets are checked against it, and employees with no lines there are added from it"
+                );
               if (sheet.totalRowAdjustments > 0)
                 details.push(`${sheet.totalRowAdjustments} employee${sheet.totalRowAdjustments === 1 ? "" : "s"} set to their Total row (variable incentive top-ups)`);
               if (sheet.skippedRows > 0) details.push(`${sheet.skippedRows} total or subtotal row${sheet.skippedRows === 1 ? "" : "s"} skipped`);
@@ -776,18 +786,72 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
   // ----- review data -----
   const rows = editor?.rows ?? NO_ROWS;
   const duplicates = useMemo(() => duplicateLineIds(rows), [rows]);
-  const issueCache = useRef(new WeakMap<PayrollUploadRow, { dup: boolean; issues: PayrollRowIssue[] }>());
+  // Per employee: what the Payroll Summary paid vs what their lines add up to.
+  const registerChecks = useMemo(() => payrollRegisterChecks(rows), [rows]);
+  const issueCache = useRef(new WeakMap<PayrollUploadRow, { sig: string; issues: PayrollRowIssue[] }>());
   const issuesFor = useCallback(
     (row: PayrollUploadRow) => {
       const dup = duplicates.has(row.id);
+      const check = registerChecks.get(payrollNameKey(row));
+      const sig = `${dup}|${check ? `${check.paid}|${check.total}` : ""}`;
       const cached = issueCache.current.get(row);
-      if (cached && cached.dup === dup) return cached.issues;
-      const issues = payrollRowIssues(row, { duplicate: dup });
-      issueCache.current.set(row, { dup, issues });
+      if (cached && cached.sig === sig) return cached.issues;
+      const issues = payrollRowIssues(row, { duplicate: dup, registerCheck: check });
+      issueCache.current.set(row, { sig, issues });
       return issues;
     },
-    [duplicates]
+    [duplicates, registerChecks]
   );
+
+  // The Payroll Summary check: who it lists, and where the upload differs.
+  const registerSummary = useMemo(() => {
+    const added = rows.filter(isRegisterLine);
+    if (added.length === 0 && registerChecks.size === 0) return null;
+    const firstLineOf = new Map<string, PayrollUploadRow>();
+    rows.forEach((r) => {
+      const key = payrollNameKey(r);
+      if (!firstLineOf.has(key)) firstLineOf.set(key, r);
+    });
+    const differences = Array.from(registerChecks.entries())
+      .filter(([, c]) => Math.abs(c.paid - c.total) > 0.05)
+      .map(([key, c]) => ({ key, ...c, diff: roundMoney(c.paid - c.total), row: firstLineOf.get(key)! }))
+      .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+    const notOnSummary = Array.from(new Set(rows.filter((r) => r.extra?.[NOT_ON_REGISTER_KEY] === true).map((r) => payrollRowName(r) || r.email || "(no name)")));
+    const paid = roundMoney(
+      Array.from(registerChecks.values()).reduce((sum, c) => sum + c.paid, 0) + added.reduce((sum, r) => sum + Number(r.total_gross_pay || 0), 0)
+    );
+    return { employees: registerChecks.size + added.length, fromSheets: registerChecks.size, added, paid, differences, notOnSummary };
+  }, [rows, registerChecks]);
+
+  // Adds a line for the gap between what the Payroll Summary paid an employee and their lines.
+  const addRegisterDifference = (key: string) => {
+    const d = registerSummary?.differences.find((x) => x.key === key);
+    if (!d || !editor) return;
+    const nextOrder = editor.rows.reduce((max, r) => Math.max(max, r.sort_order), -1) + 1;
+    const blank = Object.fromEntries(PAYROLL_UPLOAD_FIELD_KEYS.map((k) => [k, null]));
+    const line = {
+      ...blank,
+      first_name: d.row.first_name,
+      last_name: d.row.last_name,
+      email: d.row.email,
+      venue: "Payroll Summary",
+      event_name: "Difference to Payroll Summary",
+      event_date: d.row.event_date,
+      category: "Payroll Summary",
+      other: d.diff,
+      total_gross_pay: d.diff,
+      id: newTempRowId(),
+      sort_order: nextOrder,
+      source_file: null,
+      source_sheet: null,
+      source_row: null,
+      user_id: d.row.user_id,
+      extra: { [REGISTER_PAID_KEY]: d.paid, [REGISTER_NAME_KEY]: String(d.row.extra?.[REGISTER_NAME_KEY] || "") },
+      original: null,
+    } as unknown as PayrollUploadRow;
+    updateRows((rs) => [...rs, line]);
+    setNotice(`Added a $${d.diff.toFixed(2)} line for ${payrollRowName(d.row) || "the employee"} so their total matches the Payroll Summary.`);
+  };
 
   const stats = useMemo(() => {
     let gross = 0;
@@ -799,7 +863,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
     rows.forEach((row) => {
       gross += Number(row.total_gross_pay || 0);
       hours += Number(row.hours || 0);
-      people.add(payrollRowPersonKey(row));
+      people.add(payrollNameKey(row));
       const issues = issuesFor(row);
       if (issues.length > 0) withIssues += 1;
       issues.forEach((i) => {
@@ -810,7 +874,11 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
               ? "The file has notes next to these lines (such as paid or short). Hover the red badge to read them"
               : i.code === "shifted"
                 ? "Columns look shifted: the email is in another column than the header says"
-                : i.message;
+                : i.code === "register-mismatch"
+                  ? "The Payroll Summary paid a different amount than these lines add up to (see the Payroll Summary check)"
+                  : i.code === "register-similar"
+                    ? "Matched to the Payroll Summary by a similar name (nickname or middle name). Check it's the same person"
+                    : i.message;
         issueCounts[i.code] = { message: label, count: (issueCounts[i.code]?.count || 0) + 1 };
       });
       if (isPayrollRowEdited(row)) edited += 1;
@@ -980,7 +1048,7 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
           (created.active
             ? " This upload is now the payroll for those dates. The system payroll is unchanged and can still be retrieved."
             : "") +
-          (unmatched > 0 ? ` ${unmatched} line${unmatched === 1 ? "" : "s"} didn't match an employee account by email.` : "")
+          (unmatched > 0 ? ` ${unmatched} line${unmatched === 1 ? "" : "s"} didn't match an employee account by email or name.` : "")
       );
       if (created.activeError) setError(created.activeError);
       void loadUploads();
@@ -1412,6 +1480,78 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {/* Payroll Summary check */}
+          {registerSummary && (
+            <div className="mb-3 rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2 text-sm text-indigo-950">
+              <div className="mb-1 font-semibold">Payroll Summary check</div>
+              <p>
+                The Payroll Summary lists {registerSummary.employees} employees paid ${registerSummary.paid.toFixed(2)}. All of them are in this upload:{" "}
+                {registerSummary.fromSheets} with lines on the other sheets and {registerSummary.added.length} added from the summary
+                {registerSummary.added.length > 0 ? " (no lines on the other sheets, such as salaried staff)" : ""}. This upload adds up to $
+                {stats.gross.toFixed(2)}
+                {Math.abs(stats.gross - registerSummary.paid) > 0.05 ? `, ${stats.gross > registerSummary.paid ? "$" + (stats.gross - registerSummary.paid).toFixed(2) + " more" : "$" + (registerSummary.paid - stats.gross).toFixed(2) + " less"} than the summary.` : ", the same as the summary."}
+              </p>
+              {registerSummary.differences.length > 0 && (
+                <div className="mt-2 overflow-x-auto rounded border border-indigo-100 bg-white">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-indigo-50 text-indigo-900">
+                      <tr>
+                        <th className="px-2 py-1.5 text-left font-medium uppercase">Employee paid differently</th>
+                        <th className="px-2 py-1.5 text-right font-medium uppercase">Summary paid</th>
+                        <th className="px-2 py-1.5 text-right font-medium uppercase">Lines add up to</th>
+                        <th className="px-2 py-1.5 text-right font-medium uppercase">Difference</th>
+                        <th className="px-2 py-1.5" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {registerSummary.differences.map((d) => (
+                        <tr key={d.key}>
+                          <td className="px-2 py-1.5">
+                            <button
+                              type="button"
+                              className="text-left font-medium text-gray-900 hover:underline"
+                              onClick={() => {
+                                setSearch(payrollRowName(d.row) || d.row.email || "");
+                                setOnlyIssues(false);
+                                setOnlyEdited(false);
+                                setPage(0);
+                              }}
+                              title="Show this employee's lines below"
+                            >
+                              {payrollRowName(d.row) || d.row.email || "(no name)"}
+                            </button>
+                          </td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">${d.paid.toFixed(2)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">${d.total.toFixed(2)}</td>
+                          <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${d.diff > 0 ? "text-red-600" : "text-amber-700"}`}>
+                            {d.diff > 0 ? "+" : "−"}${Math.abs(d.diff).toFixed(2)}
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            {!readOnly && (
+                              <button
+                                type="button"
+                                onClick={() => addRegisterDifference(d.key)}
+                                className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-100"
+                                title="Add one line for the difference so this employee's total matches the Payroll Summary. You can also fix their lines instead."
+                              >
+                                Add difference line
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {registerSummary.notOnSummary.length > 0 && (
+                <p className="mt-2 text-xs text-indigo-900">
+                  On the other sheets but not on the Payroll Summary: {registerSummary.notOnSummary.join(", ")}.
+                </p>
+              )}
             </div>
           )}
 

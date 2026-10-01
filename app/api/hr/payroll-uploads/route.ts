@@ -21,7 +21,7 @@ import {
   emailsForUserIds,
   fetchAllPages,
   insertRowsInChunks,
-  matchUserIdsByEmail,
+  resolveAccounts,
   parseIsoDate,
   requireHr,
   setUploadActive,
@@ -112,9 +112,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "The upload has no payroll lines" }, { status: 400 });
   }
 
-  let userIdByEmail: Map<string, string>;
+  let accounts: Array<{ userId: string | null; email: string | null }>;
   try {
-    userIdByEmail = await matchUserIdsByEmail(cleaned.rows.map((r) => r.email));
+    accounts = await resolveAccounts(cleaned.rows);
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Failed to match employees" }, { status: 500 });
   }
@@ -139,13 +139,18 @@ export async function POST(req: NextRequest) {
 
   const insertRows = cleaned.rows.map((row, index) => {
     const { id: _ignored, sort_order: _sort, from_file: _fromFile, source_file, source_sheet, source_row, extra, ...fields } = row;
+    const account = accounts[index];
+    if (!fields.email && account.email) {
+      fields.email = account.email;
+      extra["Email from employee account"] = true;
+    }
     return {
       upload_id: upload.id,
       sort_order: index,
       source_file,
       source_sheet,
       source_row,
-      user_id: fields.email ? userIdByEmail.get(fields.email) || null : null,
+      user_id: account.userId,
       ...fields,
       extra,
       // The values as uploaded, kept so edits made during review stay visible.
