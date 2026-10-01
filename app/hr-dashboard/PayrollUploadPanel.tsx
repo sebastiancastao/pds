@@ -1397,6 +1397,98 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             </button>
           </div>
 
+          {/* Save and other actions, kept in view while scrolling through the lines */}
+          <div className="sticky top-0 z-30 -mx-4 mb-3 flex flex-wrap items-center gap-2 border-b border-gray-200 bg-gray-50/95 px-4 py-2 backdrop-blur">
+            {editor.mode === "new" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void saveNew()}
+                  disabled={saving || !hasPeriod || rows.length === 0}
+                  className={`apple-button ${saving || !hasPeriod || rows.length === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
+                >
+                  {saving ? "Saving…" : `Save ${rows.length} line${rows.length === 1 ? "" : "s"} as payroll for ${periodLabel}`}
+                </button>
+                <button type="button" onClick={closeEditor} className="apple-button apple-button-secondary">
+                  Discard
+                </button>
+              </>
+            ) : editor.upload.status === "reviewed" ? (
+              <button
+                type="button"
+                onClick={() => void patchSaved({ status: "draft" }, "Reopened for editing.")}
+                disabled={saving}
+                className={`apple-button ${saving ? "apple-button-disabled" : "apple-button-secondary"}`}
+              >
+                {saving ? "Saving…" : "Reopen for editing"}
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void patchSaved({}, "Changes saved.")}
+                  disabled={saving || (!dirtyInfo.dirty && (editor.upload.notes || "") === notesDraft.trim())}
+                  className={`apple-button ${
+                    saving || (!dirtyInfo.dirty && (editor.upload.notes || "") === notesDraft.trim()) ? "apple-button-disabled" : "apple-button-primary"
+                  }`}
+                >
+                  {saving
+                    ? "Saving…"
+                    : dirtyInfo.dirty
+                      ? `Save changes (${dirtyInfo.changedRows.length + dirtyInfo.deletedCount})`
+                      : "Save changes"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const warning =
+                      stats.withIssues > 0
+                        ? `${stats.withIssues} line${stats.withIssues === 1 ? " still needs" : "s still need"} a look. Mark as reviewed anyway?`
+                        : "Mark this upload as reviewed? Lines are locked until it's reopened.";
+                    if (!window.confirm(warning)) return;
+                    void patchSaved({ status: "reviewed" }, "Marked as reviewed.");
+                  }}
+                  disabled={saving}
+                  className={`apple-button ${saving ? "apple-button-disabled" : "apple-button-secondary"}`}
+                >
+                  {dirtyInfo.dirty ? "Save and mark reviewed" : "Mark as reviewed"}
+                </button>
+                {dirtyInfo.dirty && (
+                  <button type="button" onClick={discardChanges} className="rounded px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">
+                    Discard changes
+                  </button>
+                )}
+              </>
+            )}
+            {editor.mode === "saved" && (
+              <button
+                type="button"
+                onClick={() => void changeActive(editor.upload, !editor.upload.is_active)}
+                disabled={saving}
+                className={`apple-button ${saving ? "apple-button-disabled" : "apple-button-secondary"}`}
+                title={
+                  editor.upload.is_active
+                    ? "Go back to the system payroll for these dates. The upload is kept."
+                    : "Show this upload instead of the system payroll when these exact dates are loaded."
+                }
+              >
+                {editor.upload.is_active ? "Use system payroll for these dates" : "Use as payroll for these dates"}
+              </button>
+            )}
+            <button type="button" onClick={exportRows} className="apple-button apple-button-secondary">
+              Download as Excel
+            </button>
+            {editor.mode === "saved" && (
+              <button
+                type="button"
+                onClick={() => void deleteUpload(editor.upload)}
+                className="ml-auto rounded px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+              >
+                Delete upload
+              </button>
+            )}
+          </div>
+
           {editor.mode === "new" && (
             <div className="mb-3 space-y-3 rounded-lg border border-gray-200 bg-white p-3 text-sm">
               <SheetPicker
@@ -1819,11 +1911,12 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             )}
           </div>
 
-          {/* Notes + actions */}
+          {/* Review notes */}
           <div className="mt-4 border-t border-gray-200 pt-3">
             <label className="apple-label" htmlFor="payroll-upload-notes">
               Review notes
             </label>
+            <p className="mb-1 text-xs text-gray-500">Saved with the Save button at the top.</p>
             <textarea
               id="payroll-upload-notes"
               value={notesDraft}
@@ -1833,96 +1926,6 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
               placeholder="Optional: what was checked or changed"
               className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-50"
             />
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {editor.mode === "new" ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void saveNew()}
-                    disabled={saving || !hasPeriod || rows.length === 0}
-                    className={`apple-button ${saving || !hasPeriod || rows.length === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
-                  >
-                    {saving ? "Saving…" : `Save ${rows.length} line${rows.length === 1 ? "" : "s"} as payroll for ${periodLabel}`}
-                  </button>
-                  <button type="button" onClick={closeEditor} className="apple-button apple-button-secondary">
-                    Discard
-                  </button>
-                </>
-              ) : editor.upload.status === "reviewed" ? (
-                <button
-                  type="button"
-                  onClick={() => void patchSaved({ status: "draft" }, "Reopened for editing.")}
-                  disabled={saving}
-                  className={`apple-button ${saving ? "apple-button-disabled" : "apple-button-secondary"}`}
-                >
-                  {saving ? "Saving…" : "Reopen for editing"}
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void patchSaved({}, "Changes saved.")}
-                    disabled={saving || (!dirtyInfo.dirty && (editor.upload.notes || "") === notesDraft.trim())}
-                    className={`apple-button ${
-                      saving || (!dirtyInfo.dirty && (editor.upload.notes || "") === notesDraft.trim()) ? "apple-button-disabled" : "apple-button-primary"
-                    }`}
-                  >
-                    {saving
-                      ? "Saving…"
-                      : dirtyInfo.dirty
-                        ? `Save changes (${dirtyInfo.changedRows.length + dirtyInfo.deletedCount})`
-                        : "Save changes"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const warning =
-                        stats.withIssues > 0
-                          ? `${stats.withIssues} line${stats.withIssues === 1 ? " still needs" : "s still need"} a look. Mark as reviewed anyway?`
-                          : "Mark this upload as reviewed? Lines are locked until it's reopened.";
-                      if (!window.confirm(warning)) return;
-                      void patchSaved({ status: "reviewed" }, "Marked as reviewed.");
-                    }}
-                    disabled={saving}
-                    className={`apple-button ${saving ? "apple-button-disabled" : "apple-button-secondary"}`}
-                  >
-                    {dirtyInfo.dirty ? "Save and mark reviewed" : "Mark as reviewed"}
-                  </button>
-                  {dirtyInfo.dirty && (
-                    <button type="button" onClick={discardChanges} className="rounded px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">
-                      Discard changes
-                    </button>
-                  )}
-                </>
-              )}
-              {editor.mode === "saved" && (
-                <button
-                  type="button"
-                  onClick={() => void changeActive(editor.upload, !editor.upload.is_active)}
-                  disabled={saving}
-                  className={`apple-button ${saving ? "apple-button-disabled" : "apple-button-secondary"}`}
-                  title={
-                    editor.upload.is_active
-                      ? "Go back to the system payroll for these dates. The upload is kept."
-                      : "Show this upload instead of the system payroll when these exact dates are loaded."
-                  }
-                >
-                  {editor.upload.is_active ? "Use system payroll for these dates" : "Use as payroll for these dates"}
-                </button>
-              )}
-              <button type="button" onClick={exportRows} className="apple-button apple-button-secondary">
-                Download as Excel
-              </button>
-              {editor.mode === "saved" && (
-                <button
-                  type="button"
-                  onClick={() => void deleteUpload(editor.upload)}
-                  className="ml-auto rounded px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-                >
-                  Delete upload
-                </button>
-              )}
-            </div>
           </div>
         </div>
       )}
