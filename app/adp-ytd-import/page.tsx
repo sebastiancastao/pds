@@ -16,8 +16,10 @@
 //
 // A row can come from an uploaded spreadsheet, an uploaded paystub PDF, or be
 // typed in by hand. Every path goes through the same review grid and the same
-// employee-matching (/api/match-employee) that /paystub-generator's own Excel
-// import uses.
+// employee matching: one batched POST to /api/employee-ytd-carryover/match
+// (tolerant matcher in lib/employee-name-match.ts). Confident matches apply
+// automatically; near matches are offered as suggestions to pick from, and
+// "Re-match unmatched" runs the search again for rows that did not match.
 //
 // PDFs are read exactly the way /pdf-reader reads them: the pipeline lives in
 // lib/pdf-reader-extraction.ts (server text extraction via /api/extract-pdf,
@@ -36,6 +38,7 @@ import { useState, useRef, useCallback, useEffect, useMemo, type DragEvent } fro
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import type { OcrHooks, OcrProgress, PayrollData } from '@/lib/pdf-reader-extraction';
+import type { MatchMethod, NameCandidate, NameMatchResult } from '@/lib/employee-name-match';
 
 type FieldKey =
   | 'federalIncomeYtd'
@@ -65,6 +68,14 @@ type Row = {
   employeeName: string;
   userId: string | null;
   matchStatus: 'unchecked' | 'checking' | 'matched' | 'unmatched';
+  // Employee the row is matched to, and how ('picked' = chosen by hand from
+  // the suggestions, 'onfile' = loaded from an existing carryover record).
+  matchedName: string | null;
+  matchMethod: MatchMethod | 'picked' | 'onfile' | null;
+  // Near matches the reviewer can pick from when nothing matched automatically.
+  suggestions: NameCandidate[];
+  // Name the current match result is for; blur only re-matches when it changed.
+  matchedQuery: string;
   asOfDate: string;
   stateCode: string;
   notes: string;
@@ -146,6 +157,10 @@ function newRow(employeeName = ''): Row {
     employeeName,
     userId: null,
     matchStatus: 'unchecked',
+    matchedName: null,
+    matchMethod: null,
+    suggestions: [],
+    matchedQuery: '',
     asOfDate: new Date().toISOString().slice(0, 10),
     stateCode: 'CA',
     notes: '',
@@ -482,18 +497,73 @@ async function readPdfFile(
   return rows;
 }
 
-async function matchEmployee(name: string): Promise<string | null> {
-  const trimmed = name.trim();
-  if (!trimmed) return null;
-  try {
-    const res = await fetch(`/api/match-employee?name=${encodeURIComponent(trimmed)}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.user_id || null;
-  } catch {
-    return null;
-  }
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
 }
+
+// ---------- Employee matching (batched) ----------
+//
+// The old flow called /api/match-employee once per row, one after another,
+// and that endpoint only accepted an exact official_name. Now every distinct
+// name goes to /api/employee-ytd-carryover/match in one request, which loads
+// the employee directory once and matches with lib/employee-name-match.ts
+// (accents, name order, middle names, second surnames, suffixes, nicknames,
+// typos). Only confident matches are applied; near matches come back as
+// suggestions for the reviewer to pick.
+
+const MATCH_CHUNK = 1000;
+const CLEAR_SUGGESTION_MIN = 0.85;
+const CLEAR_SUGGESTION_LEAD = 0.05;
+
+async function matchNamesBatch(names: string[], refresh = false): Promise<Map<string, NameMatchResult>> {
+  const distinct = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)));
+  const out = new Map<string, NameMatchResult>();
+  if (distinct.length === 0) return out;
+  const headers = { 'Content-Type': 'application/json', ...(await getAuthHeaders()) };
+  for (let i = 0; i < distinct.length; i += MATCH_CHUNK) {
+    const chunk = distinct.slice(i, i + MATCH_CHUNK);
+    const res = await fetch('/api/employee-ytd-carryover/match', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ names: chunk, refresh: refresh && i === 0 }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || `employee matching failed (HTTP ${res.status})`);
+    (data.results || []).forEach((r: NameMatchResult, idx: number) => out.set(chunk[idx], r));
+  }
+  return out;
+}
+
+function applyMatchResult(row: Row, result: NameMatchResult): Row {
+  return {
+    ...row,
+    userId: result.userId,
+    matchStatus: result.userId ? 'matched' : 'unmatched',
+    matchedName: result.userId ? result.matchedName : null,
+    matchMethod: result.userId ? result.method : null,
+    suggestions: result.candidates,
+    matchedQuery: row.employeeName.trim(),
+  };
+}
+
+// A suggestion safe enough to accept in bulk: high score and a clear lead
+// over the next person.
+function clearTopSuggestion(row: Row): NameCandidate | null {
+  if (row.matchStatus !== 'unmatched' || row.suggestions.length === 0) return null;
+  const [top, second] = row.suggestions;
+  if (top.score < CLEAR_SUGGESTION_MIN) return null;
+  if (second && top.score - second.score < CLEAR_SUGGESTION_LEAD) return null;
+  return top;
+}
+
+function sameName(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (s: string | null | undefined) =>
+    String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return norm(a) === norm(b);
+}
+
+type MatchOutcome = { total: number; matched: number; suggested: number; none: number; seconds: number };
 
 export default function AdpYtdImportPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -510,15 +580,13 @@ export default function AdpYtdImportPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  async function authHeader(): Promise<Record<string, string>> {
-    const { data: { session } } = await supabase.auth.getSession();
-    return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-  }
+  const [rematching, setRematching] = useState(false);
+  const [view, setView] = useState<'all' | 'attention' | 'new'>('all');
 
   const loadOnFile = useCallback(async () => {
     setLoadingOnFile(true);
     try {
-      const headers = await authHeader();
+      const headers = await getAuthHeaders();
       const res = await fetch('/api/employee-ytd-carryover', { headers });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Failed to load existing carryover records');
@@ -534,28 +602,124 @@ export default function AdpYtdImportPage() {
     loadOnFile();
   }, [loadOnFile]);
 
-  const rematchRow = useCallback(async (key: string, name: string) => {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, matchStatus: 'checking' } : r)));
-    const userId = await matchEmployee(name);
+  // Matches the given rows to employees with one batched request and writes
+  // the results back. Returns counts for the status message, or null if the
+  // request failed (the error banner says why).
+  const matchRows = useCallback(async (targets: Row[], refresh = false): Promise<MatchOutcome | null> => {
+    const started = performance.now();
+    const named = targets.filter((r) => r.employeeName.trim());
+    const namedKeys = new Set(named.map((r) => r.key));
+    const blankKeys = new Set(targets.filter((r) => !r.employeeName.trim()).map((r) => r.key));
+    setRows((prev) =>
+      prev.map((r) => {
+        if (namedKeys.has(r.key)) return { ...r, matchStatus: 'checking' };
+        if (blankKeys.has(r.key)) {
+          return { ...r, userId: null, matchStatus: 'unmatched', matchedName: null, matchMethod: null, suggestions: [], matchedQuery: '' };
+        }
+        return r;
+      })
+    );
+    if (named.length === 0) return { total: targets.length, matched: 0, suggested: 0, none: targets.length, seconds: 0 };
+
+    try {
+      const results = await matchNamesBatch(named.map((r) => r.employeeName), refresh);
+      setRows((prev) =>
+        prev.map((r) => {
+          if (!namedKeys.has(r.key)) return r;
+          // The name may have been edited while the request was in flight;
+          // leave that row for its own blur to re-match.
+          const result = results.get(r.employeeName.trim());
+          if (!result) return r.matchStatus === 'checking' ? { ...r, matchStatus: 'unchecked' } : r;
+          return applyMatchResult(r, result);
+        })
+      );
+      let matched = 0;
+      let suggested = 0;
+      for (const r of named) {
+        const result = results.get(r.employeeName.trim());
+        if (result?.userId) matched++;
+        else if (result && result.candidates.length > 0) suggested++;
+      }
+      return {
+        total: targets.length,
+        matched,
+        suggested,
+        none: targets.length - matched - suggested,
+        seconds: (performance.now() - started) / 1000,
+      };
+    } catch (e: any) {
+      setRows((prev) =>
+        prev.map((r) => (namedKeys.has(r.key) && r.matchStatus === 'checking' ? { ...r, matchStatus: 'unchecked' } : r))
+      );
+      setError(`Could not match employees: ${e?.message || e}`);
+      return null;
+    }
+  }, []);
+
+  // Adds parsed rows to the grid, then matches all of them in one request.
+  const appendAndMatch = useCallback(
+    async (parsed: Row[]) => {
+      setRows((prev) => [...prev, ...parsed]);
+      return matchRows(parsed);
+    },
+    [matchRows]
+  );
+
+  // Another run over the rows that did not match, against a freshly loaded
+  // employee list (refresh) so people added since the last run are found.
+  const handleRematchUnmatched = useCallback(async () => {
+    const targets = rows.filter((r) => r.matchStatus === 'unmatched' || r.matchStatus === 'unchecked');
+    if (targets.length === 0 || rematching) return;
+    setError(null);
+    setSuccess(null);
+    setRematching(true);
+    try {
+      const outcome = await matchRows(targets, true);
+      if (outcome) {
+        setSuccess(
+          `Re-checked ${outcome.total} unmatched row(s) in ${outcome.seconds.toFixed(1)}s: ` +
+            `${outcome.matched} matched, ${outcome.suggested} have suggestions to pick from, ${outcome.none} still not found.`
+        );
+      }
+    } finally {
+      setRematching(false);
+    }
+  }, [rows, rematching, matchRows]);
+
+  const pickCandidate = useCallback((key: string, candidate: NameCandidate) => {
     setRows((prev) =>
       prev.map((r) =>
-        r.key === key ? { ...r, userId, matchStatus: userId ? 'matched' : 'unmatched' } : r
+        r.key === key
+          ? { ...r, userId: candidate.userId, matchStatus: 'matched', matchedName: candidate.name, matchMethod: 'picked' }
+          : r
       )
     );
   }, []);
 
-  // Adds parsed rows to the grid, then matches each to an employee
-  // sequentially so we don't hammer the server.
-  const appendAndMatch = useCallback(async (parsed: Row[]) => {
-    setRows((prev) => [...prev, ...parsed]);
-    for (const row of parsed) {
-      if (!row.employeeName) {
-        setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, matchStatus: 'unmatched' } : r)));
-        continue;
-      }
-      await rematchRow(row.key, row.employeeName);
-    }
-  }, [rematchRow]);
+  // Clears a match so the reviewer can choose another suggestion.
+  const unmatchRow = useCallback((key: string) => {
+    setRows((prev) =>
+      prev.map((r) => (r.key === key ? { ...r, userId: null, matchStatus: 'unmatched', matchedName: null, matchMethod: null } : r))
+    );
+  }, []);
+
+  const handleAcceptClearSuggestions = useCallback(() => {
+    const picks = rows.map((r) => [r.key, clearTopSuggestion(r)] as const).filter(([, c]) => c);
+    if (picks.length === 0) return;
+    const ok = window.confirm(
+      `Use the top suggestion for ${picks.length} row(s)? Each one scored at least ${Math.round(
+        CLEAR_SUGGESTION_MIN * 100
+      )}% and is clearly ahead of the next person. Check the "as ..." names before saving.`
+    );
+    if (!ok) return;
+    const byKey = new Map(picks);
+    setRows((prev) =>
+      prev.map((r) => {
+        const c = byKey.get(r.key);
+        return c ? { ...r, userId: c.userId, matchStatus: 'matched', matchedName: c.name, matchMethod: 'picked' } : r;
+      })
+    );
+  }, [rows]);
 
   const handleAddManual = useCallback(() => {
     setRows((prev) => [...prev, newRow()]);
@@ -632,9 +796,12 @@ export default function AdpYtdImportPage() {
         const dupNote =
           dropped > 0 ? ` Kept the most recent row per employee (${dropped} older row(s) skipped).` : '';
         setSuccess(`Read ${kept.length} employee row(s) from ${files.length} ${docWord}. Matching employees…${dupNote}`);
-        await appendAndMatch(kept);
+        const outcome = await appendAndMatch(kept);
+        const matchNote = outcome
+          ? ` Employees matched in ${outcome.seconds.toFixed(1)}s: ${outcome.matched} matched, ${outcome.suggested} need a pick from suggestions, ${outcome.none} not found.`
+          : '';
         setSuccess(
-          `Imported ${kept.length} row(s) from ${files.length - failures.length} of ${files.length} ${docWord}.${dupNote} Review the YTD numbers before saving.`
+          `Imported ${kept.length} row(s) from ${files.length - failures.length} of ${files.length} ${docWord}.${dupNote}${matchNote} Review the YTD numbers before saving.`
         );
       }
       if (failures.length > 0) {
@@ -685,7 +852,7 @@ export default function AdpYtdImportPage() {
     const { kept, dropped } = keepLatestPerUser(matched);
     setSaving(true);
     try {
-      const headers = await authHeader();
+      const headers = await getAuthHeaders();
       const payload = {
         rows: kept.map((r) => ({
           userId: r.userId,
@@ -775,6 +942,9 @@ export default function AdpYtdImportPage() {
     const row = newRow(rec.employeeName);
     row.userId = rec.user_id;
     row.matchStatus = 'matched';
+    row.matchedName = rec.employeeName;
+    row.matchMethod = 'onfile';
+    row.matchedQuery = rec.employeeName.trim();
     row.asOfDate = rec.as_of_date || row.asOfDate;
     row.stateCode = rec.state_code || 'CA';
     row.grossPayYtd = rec.gross_pay_ytd != null ? String(rec.gross_pay_ytd) : '';
@@ -802,6 +972,52 @@ export default function AdpYtdImportPage() {
     for (const r of rows) if (r.sourceDocId) counts.set(r.sourceDocId, (counts.get(r.sourceDocId) || 0) + 1);
     return counts;
   }, [rows]);
+
+  const onFileIds = useMemo(() => new Set(onFile.map((r) => r.user_id)), [onFile]);
+
+  // Matched rows for employees who already have a saved baseline (from an
+  // earlier run). Rows opened with "Edit" are excluded: those are deliberate.
+  const isAlreadyOnFile = useCallback(
+    (r: Row) => !!r.userId && onFileIds.has(r.userId) && r.matchMethod !== 'onfile',
+    [onFileIds]
+  );
+
+  const needsAttention = useCallback(
+    (r: Row) => r.matchStatus !== 'matched' || (!!r.userId && duplicateUserIds.has(r.userId)),
+    [duplicateUserIds]
+  );
+
+  const counts = useMemo(() => {
+    let unmatched = 0;
+    let withSuggestions = 0;
+    let clearSuggestions = 0;
+    let attention = 0;
+    let alreadyOnFile = 0;
+    for (const r of rows) {
+      if (r.matchStatus === 'unmatched' || r.matchStatus === 'unchecked') unmatched++;
+      if (r.matchStatus === 'unmatched' && r.suggestions.length > 0) withSuggestions++;
+      if (clearTopSuggestion(r)) clearSuggestions++;
+      if (needsAttention(r)) attention++;
+      if (isAlreadyOnFile(r)) alreadyOnFile++;
+    }
+    return { unmatched, withSuggestions, clearSuggestions, attention, alreadyOnFile, notOnFile: rows.length - alreadyOnFile };
+  }, [rows, needsAttention, isAlreadyOnFile]);
+
+  const visibleRows = useMemo(() => {
+    if (view === 'attention') return rows.filter(needsAttention);
+    if (view === 'new') return rows.filter((r) => !isAlreadyOnFile(r));
+    return rows;
+  }, [rows, view, needsAttention, isAlreadyOnFile]);
+
+  const handleRemoveAlreadyOnFile = useCallback(() => {
+    if (counts.alreadyOnFile === 0) return;
+    const ok = window.confirm(
+      `Remove ${counts.alreadyOnFile} pending row(s) for employees who already have a saved YTD baseline? ` +
+        'Their saved numbers stay as they are.'
+    );
+    if (!ok) return;
+    setRows((prev) => prev.filter((r) => !isAlreadyOnFile(r)));
+  }, [counts.alreadyOnFile, isAlreadyOnFile]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -1041,9 +1257,46 @@ export default function AdpYtdImportPage() {
         {/* Editable grid */}
         {rows.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
-            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">Pending rows ({rows.length})</h2>
-              <div className="flex gap-3">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <h2 className="text-lg font-semibold text-gray-900">Pending rows ({rows.length})</h2>
+                <select
+                  value={view}
+                  onChange={(e) => setView(e.target.value as typeof view)}
+                  className="border border-gray-300 rounded-lg px-2 py-1 text-sm text-gray-700"
+                  aria-label="Which rows to show"
+                >
+                  <option value="all">Show all rows ({rows.length})</option>
+                  <option value="attention">Needs attention ({counts.attention})</option>
+                  <option value="new">Not yet on file ({counts.notOnFile})</option>
+                </select>
+              </div>
+              <div className="flex gap-3 flex-wrap items-center">
+                <button
+                  onClick={handleRematchUnmatched}
+                  disabled={counts.unmatched === 0 || rematching || parsing}
+                  className="px-3 py-2 rounded-lg border border-blue-300 bg-white text-blue-700 text-sm font-medium hover:bg-blue-50 disabled:opacity-50"
+                  title="Search again for every row that did not match, with the tolerant matcher and a fresh employee list"
+                >
+                  {rematching ? 'Searching…' : `Re-match unmatched (${counts.unmatched})`}
+                </button>
+                {counts.clearSuggestions > 0 && (
+                  <button
+                    onClick={handleAcceptClearSuggestions}
+                    className="px-3 py-2 rounded-lg border border-amber-300 bg-white text-amber-800 text-sm font-medium hover:bg-amber-50"
+                  >
+                    Accept {counts.clearSuggestions} clear suggestion(s)
+                  </button>
+                )}
+                {counts.alreadyOnFile > 0 && (
+                  <button
+                    onClick={handleRemoveAlreadyOnFile}
+                    className="text-sm text-gray-600 hover:underline"
+                    title="Drop rows for employees whose YTD baseline was already saved in an earlier run"
+                  >
+                    Remove {counts.alreadyOnFile} already on file
+                  </button>
+                )}
                 <button
                   onClick={handleDownloadTemplate}
                   className="text-sm text-gray-600 hover:underline"
@@ -1076,13 +1329,26 @@ export default function AdpYtdImportPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {rows.map((row) => (
+                  {visibleRows.length === 0 && (
+                    <tr>
+                      <td colSpan={FIELD_DEFS.length + 5} className="px-4 py-6 text-center text-gray-500">
+                        No rows in this view.
+                      </td>
+                    </tr>
+                  )}
+                  {visibleRows.map((row) => (
                     <tr key={row.key}>
-                      <td className="px-3 py-2 sticky left-0 bg-white">
+                      <td className="px-3 py-2 sticky left-0 bg-white align-top">
                         <input
                           value={row.employeeName}
                           onChange={(e) => updateRow(row.key, { employeeName: e.target.value })}
-                          onBlur={(e) => rematchRow(row.key, e.target.value)}
+                          onBlur={() => {
+                            // Re-match only when the name actually changed, so
+                            // a hand-picked employee is not overwritten.
+                            if (row.employeeName.trim() !== row.matchedQuery || row.matchStatus === 'unchecked') {
+                              matchRows([row]);
+                            }
+                          }}
                           className="w-40 border border-gray-200 rounded px-2 py-1"
                           placeholder="Employee name"
                         />
@@ -1092,20 +1358,90 @@ export default function AdpYtdImportPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
+                      <td className="px-3 py-2 align-top">
                         {row.matchStatus === 'matched' && (
-                          <span className="inline-block px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">Matched</span>
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1 whitespace-nowrap">
+                              {row.matchMethod === 'picked' ? (
+                                <span className="inline-block px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs">Picked</span>
+                              ) : row.matchMethod === 'normalized' || row.matchMethod === 'partial' ? (
+                                <span
+                                  className="inline-block px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs"
+                                  title={
+                                    row.matchMethod === 'partial'
+                                      ? 'Matched although one name has extra parts (middle name or second surname)'
+                                      : 'Matched although spelling, order, accents or initials differ'
+                                  }
+                                >
+                                  Close match
+                                </span>
+                              ) : (
+                                <span className="inline-block px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">Matched</span>
+                              )}
+                              {row.userId && duplicateUserIds.has(row.userId) && (
+                                <span
+                                  className="inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs"
+                                  title="Another pending row matches the same employee. Only the one with the latest As Of date is saved."
+                                >
+                                  Duplicate
+                                </span>
+                              )}
+                              {isAlreadyOnFile(row) && (
+                                <span
+                                  className="inline-block px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs"
+                                  title="This employee already has a saved YTD baseline; saving replaces it"
+                                >
+                                  On file
+                                </span>
+                              )}
+                              {row.matchMethod !== 'onfile' && (
+                                <button
+                                  onClick={() => unmatchRow(row.key)}
+                                  className="text-[11px] text-gray-500 hover:underline"
+                                  title="Clear this match and choose another employee"
+                                >
+                                  change
+                                </button>
+                              )}
+                            </div>
+                            {row.matchedName && !sameName(row.matchedName, row.employeeName) && (
+                              <div className="max-w-[15rem] truncate text-[11px] text-gray-600" title={row.matchedName}>
+                                as {row.matchedName}
+                              </div>
+                            )}
+                          </div>
                         )}
-                        {row.userId && duplicateUserIds.has(row.userId) && (
+                        {row.matchStatus === 'unmatched' && row.suggestions.length > 0 && (
+                          <div className="flex flex-col gap-1">
+                            <span className="inline-block w-fit px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs whitespace-nowrap">
+                              Pick employee
+                            </span>
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const c = row.suggestions.find((s) => s.userId === e.target.value);
+                                if (c) pickCandidate(row.key, c);
+                              }}
+                              className="max-w-[16rem] border border-amber-300 rounded px-1 py-1 text-xs"
+                            >
+                              <option value="">
+                                {row.suggestions.length} suggestion{row.suggestions.length === 1 ? '' : 's'}…
+                              </option>
+                              {row.suggestions.map((c) => (
+                                <option key={c.userId} value={c.userId}>
+                                  {`${c.name} · ${Math.round(c.score * 100)}%${c.email ? ` · ${c.email}` : ''}${c.active ? '' : ' (inactive)'}`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        {row.matchStatus === 'unmatched' && row.suggestions.length === 0 && (
                           <span
-                            className="ml-1 inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs"
-                            title="Another pending row matches the same employee. Only the one with the latest As Of date is saved."
+                            className="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs whitespace-nowrap"
+                            title="No employee name is close. Fix the name in the Employee box (or check the person has an account)."
                           >
-                            Duplicate
+                            No match
                           </span>
-                        )}
-                        {row.matchStatus === 'unmatched' && (
-                          <span className="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs">No match</span>
                         )}
                         {row.matchStatus === 'checking' && (
                           <span className="inline-block px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">Checking…</span>
