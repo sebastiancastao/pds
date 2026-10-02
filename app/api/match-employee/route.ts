@@ -3,6 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// force-dynamic alone still lets Next's fetch Data Cache keep Supabase answers:
+// a name looked up before its profile was fixed kept returning "no match".
+export const fetchCache = "force-no-store";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,

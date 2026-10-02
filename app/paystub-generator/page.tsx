@@ -296,6 +296,7 @@ export default function PaystubGenerator() {
   const [batchGenerating, setBatchGenerating] = useState(false);
   const [batchMessage, setBatchMessage] = useState<string | null>(null);
   const [batchErrors, setBatchErrors] = useState<string[]>([]);
+  const [rematchingImported, setRematchingImported] = useState(false);
   const [sickLeave, setSickLeave] = useState<SickLeaveBalance | null>(null);
   const [sickLeaveLoading, setSickLeaveLoading] = useState(false);
   const [sickLeaveError, setSickLeaveError] = useState<string | null>(null);
@@ -1405,6 +1406,29 @@ export default function PaystubGenerator() {
       setMatchedUserId(firstResolvedUserId);
     }
   }, [eventWorkerUserIdsByName, formData.employeeName, importedEmployees, matchedUserId]);
+
+  // Imported rows are matched to profiles (official name) only when the Excel file is
+  // read. After a profile is fixed, this looks the unmatched rows up again.
+  const rematchUnmatchedImported = async () => {
+    const pending = importedEmployees.filter((emp) => !emp.matchedUserId && emp.employeeName);
+    if (pending.length === 0) return;
+    setRematchingImported(true);
+    try {
+      const found = new Map<number, string | null>();
+      for (const emp of pending) {
+        found.set(emp.rowIndex, await resolveEmployeeUserIdByOfficialName(emp.employeeName));
+      }
+      setImportedEmployees((prev) =>
+        prev.map((emp) => {
+          if (emp.matchedUserId || !found.has(emp.rowIndex)) return emp;
+          const uid = found.get(emp.rowIndex) || null;
+          return { ...emp, matchedUserId: uid, matchError: uid ? undefined : 'No match found in database' };
+        })
+      );
+    } finally {
+      setRematchingImported(false);
+    }
+  };
 
   const sanitizeFilePart = (value: string) =>
     value
@@ -3216,8 +3240,21 @@ export default function PaystubGenerator() {
                     <div className="mt-4 bg-white/60 border border-blue-200 rounded-lg p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div className="text-sm font-semibold text-slate-900">Imported Employees</div>
-                        <div className="text-xs text-slate-600">
-                          {importedEmployees.filter((e) => !!e.matchedUserId).length} matched / {importedEmployees.length} total
+                        <div className="flex items-center gap-3 text-xs text-slate-600">
+                          <span>
+                            {importedEmployees.filter((e) => !!e.matchedUserId).length} matched / {importedEmployees.length} total
+                          </span>
+                          {importedEmployees.some((e) => !e.matchedUserId && e.employeeName) && (
+                            <button
+                              type="button"
+                              onClick={() => void rematchUnmatchedImported()}
+                              disabled={rematchingImported}
+                              title="Look up the unmatched names again, after fixing an employee's official name on their profile"
+                              className="font-medium text-blue-700 hover:text-blue-900 underline disabled:opacity-50"
+                            >
+                              {rematchingImported ? 'Matching...' : 'Match unmatched again'}
+                            </button>
+                          )}
                         </div>
                       </div>
                       <div className="mt-2 max-h-64 overflow-auto divide-y divide-slate-200 text-sm">
