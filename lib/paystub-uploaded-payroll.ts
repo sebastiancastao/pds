@@ -12,13 +12,20 @@
 //   go to their own earnings rows; Bonus and Other go to the Bonus row.
 // - Reimbursement and Mileage Pay are not wages: they are added to Net Pay,
 //   never to Gross Pay (the uploaded Total Gross includes them).
-// - Total Gross is what was paid. When it is more (or less) than the line's
-//   pay columns, the difference is kept: as Regular pay on hourly and salaried
-//   lines (ADP Payroll Summary lines have only a total), as Commission on a
-//   "Commission" line with no commission columns, and as Bonus otherwise.
+// - Total Gross is what was paid. A line whose Total Gross differs from its pay
+//   columns by more than 5 cents keeps the difference: as Regular pay on hourly
+//   and salaried lines (ADP Payroll Summary lines have only a total), as
+//   Commission on a "Commission" line with no commission columns, and as Bonus
+//   otherwise.
+// - Cents are settled per employee, not per line: the paystub adds up exactly to
+//   what the ADP Payroll Summary paid (when the upload has it and the lines are
+//   within 5 cents of it), otherwise to the lines' Total Gross added up and
+//   rounded once, the way the workbook and ADP round. Leftover cents go to the
+//   pay column whose rounding left them (else the largest), never to a new row.
+// - Amounts round half up after dropping float noise: 115.42499999999997 is
+//   115.425, which pays 115.43.
 
 import {
-  GROSS_COMPONENT_KEYS,
   GROSS_MISMATCH_TOLERANCE,
   NOT_ON_REGISTER_KEY,
   REGISTER_KEY,
@@ -174,92 +181,240 @@ export function sanitizeUploadedPayrollLines(input: unknown): UploadedPayrollLin
   return out;
 }
 
-export function toPaystubUploadLine(row: UploadedPayrollLineInput, index = 0): PaystubUploadLine {
-  const commission = num(row.commission_pay);
-  const variableIncentive = num(row.variable_incentive);
+// Money as whole cents: snapped to 1/10000 first to drop float noise, then
+// rounded half away from zero (115.42499999999997 -> 115.425 -> 11543 cents).
+export const toCents = (value: number): number => {
+  if (!Number.isFinite(value) || value === 0) return 0;
+  const tenThousandths = Math.round(Math.abs(value) * 10000);
+  const cents = Math.round(tenThousandths / 100);
+  return value < 0 ? -cents : cents;
+};
+
+// What rounding to cents left behind, in 1/10000 dollars (positive = rounded down).
+const roundingLeftover = (value: number): number =>
+  Number.isFinite(value) ? Math.round(value * 10000) - toCents(value) * 100 : 0;
+
+type WageKey =
+  | "regularPay"
+  | "overtimePay"
+  | "doubletimePay"
+  | "commission"
+  | "variableIncentive"
+  | "tips"
+  | "restBreak"
+  | "bonus"
+  | "sick"
+  | "travel";
+
+const WAGE_COLUMNS: Array<[WageKey, Array<keyof PayrollUploadFields>]> = [
+  ["regularPay", ["regular_pay"]],
+  ["overtimePay", ["overtime_pay"]],
+  ["doubletimePay", ["doubletime_pay"]],
+  ["commission", ["commission_pay"]],
+  ["variableIncentive", ["variable_incentive"]],
+  ["tips", ["tips"]],
+  ["restBreak", ["rest_break"]],
+  ["bonus", ["bonus", "other"]],
+  ["sick", ["sick_pay"]],
+  ["travel", ["travel_pay"]],
+];
+
+// One line before cents are settled for the employee: amounts in cents, with
+// what rounding left behind on each pay column (1/10000 dollars).
+type LineWork = {
+  row: UploadedPayrollLineInput;
+  index: number;
+  wages: Record<WageKey, number>;
+  leftover: Record<WageKey, number>;
+  reimbursement: number;
+  mileage: number;
+  // Line Total Gross in 1/10000 dollars, so an employee's lines can be added up
+  // before rounding (several 0.5-cent lines must not round up one by one).
+  totalTenThousandths: number;
+  // Total Gross minus the pay columns, in cents, when 5 cents or less (rounding).
+  smallGap: number;
+  gap: number;
+  gapTo: PaystubUploadLine["gapTo"];
+  hours: number;
+  regularHours: number;
+  overtimeHours: number;
+  doubletimeHours: number;
+  isCommission: boolean;
+};
+
+const tenThousandthsOf = (value: number) => (Number.isFinite(value) ? Math.round(value * 10000) : 0);
+const centsFromTenThousandths = (tt: number) => (tt < 0 ? -Math.round(-tt / 100) : Math.round(tt / 100));
+const sumWageCents = (wages: Record<WageKey, number>) => WAGE_COLUMNS.reduce((sum, [key]) => sum + wages[key], 0);
+
+function lineWork(row: UploadedPayrollLineInput, index: number): LineWork {
+  const raw = (key: keyof PayrollUploadFields) => num(row[key]);
+
+  const wages = {} as Record<WageKey, number>;
+  const leftover = {} as Record<WageKey, number>;
+  WAGE_COLUMNS.forEach(([key, fields]) => {
+    wages[key] = fields.reduce((sum, f) => sum + toCents(raw(f)), 0);
+    leftover[key] = fields.reduce((sum, f) => sum + roundingLeftover(raw(f)), 0);
+  });
+  const reimbursement = toCents(raw("reimbursement"));
+  const mileage = toCents(raw("mileage_pay"));
+
   const overtimeHours = num(row.overtime_hours);
   const doubletimeHours = num(row.doubletime_hours);
-  const overtimePay = num(row.overtime_pay);
-  const doubletimePay = num(row.doubletime_pay);
-  let regularPay = num(row.regular_pay);
   const hoursGiven = hasValue(row.hours) ? num(row.hours) : null;
   let regularHours = hasValue(row.regular_hours)
     ? num(row.regular_hours)
-    : regularPay !== 0 && hoursGiven !== null
+    : wages.regularPay !== 0 && hoursGiven !== null
       ? Math.max(0, hoursGiven - overtimeHours - doubletimeHours)
       : 0;
   const hours = hoursGiven !== null ? hoursGiven : regularHours + overtimeHours + doubletimeHours;
 
   const categoryIsCommission = /commission/i.test(text(row.category));
-  const hasCommissionPay = commission !== 0 || variableIncentive !== 0;
-  let bonus = num(row.bonus) + num(row.other);
-  let commissionOut = commission;
+  const hasCommissionPay = wages.commission !== 0 || wages.variableIncentive !== 0;
 
-  // Total Gross is what was paid; keep any difference from the pay columns.
-  const componentSum = roundMoney(GROSS_COMPONENT_KEYS.reduce((s, k) => s + num(row[k]), 0));
-  const totalGrossPay = hasValue(row.total_gross_pay) ? roundMoney(num(row.total_gross_pay)) : componentSum;
-  const rawGap = roundMoney(totalGrossPay - componentSum);
-  const gap = Math.abs(rawGap) > GROSS_MISMATCH_TOLERANCE ? rawGap : 0;
+  const componentTenThousandths =
+    WAGE_COLUMNS.reduce((sum, [, fields]) => sum + fields.reduce((s2, f) => s2 + tenThousandthsOf(raw(f)), 0), 0) +
+    tenThousandthsOf(raw("reimbursement")) +
+    tenThousandthsOf(raw("mileage_pay"));
+  const totalTenThousandths = hasValue(row.total_gross_pay) ? tenThousandthsOf(raw("total_gross_pay")) : componentTenThousandths;
+  const gapCents = toCents(totalTenThousandths / 10000) - (sumWageCents(wages) + reimbursement + mileage);
+  const toleranceCents = Math.round(GROSS_MISMATCH_TOLERANCE * 100);
+
+  let gap = 0;
   let gapTo: PaystubUploadLine["gapTo"] = null;
-  if (gap !== 0) {
+  let smallGap = 0;
+  if (Math.abs(gapCents) > toleranceCents) {
+    gap = gapCents / 100;
     if (hasCommissionPay) {
-      bonus += gap;
+      wages.bonus += gapCents;
       gapTo = "bonus";
     } else if (categoryIsCommission) {
-      commissionOut += gap;
+      wages.commission += gapCents;
       gapTo = "commission";
     } else {
-      regularPay += gap;
+      wages.regularPay += gapCents;
       if (regularHours === 0) regularHours = Math.max(0, hours - overtimeHours - doubletimeHours);
       gapTo = "regular";
     }
+  } else {
+    smallGap = gapCents;
   }
 
-  const tips = num(row.tips);
-  const restBreak = num(row.rest_break);
-  const sick = num(row.sick_pay);
-  const travel = num(row.travel_pay);
-  const reimbursement = num(row.reimbursement);
-  const mileage = num(row.mileage_pay);
-  const taxableGross = roundMoney(
-    regularPay + overtimePay + doubletimePay + commissionOut + variableIncentive + tips + restBreak + bonus + sick + travel
-  );
-  // Sick leave lines list the sick hours; those are not hours worked.
-  const sickOnly = sick !== 0 && Math.abs(taxableGross - sick) < 0.005;
-
   return {
-    id: text(row.id) || `line-${index + 1}`,
+    row,
+    index,
+    wages,
+    leftover,
+    reimbursement,
+    mileage,
+    totalTenThousandths,
+    smallGap,
+    gap,
+    gapTo,
+    hours,
+    regularHours,
+    overtimeHours,
+    doubletimeHours,
+    isCommission: hasCommissionPay || categoryIsCommission,
+  };
+}
+
+// Moves cents between an employee's lines so that wages + reimbursement +
+// mileage add up to targetCents. Each cent goes to the pay column whose rounding
+// left the most behind in that direction, then to a line whose own Total Gross
+// asked for it, then to the largest pay column.
+function settleCents(works: LineWork[], targetCents: number): void {
+  const current = works.reduce((sum, w) => sum + sumWageCents(w.wages) + w.reimbursement + w.mileage, 0);
+  let diff = targetCents - current;
+  if (diff === 0 || works.length === 0) return;
+  const step = diff > 0 ? 1 : -1;
+  for (let guard = 0; diff !== 0 && guard < 10000; guard += 1) {
+    let best: { work: LineWork; key: WageKey; score: [number, number, number] } | null = null;
+    works.forEach((work) => {
+      WAGE_COLUMNS.forEach(([key]) => {
+        if (work.wages[key] === 0) return;
+        const score: [number, number, number] = [step * work.leftover[key], step * work.smallGap, Math.abs(work.wages[key])];
+        if (!best || score[0] > best.score[0] || (score[0] === best.score[0] && (score[1] > best.score[1] || (score[1] === best.score[1] && score[2] > best.score[2])))) {
+          best = { work, key, score };
+        }
+      });
+    });
+    const pick = best as { work: LineWork; key: WageKey } | null;
+    if (pick) {
+      pick.work.wages[pick.key] += step;
+      pick.work.leftover[pick.key] -= step * 100;
+      pick.work.smallGap -= step;
+    } else {
+      // No wages at all (reimbursement or mileage lines only).
+      const work = works.find((w) => w.reimbursement !== 0) || works.find((w) => w.mileage !== 0) || works[0];
+      if (work.reimbursement !== 0 || work.mileage === 0) work.reimbursement += step;
+      else work.mileage += step;
+    }
+    diff -= step;
+  }
+}
+
+function finishLine(work: LineWork): PaystubUploadLine {
+  const { row, wages } = work;
+  const taxableCents = sumWageCents(wages);
+  // Sick leave lines list the sick hours; those are not hours worked.
+  const sickOnly = wages.sick !== 0 && taxableCents === wages.sick;
+  const dollars = (cents: number) => cents / 100;
+  return {
+    id: text(row.id) || `line-${work.index + 1}`,
     eventName: text(row.event_name),
     eventDate: isoDate(row.event_date),
     venue: text(row.venue),
     city: text(row.city),
     state: text(row.state),
     sourceSheet: row.source_sheet ? text(row.source_sheet) : null,
-    isCommission: hasCommissionPay || categoryIsCommission,
+    isCommission: work.isCommission,
     isRegister: row.extra?.[REGISTER_KEY] === true,
-    hours: sickOnly ? 0 : roundMoney(hours),
-    regularHours: roundMoney(regularHours),
-    regularPay: roundMoney(regularPay),
-    overtimeHours: roundMoney(overtimeHours),
-    overtimePay: roundMoney(overtimePay),
-    doubletimeHours: roundMoney(doubletimeHours),
-    doubletimePay: roundMoney(doubletimePay),
-    commission: roundMoney(commissionOut),
-    variableIncentive: roundMoney(variableIncentive),
-    tips: roundMoney(tips),
-    restBreak: roundMoney(restBreak),
-    bonus: roundMoney(bonus),
-    sick: roundMoney(sick),
-    travel: roundMoney(travel),
-    reimbursement: roundMoney(reimbursement),
-    mileage: roundMoney(mileage),
-    gap,
-    gapTo,
+    hours: sickOnly ? 0 : roundMoney(work.hours),
+    regularHours: roundMoney(work.regularHours),
+    regularPay: dollars(wages.regularPay),
+    overtimeHours: roundMoney(work.overtimeHours),
+    overtimePay: dollars(wages.overtimePay),
+    doubletimeHours: roundMoney(work.doubletimeHours),
+    doubletimePay: dollars(wages.doubletimePay),
+    commission: dollars(wages.commission),
+    variableIncentive: dollars(wages.variableIncentive),
+    tips: dollars(wages.tips),
+    restBreak: dollars(wages.restBreak),
+    bonus: dollars(wages.bonus),
+    sick: dollars(wages.sick),
+    travel: dollars(wages.travel),
+    reimbursement: dollars(work.reimbursement),
+    mileage: dollars(work.mileage),
+    gap: work.gap,
+    gapTo: work.gapTo,
     regRate: hasValue(row.reg_rate) ? num(row.reg_rate) : null,
     rateInEffect: hasValue(row.rate_in_effect) ? num(row.rate_in_effect) : null,
-    taxableGross,
-    totalGrossPay,
+    taxableGross: dollars(taxableCents),
+    totalGrossPay: toCents(work.totalTenThousandths / 10000) / 100,
   };
+}
+
+// What the ADP Payroll Summary paid this employee, in cents, when the upload
+// included it: the Total Paid kept on their lines (one per name on the summary)
+// plus their own Payroll Summary lines. ADP's Total Paid includes reimbursements.
+export function adpPaidCents(rows: UploadedPayrollLineInput[]): number | null {
+  const paidByName = new Map<string, number>();
+  rows.forEach((r) => {
+    const paid = r.extra?.[REGISTER_PAID_KEY];
+    if (typeof paid === "number") paidByName.set(payrollNameKey(r), paid);
+  });
+  if (paidByName.size === 0) return null;
+  const registerLines = rows
+    .filter((r) => r.extra?.[REGISTER_KEY] === true)
+    .reduce((sum, r) => sum + toCents(num(r.total_gross_pay)), 0);
+  return Array.from(paidByName.values()).reduce((sum, v) => sum + toCents(v), 0) + registerLines;
+}
+
+// One line on its own (its cents settled against its own Total Gross).
+export function toPaystubUploadLine(row: UploadedPayrollLineInput, index = 0): PaystubUploadLine {
+  const work = lineWork(row, index);
+  settleCents([work], centsFromTenThousandths(work.totalTenThousandths));
+  return finishLine(work);
 }
 
 export function summarizePaystubUploadLines(lines: PaystubUploadLine[]): PaystubUploadTotals {
@@ -292,12 +447,24 @@ export function summarizePaystubUploadLines(lines: PaystubUploadLine[]): Paystub
   return t;
 }
 
+// One employee's uploaded lines as paystub lines and totals. The paystub adds up
+// to what ADP paid when that is within 5 cents of the lines, otherwise to the
+// lines' Total Gross added up and rounded once. totals.totalGrossPay is always
+// the lines' own total (what the ADP check compares against).
 export function buildPaystubFromUploadedLines(rows: UploadedPayrollLineInput[]): {
   lines: PaystubUploadLine[];
   totals: PaystubUploadTotals;
 } {
-  const lines = rows.map((r, i) => toPaystubUploadLine(r, i));
-  return { lines, totals: summarizePaystubUploadLines(lines) };
+  const works = rows.map((r, i) => lineWork(r, i));
+  const linesTotalCents = centsFromTenThousandths(works.reduce((sum, w) => sum + w.totalTenThousandths, 0));
+  const adp = adpPaidCents(rows);
+  const toleranceCents = Math.round(GROSS_MISMATCH_TOLERANCE * 100);
+  const target = adp !== null && Math.abs(adp - linesTotalCents) <= toleranceCents ? adp : linesTotalCents;
+  settleCents(works, target);
+  const lines = works.map(finishLine);
+  const totals = summarizePaystubUploadLines(lines);
+  totals.totalGrossPay = linesTotalCents / 100;
+  return { lines, totals };
 }
 
 // ---------- picking an employee's lines (page side) ----------
@@ -377,14 +544,9 @@ export function uploadedPayrollWarnings(
   // What the ADP Payroll Summary paid this employee (kept on their lines when
   // the upload included it), against what their lines add up to. ADP's Total
   // Paid includes reimbursements, like the lines' Total Gross.
-  const paidByName = new Map<string, number>();
-  rows.forEach((r) => {
-    const paid = r.extra?.[REGISTER_PAID_KEY];
-    if (typeof paid === "number") paidByName.set(payrollNameKey(r), paid);
-  });
-  const registerLinesTotal = roundMoney(rows.filter((r) => r.extra?.[REGISTER_KEY] === true).reduce((s, r) => s + num(r.total_gross_pay), 0));
-  if (paidByName.size > 0) {
-    const paid = roundMoney(Array.from(paidByName.values()).reduce((s, v) => s + v, 0) + registerLinesTotal);
+  const adpCents = adpPaidCents(rows);
+  if (adpCents !== null) {
+    const paid = adpCents / 100;
     const diff = roundMoney(totals.totalGrossPay - paid);
     if (Math.abs(diff) > GROSS_MISMATCH_TOLERANCE) {
       warnings.push({
