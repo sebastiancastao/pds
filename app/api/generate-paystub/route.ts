@@ -2265,13 +2265,16 @@ export async function POST(req: NextRequest) {
       // first paystub here, with no need for a manual Excel override.
       // An explicit per-request override (parseYtdOverride, from paystub-generator's
       // own Excel import) still always wins over both of these.
+      // The baseline only applies to paychecks after its as_of_date in the same
+      // calendar year: last year's totals must not roll into this year, and a
+      // paystub dated on/before the as-of date is already inside those totals.
       let ytdCarryover: any = null;
       if (matchedUserId) {
         try {
           const { data } = await supabaseAdmin
             .from("employee_ytd_carryover")
             .select(
-              "gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, misc_reimbursement_ytd"
+              "as_of_date, gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, travel_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, misc_reimbursement_ytd"
             )
             .eq("user_id", matchedUserId)
             .maybeSingle();
@@ -2280,7 +2283,6 @@ export async function POST(req: NextRequest) {
           ytdCarryover = null;
         }
       }
-      const co = (field: string) => Number(ytdCarryover?.[field] || 0);
 
       const toIsoDate = (value: any): string | null => {
         const str = (value || "").toString().trim();
@@ -2296,6 +2298,18 @@ export async function POST(req: NextRequest) {
       const snapshotIncludesCurrent =
         payDateIso && snapshotDateIso ? snapshotDateIso >= payDateIso : null;
 
+      const carryoverAsOfIso = toIsoDate(ytdCarryover?.as_of_date);
+      const carryoverApplies =
+        !!ytdCarryover &&
+        (!payDateIso ||
+          !carryoverAsOfIso ||
+          (carryoverAsOfIso.slice(0, 4) === payDateIso.slice(0, 4) && carryoverAsOfIso < payDateIso));
+      const co = (field: string) => {
+        if (!carryoverApplies) return 0;
+        const n = Number(ytdCarryover?.[field] || 0);
+        return Number.isFinite(n) ? n : 0;
+      };
+
       const runningYtd = (previous: any, current: number) => {
         const prev = Number(previous || 0);
         if (!Number.isFinite(prev) || prev <= 0) return current;
@@ -2305,12 +2319,18 @@ export async function POST(req: NextRequest) {
       };
 
       const parseYtdOverride = (val: any) => { const n = parseFloat(val); return Number.isFinite(n) && n > 0 ? n : null; };
+      // A YTD total can't be smaller than this period's own amount; a value like that is
+      // a per-period figure in the wrong column, so fall back to the computed YTD.
+      const ytdOverrideAtLeast = (val: any, current: number) => {
+        const n = parseYtdOverride(val);
+        return n !== null && n + 0.005 >= Math.abs(current) ? n : null;
+      };
       const ytdRegularHours = runningYtd(ytdSnapshot?.regular_hours, totalRegHours);
       const ytdOvertimeHours = runningYtd(ytdSnapshot?.overtime_hours, totalOtHours);
       const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
-      const ytdRegularPay = parseYtdOverride(regularYtd) ?? round2(runningYtd((ytdSnapshot?.regular_earnings || 0) + co('regular_ytd'), totalRegularPayRounded));
-      const ytdOvertimePay = parseYtdOverride(overtimeYtd) ?? round2(runningYtd((ytdSnapshot?.overtime_earnings || 0) + co('overtime_ytd'), totalOvertimePayRounded));
-      const ytdDoubletimePay = parseYtdOverride(doubleTimeYtd) ?? round2(runningYtd((ytdSnapshot?.doubletime_earnings || 0) + co('doubletime_ytd'), totalDoubletimePayRounded));
+      const ytdRegularPay = parseYtdOverride(regularYtd) ?? round2(runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayRounded) + co('regular_ytd'));
+      const ytdOvertimePay = parseYtdOverride(overtimeYtd) ?? round2(runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayRounded) + co('overtime_ytd'));
+      const ytdDoubletimePay = parseYtdOverride(doubleTimeYtd) ?? round2(runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayRounded) + co('doubletime_ytd'));
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
       const ytdCommission = parseYtdOverride(commissionYtd) ?? round2(co('commission_ytd') + totalCommissionRounded);
       const ytdVariableIncentive = parseYtdOverride(variableIncentiveYtd) ?? round2(co('variable_incentive_ytd') + totalVariableIncentiveRounded);
@@ -2319,14 +2339,14 @@ export async function POST(req: NextRequest) {
       const ytdOther = parseYtdOverride(bonusYtd) ?? round2(co('bonus_ytd') + totalOtherRounded);
       const ytdMealPremium = parseYtdOverride(mealPremiumYtd) ?? round2(co('meal_premium_ytd') + mealPremiumThisPeriod);
       const ytdSick = parseYtdOverride(sickPayYtd) ?? round2(co('sick_pay_ytd') + sickThisPeriod);
-      const ytdTravel = parseYtdOverride(travelPayYtd) ?? travelPayThisPeriod;
-      const ytdGross = parseYtdOverride(grossPayYtd) ?? round2(runningYtd((ytdSnapshot?.ytd_gross || 0) + co('gross_pay_ytd'), grossPayThisPeriod));
-      const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.federal_income_ytd || 0) + co('federal_income_ytd'), federalIncomeAmt));
-      const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd((ytdSnapshot?.social_security_ytd || 0) + co('social_security_ytd'), socialSecurityAmt));
-      const ytdMedicare = parseYtdOverride(medicareYtd) ?? round2(runningYtd((ytdSnapshot?.medicare_ytd || 0) + co('medicare_ytd'), medicareAmt));
-      const ytdStateIncome = parseYtdOverride(stateIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.ca_state_income_ytd || 0) + co('state_income_ytd'), stateIncomeAmt));
-      const ytdStateDI = parseYtdOverride(stateDIYtd) ?? round2(runningYtd((ytdSnapshot?.ca_state_di_ytd || 0) + co('state_di_ytd'), stateDIAmt));
-      const ytdVoluntaryDeduction = parseYtdOverride(calSaversRothRetYtd) ?? round2(runningYtd((ytdSnapshot?.misc_non_taxable_ytd || 0) + co('calsavers_roth_ret_ytd'), miscDeductionAmt));
+      const ytdTravel = parseYtdOverride(travelPayYtd) ?? round2(co('travel_pay_ytd') + travelPayThisPeriod);
+      const ytdGross = ytdOverrideAtLeast(grossPayYtd, grossPayThisPeriod) ?? round2(runningYtd(ytdSnapshot?.ytd_gross, grossPayThisPeriod) + co('gross_pay_ytd'));
+      const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt) + co('federal_income_ytd'));
+      const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt) + co('social_security_ytd'));
+      const ytdMedicare = parseYtdOverride(medicareYtd) ?? round2(runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt) + co('medicare_ytd'));
+      const ytdStateIncome = parseYtdOverride(stateIncomeYtd) ?? round2(runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt) + co('state_income_ytd'));
+      const ytdStateDI = parseYtdOverride(stateDIYtd) ?? round2(runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt) + co('state_di_ytd'));
+      const ytdVoluntaryDeduction = parseYtdOverride(calSaversRothRetYtd) ?? round2(runningYtd(ytdSnapshot?.misc_non_taxable_ytd, miscDeductionAmt) + co('calsavers_roth_ret_ytd'));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
       const ytdEquipmentReimb = parseYtdOverride(equipmentReimbYtd) ?? round2(co('equipment_reimb_ytd') + adjustmentReimbursementRounded);
       // Note: mileage reimbursement YTD is intentionally not itemized on the employee-facing
@@ -2475,8 +2495,9 @@ export async function POST(req: NextRequest) {
         // Keep the label unchanged: /pdf-reader and the LLM extractor match "Rest Break Pay" followed by numbers.
         { label: "Rest Break Pay", color: black, rate: 0, hours: totalRestBreakCount, hoursAsCount: true, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
         { label: "Bonus", color: black, rate: 0, hours: 0, thisPeriod: totalOtherRounded, ytd: ytdOther },
-        // Only uploaded payroll can carry travel pay, so this row never shows on a system paystub.
-        ...(travelPayThisPeriod !== 0
+        // Travel pay comes only from uploaded payroll or the ADP carryover, so the row shows
+        // only when one of those has an amount.
+        ...(travelPayThisPeriod !== 0 || ytdTravel !== 0
           ? [{ label: "Travel Pay", color: black, rate: 0, hours: 0, thisPeriod: travelPayThisPeriod, ytd: ytdTravel }]
           : []),
         { label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },

@@ -3015,8 +3015,9 @@ export default function PaystubGenerator() {
           bonusYtd: getAbsoluteValue(valuesRow, ['bonus ytd']),
           sickPayYtd: getAbsoluteValue(valuesRow, ['sick pay ytd']),
           mealPremiumYtd: getAbsoluteValue(valuesRow, ['meal premium ytd']),
-          grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd'])
-            || getAbsoluteValue(valuesRow, ['gross pay']),
+          // Only a true YTD column: this period's "Gross Pay" is not a year-to-date figure,
+          // and sending it here would override the server's computed YTD gross.
+          grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd']),
           equipmentReimbYtd: getAbsoluteValue(valuesRow, ['equipment reimbursement ytd']),
           mileageReimbYtd: getAbsoluteValue(valuesRow, ['mileage reimbursement ytd']),
           miscReimbursementYtd: getAbsoluteValue(valuesRow, ['misc reimbursement ytd']),
