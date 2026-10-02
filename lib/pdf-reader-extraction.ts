@@ -1318,7 +1318,7 @@ export function extractPayrollData(text: string) {
   if (equipReimbResult) payrollData.netPayAdjustments.equipmentReimbursement = equipReimbResult;
 
   // Mileage Reimbursement — covers "Mileage Reimbursement", "Mileage Reimb"
-  const mileageReimbResult = extractEarningsLine(/Mileage\s+[Rr]eimb(?:ursement)?\b/i);
+  const mileageReimbResult = extractEarningsLine(/Mileage\s+(?:Reimb(?:ursement)?\.?|Reimburse(?:ment)?|Reimbursed|Pay|Allowance)(?:\b|\.)/i);
   if (mileageReimbResult) payrollData.netPayAdjustments.mileageReimbursement = mileageReimbResult;
 
   // Extract hourly rate

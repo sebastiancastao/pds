@@ -2048,7 +2048,7 @@ export async function POST(req: NextRequest) {
           const { data } = await supabaseAdmin
             .from("employee_ytd_carryover")
             .select(
-              "as_of_date, gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, travel_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, misc_reimbursement_ytd"
+              "as_of_date, gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, travel_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, mileage_reimb_ytd, misc_reimbursement_ytd"
             )
             .eq("user_id", matchedUserId)
             .maybeSingle();
@@ -2089,6 +2089,24 @@ export async function POST(req: NextRequest) {
         if (values.length === 0) return null;
         return Math.max(...values.map((value) => Math.abs(value)));
       };
+
+      const mileageReimbursementYtdAliases = [
+        'mileage reimbursement ytd',
+        'mileage reimbursement year to date',
+        'year to date mileage reimbursement',
+        'mileage reimb ytd',
+        'mileage reimb year to date',
+        'year to date mileage reimb',
+        'mileage pay ytd',
+        'mileage pay year to date',
+        'year to date mileage pay',
+        'mileage ytd',
+        'mileage year to date',
+        'ytd mileage reimbursement',
+        'ytd mileage reimb',
+        'ytd mileage pay',
+        'ytd mileage',
+      ];
 
       const toIsoDate = (value: any): string | null => {
         const str = (value || "").toString().trim();
@@ -2142,6 +2160,10 @@ export async function POST(req: NextRequest) {
       const effectiveMealPremiumYtd = hasRequestYtd(mealPremiumYtd)
         ? mealPremiumYtd
         : uploadedMealPremiumYtd;
+      const uploadedMileageReimbYtd = uploadedExtraYtd(mileageReimbursementYtdAliases);
+      const effectiveMileageReimbYtd = hasRequestYtd(mileageReimbYtd)
+        ? mileageReimbYtd
+        : uploadedMileageReimbYtd;
       const requestYtdValues = [
         regularYtd,
         overtimeYtd,
@@ -2260,8 +2282,7 @@ export async function POST(req: NextRequest) {
       const ytdVoluntaryDeduction = round2(runningYtd(priorYtd(calSaversRothRetYtd, ytdSnapshot?.misc_non_taxable_ytd, 'calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
       const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd'), adjustmentReimbursementRounded));
-      // Note: mileage reimbursement YTD is intentionally not itemized on the employee-facing
-      // pay sheet, so no display variable is derived here (see mileageRowY removal below).
+      const ytdMileageReimb = round2(runningYtd(carryoverPriorYtd(effectiveMileageReimbYtd, 'mileage_reimb_ytd'), totalMileageReimbursementRounded));
       const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), reimbursement));
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
@@ -2498,10 +2519,9 @@ export async function POST(req: NextRequest) {
       const netAdjustmentsHeaderY = voluntaryBottomLineY + 9;
       const netAdjustmentsDividerY = netAdjustmentsHeaderY + 7;
       const equipmentReimbursementRowY = netAdjustmentsDividerY + 10;
-      // Mileage reimbursement is intentionally not itemized on the employee-facing pay
-      // sheet (internal-only). Its dollar amount is still folded into Net Pay below.
       const miscReimbursementRowY = equipmentReimbursementRowY + 8;
-      const netPayDividerY = miscReimbursementRowY + 7;
+      const mileageReimbursementRowY = miscReimbursementRowY + 8;
+      const netPayDividerY = mileageReimbursementRowY + 7;
       const netPayY = netPayDividerY + 8;
 
       drawTopLine(109, voluntaryBottomLineY, 332);
@@ -2515,6 +2535,9 @@ export async function POST(req: NextRequest) {
       drawTopText("Misc Reimbursement", 112, miscReimbursementRowY, { size: 8 });
       drawTopText(fmt(reimbursement), 249, miscReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdMiscReimbursement), 299, miscReimbursementRowY, { size: 8 });
+      drawTopText("Mileage Reimbursement", 112, mileageReimbursementRowY, { size: 8 });
+      drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageReimbursementRowY, { size: 8 });
+      drawTopText(fmt(ytdMileageReimb), 299, mileageReimbursementRowY, { size: 8 });
       drawTopLine(109, netPayDividerY, 332);
       drawTopText("Net Pay", 112, netPayY, { size: 8, bold: true });
       drawTopText(money(netPay), 240, netPayY, { size: 8, bold: true });
@@ -3206,12 +3229,16 @@ export async function POST(req: NextRequest) {
       drawText(`+${round2(reimbursement).toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
+    if (uploadedMileageNonCA > 0) {
+      drawText("Mileage Reimbursement", 50, yPosition, { size: 9 });
+      drawText(`+${round2(uploadedMileageNonCA).toFixed(2)}`, 250, yPosition, { size: 9 });
+      yPosition -= 12;
+    }
 
     // Net Pay
     yPosition -= 10;
     drawLine(50, yPosition + 10, 350, yPosition + 10);
     yPosition -= 5;
-    // Uploaded mileage pay is added to Net Pay without its own row, like the CA paystub.
     const netPay = currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA + round2(uploadedMileageNonCA);
     drawText("Net Pay", 50, yPosition, { bold: true, size: 12 });
     drawText(`$${netPay.toFixed(2)}`, 250, yPosition, { bold: true, size: 12 });

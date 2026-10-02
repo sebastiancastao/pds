@@ -107,6 +107,24 @@ type OnFileRecord = {
   medicare_ytd: number | null;
 };
 
+const mileageReimbursementYtdAliases = [
+  'mileage reimbursement ytd',
+  'mileage reimbursement year to date',
+  'year to date mileage reimbursement',
+  'mileage reimb ytd',
+  'mileage reimb year to date',
+  'year to date mileage reimb',
+  'mileage pay ytd',
+  'mileage pay year to date',
+  'year to date mileage pay',
+  'mileage ytd',
+  'mileage year to date',
+  'ytd mileage reimbursement',
+  'ytd mileage reimb',
+  'ytd mileage pay',
+  'ytd mileage',
+];
+
 // Column definitions: label shown in the grid + the header aliases accepted
 // when parsing an uploaded file. Keeping these aliased to the exact strings
 // app/paystub-generator/page.tsx's own Excel import recognizes so a file
@@ -150,7 +168,11 @@ const FIELD_DEFS: { key: FieldKey; label: string; aliases: string[] }[] = [
   },
   { key: 'grossPayYtd', label: 'Gross Pay', aliases: ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd'] },
   { key: 'equipmentReimbYtd', label: 'Equipment Reimb.', aliases: ['equipment reimbursement ytd', 'ytd equipment reimbursement'] },
-  { key: 'mileageReimbYtd', label: 'Mileage Reimb.', aliases: ['mileage reimbursement ytd', 'ytd mileage reimbursement'] },
+  {
+    key: 'mileageReimbYtd',
+    label: 'Mileage Reimb.',
+    aliases: mileageReimbursementYtdAliases,
+  },
   { key: 'miscReimbursementYtd', label: 'Misc Reimb.', aliases: ['misc reimbursement ytd', 'ytd misc reimbursement'] },
   // State income/DI are handled specially below (one column per state code).
   { key: 'stateIncomeYtd', label: 'State Income', aliases: [] },

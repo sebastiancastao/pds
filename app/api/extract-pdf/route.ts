@@ -1018,7 +1018,7 @@ function extractPayrollData(text: string) {
   const equipReimbResult = extractEarningsLine(/(?:Misc\s+[Rr]eimburse(?:ment)?\s+)?Equip(?:ment)?(?:\s+[Rr]eimb(?:ursement)?)?\b/i);
   if (equipReimbResult) payrollData.netPayAdjustments.equipmentReimbursement = equipReimbResult;
 
-  const mileageReimbResult = extractEarningsLine(/Mileage\s+[Rr]eimb(?:ursement)?\b/i);
+  const mileageReimbResult = extractEarningsLine(/Mileage\s+(?:Reimb(?:ursement)?\.?|Reimburse(?:ment)?|Reimbursed|Pay|Allowance)(?:\b|\.)/i);
   if (mileageReimbResult) payrollData.netPayAdjustments.mileageReimbursement = mileageReimbResult;
 
   // Extract all dollar amounts with labels for comprehensive data capture
