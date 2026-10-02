@@ -131,7 +131,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       cleaned.rows.forEach((row, index) => {
         const { id, sort_order, from_file, source_file, source_sheet, source_row, extra, ...fields } = row;
         const account = accounts[index];
-        if (!fields.email && account.email) {
+        if (account.replacedEmail && account.email) {
+          extra["Company email replaced"] = account.replacedEmail;
+          fields.email = account.email;
+        } else if (!fields.email && account.email) {
           fields.email = account.email;
           extra["Email from employee account"] = true;
         }

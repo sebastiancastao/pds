@@ -12,6 +12,13 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-d
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
 import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyEvent, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
+import {
+  buildPaystubFromUploadedLines,
+  matchUploadLineToEvent,
+  sanitizeUploadedPayrollLines,
+  type PaystubUploadLine,
+  type PaystubUploadTotals,
+} from "@/lib/paystub-uploaded-payroll";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -106,8 +113,33 @@ export async function POST(req: NextRequest) {
       ,
       sickLeave = null,
       matchedUserId = null,
+      // Uploaded payroll in use for this pay period (HR dashboard "Upload Payroll"):
+      // { uploadId, periodStart, periodEnd, lines } with this employee's lines. When
+      // present, the earnings come from these lines instead of the system calculation.
+      uploadedPayroll = null,
       debug = false
     } = body;
+
+    let uploadedPaystub: { uploadId: string; lines: PaystubUploadLine[]; totals: PaystubUploadTotals } | null = null;
+    if (uploadedPayroll && typeof uploadedPayroll === "object") {
+      const upStart = String((uploadedPayroll as any).periodStart || "").trim();
+      const upEnd = String((uploadedPayroll as any).periodEnd || "").trim();
+      const reqStart = String(payPeriodStart || "").trim();
+      const reqEnd = String(payPeriodEnd || "").trim();
+      if (upStart !== reqStart || upEnd !== reqEnd) {
+        return NextResponse.json(
+          { error: `The uploaded payroll is for ${upStart || "?"} to ${upEnd || "?"}, but this paystub is for ${reqStart || "?"} to ${reqEnd || "?"}. Reload the page and try again.` },
+          { status: 400 }
+        );
+      }
+      const cleanLines = sanitizeUploadedPayrollLines((uploadedPayroll as any).lines);
+      if (cleanLines.length > 0) {
+        uploadedPaystub = {
+          uploadId: String((uploadedPayroll as any).uploadId || ""),
+          ...buildPaystubFromUploadedLines(cleanLines),
+        };
+      }
+    }
 
     const normalizeState = (s?: string | null) => (s || "").toString().toUpperCase().trim();
     const normalizeStateCode = (s?: string | null) => {
@@ -1289,6 +1321,10 @@ export async function POST(req: NextRequest) {
       restBreak: number;
       bonus: number;
       finalPay: number;
+      // Row built from an uploaded payroll line: its figures are shown as uploaded.
+      fromUpload?: boolean;
+      // Uploaded line that matches none of the request's events: pool and head count unknown.
+      poolUnknown?: boolean;
     };
 
     const addCommissionReportPage = (
@@ -1418,8 +1454,8 @@ export async function POST(req: NextRequest) {
         drawR(fmtDate(row.dateStr), C.date, y, { size: 6 });
         drawR(showT, C.show, y, { size: 6 });
         drawR(venueT, C.venue, y, { size: 6 });
-        drawR(fmtMoney(row.commissionPoolDollars), C.pool, y, { size: 6 });
-        drawR(row.numEmployees.toString(), C.numEmp, y, { size: 6 });
+        drawR(row.poolUnknown ? "-" : fmtMoney(row.commissionPoolDollars), C.pool, y, { size: 6 });
+        drawR(row.poolUnknown ? "-" : row.numEmployees.toString(), C.numEmp, y, { size: 6 });
         drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
         drawR(Number(row.hoursWorked).toFixed(2), C.hours, y, { size: 6 });
         drawR(maskedCommissionRowValue, C.rate, y, { size: 6 });
@@ -1443,6 +1479,7 @@ export async function POST(req: NextRequest) {
       drawRL(20, y + 9, 592);
       const averageRateInEffect = payPeriodRateInEffect;
       const grandRawVariableIncentive = displayRows.reduce((sum, row) => {
+        if (row.fromUpload) return sum + row.variableIncentive;
         if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
         const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
         return sum + Math.max(0, (minRate - rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
@@ -1513,6 +1550,41 @@ export async function POST(req: NextRequest) {
       drawR(fmtMoney(grandBonus), C.bonus, y, { bold: true, size: 6 });
       drawR(fmtMoney(totalFinalPay), C.finalPay, y, { bold: true, size: 6 });
     };
+
+    // Commission report rows from uploaded payroll lines: the uploaded figures, with the
+    // event's pool and head count when the line matches one of the request's events.
+    const buildUploadedCommissionReportRows = (
+      upload: { lines: PaystubUploadLine[] }
+    ): CommissionReportRow[] =>
+      upload.lines
+        .filter((line) => line.isCommission)
+        .map((line) => {
+          const event: any = matchUploadLineToEvent(line, Array.isArray(events) ? events : []);
+          const inputs = event ? getPayrollInputsForEventWithLinkedCommission(event) : null;
+          return {
+            dateStr: line.eventDate || "",
+            show: line.eventName || (event ? String(event.event_name ?? event.name ?? event.artist ?? "") : ""),
+            stadium: line.venue || (event ? String(event.venue ?? "") : ""),
+            stateCode: normalizeStateCode(line.state || event?.state) || paystubState,
+            usesPeriodRate: false,
+            commissionOverride: 0,
+            adjGrossSales: event ? getAdjustedGrossForEvent(event) : 0,
+            commissionPoolDollars: inputs ? roundPayrollAmount(Number(inputs.commissionPoolDollars || 0)) : 0,
+            commissionPoolPercent: inputs ? Number(inputs.commissionPoolPercent || 0) : 0,
+            numEmployees: inputs ? Number(inputs.commissionEligibleCount || 0) : 0,
+            commissionPerEmployee: line.commission,
+            hoursWorked: line.hours,
+            rateInEffect: line.hours > 0 ? roundPayrollAmount(line.commission / line.hours) : 0,
+            variableRate: line.hours > 0 ? roundPayrollAmount(line.variableIncentive / line.hours) : 0,
+            variableIncentive: line.variableIncentive,
+            tips: line.tips,
+            restBreak: line.restBreak,
+            bonus: line.bonus,
+            finalPay: roundPayrollAmount(line.commission + line.variableIncentive + line.tips + line.restBreak + line.bonus),
+            fromUpload: true,
+            poolUnknown: !event,
+          };
+        });
 
     if (paystubState === "CA") {
       const parseAmount = (value: any, absolute = true) => {
@@ -2003,6 +2075,47 @@ export async function POST(req: NextRequest) {
             : differentialMiles * 2 * 0.71;
       }
 
+      // Uploaded payroll in use for this period: the earnings come from this employee's
+      // uploaded lines instead of the system calculation above. YTD, deductions, sick leave
+      // and the manual meal premium / sick inputs still work as usual (see below).
+      if (uploadedPaystub) {
+        const u = uploadedPaystub.totals;
+        totalRegHours = u.regularHours;
+        totalOtHours = u.overtimeHours;
+        totalDtHours = u.doubletimeHours;
+        totalHoursWorked = u.hours;
+        totalTips = u.tips;
+        totalCommission = u.commission;
+        totalVariableIncentive = u.variableIncentive;
+        totalRestBreak = u.restBreak;
+        totalOther = u.bonus;
+        // Meal premium adjustments are part of the uploaded Other column (Bonus row).
+        totalAdjustmentMealPremium = 0;
+        // Reimbursement and mileage are added to Net Pay, never to Gross Pay.
+        totalAdjustmentReimbursement = u.reimbursement;
+        totalMileageReimbursement = u.mileage;
+        totalRegularPayAmount = u.regularPay;
+        totalOvertimePayAmount = u.overtimePay;
+        totalDoubletimePayAmount = u.doubletimePay;
+        totalGross = u.taxableGross;
+        totalFinalCommission = u.commission + u.variableIncentive;
+        hasSanDiegoEventHours = false;
+        hourlySummaryRegularHours = u.regularHours;
+        hourlySummaryOvertimeHours = u.overtimeHours;
+        hourlySummaryDoubletimeHours = u.doubletimeHours;
+        hourlySummaryRegularPay = u.regularPay;
+        hourlySummaryOvertimePay = u.overtimePay;
+        hourlySummaryDoubletimePay = u.doubletimePay;
+        caCommissionRows.splice(0, caCommissionRows.length, ...buildUploadedCommissionReportRows(uploadedPaystub));
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] earnings from uploaded payroll", {
+            uploadId: uploadedPaystub.uploadId,
+            lines: uploadedPaystub.lines.length,
+            totals: u,
+          });
+        }
+      }
+
       const normalizedCaCommissionRows = (() => {
         const payPeriodTotals = caCommissionRows.reduce(
           (acc, row) => ({
@@ -2046,11 +2159,14 @@ export async function POST(req: NextRequest) {
         normalizedCaCommissionRows.rows.reduce((sum, row) => sum + row.commissionPerEmployee, 0);
       const commissionTotalForEarnings = roundPayrollAmount(rawCommissionTotalForEarnings);
 
-      const rawVariableIncentiveTotalForEarnings = normalizedCaCommissionRows.rows.reduce((sum, row) => {
-        if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
-        const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
-        return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
-      }, 0);
+      // Uploaded payroll: Variable Incentive as uploaded, not recomputed from the period rate.
+      const rawVariableIncentiveTotalForEarnings = uploadedPaystub
+        ? uploadedPaystub.totals.variableIncentive
+        : normalizedCaCommissionRows.rows.reduce((sum, row) => {
+            if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
+            const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
+            return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
+          }, 0);
       const variableIncentiveTotalForEarnings = roundPayrollAmount(rawVariableIncentiveTotalForEarnings);
 
       const rawCommissionRateForEarnings =
@@ -2097,10 +2213,18 @@ export async function POST(req: NextRequest) {
       const totalOtherRounded = round2(totalOther);
       const totalMileageReimbursementRounded = round2(totalMileageReimbursement);
       const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0) + totalAdjustmentMealPremium);
-      const sickThisPeriod = round2(Math.abs(Number(sick) || 0));
+      // Sick pay typed on this page wins; otherwise uploaded payroll's Sick Pay is used.
+      const manualSickThisPeriod = round2(Math.abs(Number(sick) || 0));
+      const sickThisPeriod =
+        uploadedPaystub && manualSickThisPeriod === 0 ? round2(uploadedPaystub.totals.sick) : manualSickThisPeriod;
+      // Travel pay only comes from uploaded payroll (the system has none on the CA paystub).
+      const travelPayThisPeriod = uploadedPaystub ? round2(uploadedPaystub.totals.travel) : 0;
       const adjustmentReimbursementRounded = round2(totalAdjustmentReimbursement);
       const grossPayThisPeriod = round2(
-        (hasSanDiegoEventHours ? totalRegularPayAmount : 0) +
+        // Regular pay is wages on San Diego hourly events and on uploaded payroll lines
+        // (hourly and salaried); for system commission work the commission covers it.
+        (hasSanDiegoEventHours || uploadedPaystub ? totalRegularPayAmount : 0) +
+        travelPayThisPeriod +
         totalOvertimePayAmount +
         totalTips +
         totalCommissionRounded +
@@ -2195,6 +2319,7 @@ export async function POST(req: NextRequest) {
       const ytdOther = parseYtdOverride(bonusYtd) ?? round2(co('bonus_ytd') + totalOtherRounded);
       const ytdMealPremium = parseYtdOverride(mealPremiumYtd) ?? round2(co('meal_premium_ytd') + mealPremiumThisPeriod);
       const ytdSick = parseYtdOverride(sickPayYtd) ?? round2(co('sick_pay_ytd') + sickThisPeriod);
+      const ytdTravel = parseYtdOverride(travelPayYtd) ?? travelPayThisPeriod;
       const ytdGross = parseYtdOverride(grossPayYtd) ?? round2(runningYtd((ytdSnapshot?.ytd_gross || 0) + co('gross_pay_ytd'), grossPayThisPeriod));
       const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.federal_income_ytd || 0) + co('federal_income_ytd'), federalIncomeAmt));
       const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd((ytdSnapshot?.social_security_ytd || 0) + co('social_security_ytd'), socialSecurityAmt));
@@ -2305,22 +2430,34 @@ export async function POST(req: NextRequest) {
       const showHourlyEarningsRows =
         hourlySummaryRegularHours > 0 ||
         hourlySummaryOvertimeHours > 0 ||
-        hourlySummaryDoubletimeHours > 0;
+        hourlySummaryDoubletimeHours > 0 ||
+        // Uploaded salaried lines (ADP Payroll Summary) have pay but no hours.
+        (!!uploadedPaystub && (hourlySummaryRegularPay !== 0 || hourlySummaryOvertimePay !== 0 || hourlySummaryDoubletimePay !== 0));
       const hourlySummaryBaseRate = SAN_DIEGO_BASE_RATE;
+      // Uploaded payroll: average rates from the uploaded pay and hours.
+      const uploadedRate = (pay: number, hours: number) => (hours > 0 ? round2(pay / hours) : 0);
       const regularHoursForEarnings = showHourlyEarningsRows ? round2(hourlySummaryRegularHours) : 0;
       const overtimeHoursForEarnings = showHourlyEarningsRows ? round2(hourlySummaryOvertimeHours) : totalOtHours;
       const doubletimeHoursForEarnings = showHourlyEarningsRows ? round2(hourlySummaryDoubletimeHours) : totalDtHours;
       const regularPayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryRegularPay) : totalRegularPayRounded;
       const overtimePayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryOvertimePay) : totalOvertimePayRounded;
       const doubletimePayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryDoubletimePay) : totalDoubletimePayRounded;
-      const regularRateForEarnings = showHourlyEarningsRows ? round2(hourlySummaryBaseRate) : 0;
+      const regularRateForEarnings = showHourlyEarningsRows
+        ? uploadedPaystub
+          ? uploadedRate(hourlySummaryRegularPay, hourlySummaryRegularHours)
+          : round2(hourlySummaryBaseRate)
+        : 0;
       const overtimeRateAvg = showHourlyEarningsRows
-        ? round2(hourlySummaryBaseRate * 1.5)
+        ? uploadedPaystub
+          ? uploadedRate(hourlySummaryOvertimePay, hourlySummaryOvertimeHours)
+          : round2(hourlySummaryBaseRate * 1.5)
         : totalOtHours > 0
           ? round2(totalOvertimePayRounded / totalOtHours)
           : 0;
       const doubletimeRateAvg = showHourlyEarningsRows
-        ? round2(hourlySummaryBaseRate * 2)
+        ? uploadedPaystub
+          ? uploadedRate(hourlySummaryDoubletimePay, hourlySummaryDoubletimeHours)
+          : round2(hourlySummaryBaseRate * 2)
         : totalDtHours > 0
           ? round2(totalDoubletimePayRounded / totalDtHours)
           : 0;
@@ -2338,6 +2475,10 @@ export async function POST(req: NextRequest) {
         // Keep the label unchanged: /pdf-reader and the LLM extractor match "Rest Break Pay" followed by numbers.
         { label: "Rest Break Pay", color: black, rate: 0, hours: totalRestBreakCount, hoursAsCount: true, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
         { label: "Bonus", color: black, rate: 0, hours: 0, thisPeriod: totalOtherRounded, ytd: ytdOther },
+        // Only uploaded payroll can carry travel pay, so this row never shows on a system paystub.
+        ...(travelPayThisPeriod !== 0
+          ? [{ label: "Travel Pay", color: black, rate: 0, hours: 0, thisPeriod: travelPayThisPeriod, ytd: ytdTravel }]
+          : []),
         { label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
         { label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
       ]
@@ -2528,7 +2669,8 @@ export async function POST(req: NextRequest) {
         status: 200,
         headers: {
           'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`
+          'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`,
+          'X-Paystub-Payroll-Source': uploadedPaystub ? 'upload' : 'system',
         }
       });
     }
@@ -2655,8 +2797,9 @@ export async function POST(req: NextRequest) {
     let totalAdjustmentReimbursementNonCA = 0;
     const nonCaCommissionRows: CommissionReportRow[] = [];
 
-    // Draw event rows
-    events.forEach((event: any, index: number) => {
+    // Draw event rows (system payroll). With uploaded payroll in use, the uploaded
+    // lines are drawn instead, right after this loop.
+    (uploadedPaystub ? [] : (events as any[])).forEach((event: any, index: number) => {
       const worker = matchedUserId
         ? (event.workers || []).find((w: any) => w?.user_id === matchedUserId) || event.workers?.[0]
         : event.workers?.[0]; // fallback
@@ -2966,6 +3109,78 @@ export async function POST(req: NextRequest) {
       }
     });
 
+    // Uploaded payroll in use for this period: one row per uploaded line, with the
+    // uploaded figures. Reimbursement-only lines are not earnings (added to Net Pay below).
+    let uploadedMileageNonCA = 0;
+    if (uploadedPaystub) {
+      for (const line of uploadedPaystub.lines) {
+        totalAdjustmentReimbursementNonCA += line.reimbursement;
+        uploadedMileageNonCA += line.mileage;
+        if (line.taxableGross === 0 && line.hours === 0) continue;
+
+        const commissionPaid = line.commission + line.variableIncentive;
+        const regRate =
+          line.rateInEffect ??
+          (line.isCommission
+            ? (line.hours > 0 ? commissionPaid / line.hours : 0)
+            : line.regularHours > 0
+              ? line.regularPay / line.regularHours
+              : (line.regRate ?? 0));
+        const otRate = line.overtimeHours > 0 ? line.overtimePay / line.overtimeHours : 0;
+        const dtRate = line.doubletimeHours > 0 ? line.doubletimePay / line.doubletimeHours : 0;
+        const total = roundPayrollAmount(line.taxableGross);
+
+        totalRegHours += line.regularHours;
+        totalOtHours += line.overtimeHours;
+        totalDtHours += line.doubletimeHours;
+        totalHoursWorked += line.hours;
+        totalTips += line.tips;
+        totalCommission += line.commission;
+        totalVariableIncentive += line.variableIncentive;
+        totalRestBreak += line.restBreak;
+        totalOther += line.bonus;
+        totalGross += total;
+
+        let eventDate = "";
+        if (line.eventDate) {
+          const d = new Date(`${line.eventDate}T00:00:00Z`);
+          eventDate = `${d.getUTCDate()}-${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" })}`;
+        }
+        const nameRaw = line.eventName || line.venue || "";
+        const displayName = nameRaw ? (nameRaw.length > 22 ? nameRaw.substring(0, 22) + "..." : nameRaw) : "(Unnamed)";
+
+        if (useVendorLayout) {
+          const colX = includeRestBreakColumn ? vendorColXWithRestBreak : vendorColXNoRestBreak;
+          if (eventDate) drawText(eventDate, colX.event, yPosition, { size: 8 });
+          drawText(displayName, colX.eventName, yPosition, { size: 7 });
+          if (regRate > 0) drawText(`$${regRate.toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
+          if (otRate > 0) drawText(`$${otRate.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8 });
+          if (line.hours > 0) drawText(line.hours.toFixed(2), colX.hoursWorked, yPosition, { size: 8 });
+          if (line.commission > 0) drawText(`$${line.commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (line.tips > 0) drawText(`$${line.tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
+          if (includeRestBreakColumn) {
+            drawText(`$${line.restBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8 });
+          }
+          if (line.bonus !== 0) drawText(`${line.bonus >= 0 ? "$" : "-$"}${Math.abs(line.bonus).toFixed(2)}`, colX.other, yPosition, { size: 8 });
+          if (total !== 0) drawText(`${total >= 0 ? "$" : "-$"}${Math.abs(total).toFixed(2)}`, colX.totalGross, yPosition, { size: 8 });
+        } else {
+          const colX = defaultColX;
+          drawText(`${eventDate} ${displayName}`.trim(), colX.event, yPosition, { size: 8 });
+          if (line.regularHours > 0) drawText(`$${(line.regularPay / line.regularHours).toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
+          if (line.regularHours > 0) drawText(line.regularHours.toString(), colX.regHrs, yPosition, { size: 8 });
+          if (line.overtimeHours > 0) drawText(`$${otRate.toFixed(2)}`, colX.otRate, yPosition, { size: 8 });
+          if (line.overtimeHours > 0) drawText(line.overtimeHours.toString(), colX.otHrs, yPosition, { size: 8 });
+          if (line.doubletimeHours > 0) drawText(`$${dtRate.toFixed(2)}`, colX.dtRate, yPosition, { size: 8 });
+          if (line.doubletimeHours > 0) drawText(line.doubletimeHours.toString(), colX.dtHrs, yPosition, { size: 8 });
+          if (line.tips > 0) drawText(`$${line.tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
+          if (line.commission > 0) drawText(`$${line.commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          drawText(`$${total.toFixed(2)}`, colX.total, yPosition, { size: 8 });
+        }
+        yPosition -= 12;
+      }
+      nonCaCommissionRows.push(...buildUploadedCommissionReportRows(uploadedPaystub));
+    }
+
     // This Period totals
     drawLine(50, yPosition + 10, 560, yPosition + 10);
     yPosition -= 5;
@@ -3060,7 +3275,8 @@ export async function POST(req: NextRequest) {
     yPosition -= 10;
     drawLine(50, yPosition + 10, 350, yPosition + 10);
     yPosition -= 5;
-    const netPay = currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA;
+    // Uploaded mileage pay is added to Net Pay without its own row, like the CA paystub.
+    const netPay = currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA + round2(uploadedMileageNonCA);
     drawText("Net Pay", 50, yPosition, { bold: true, size: 12 });
     drawText(`$${netPay.toFixed(2)}`, 250, yPosition, { bold: true, size: 12 });
 
@@ -3122,7 +3338,8 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${payDate}.pdf"`
+        'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${payDate}.pdf"`,
+        'X-Paystub-Payroll-Source': uploadedPaystub ? 'upload' : 'system',
       }
     });
   } catch (error: any) {

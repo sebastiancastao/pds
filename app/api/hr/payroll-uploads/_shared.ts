@@ -175,25 +175,61 @@ async function loadEmployeeDirectory(): Promise<PreparedDirectory> {
   return dir;
 }
 
-// One result per row: the account to link, and the account's email when the line has none.
-export async function resolveAccounts(rows: CleanRow[]): Promise<Array<{ userId: string | null; email: string | null }>> {
+// Company accounts use a PDS address (…@1pds.net). Someone who also has a
+// personal (worker) account is paid on the personal one, so when a person has
+// both, the account whose email doesn't contain "pds" is chosen.
+export const isCompanyEmail = (email: string | null | undefined) => /pds/i.test(String(email || ""));
+
+export type ResolvedAccount = {
+  userId: string | null;
+  // Account email to put on the line: when the line has none, or when it had
+  // the company email and the person's personal account was chosen instead.
+  email: string | null;
+  // The company email the line had, when it was replaced.
+  replacedEmail: string | null;
+};
+
+// One result per row.
+export async function resolveAccounts(rows: CleanRow[]): Promise<ResolvedAccount[]> {
   const byEmail = await matchUserIdsByEmail(rows.map((r) => r.email));
-  const out = rows.map((r) => ({ userId: r.email ? byEmail.get(r.email) || null : null, email: null as string | null }));
+  const out: ResolvedAccount[] = rows.map((r) => ({
+    userId: r.email ? byEmail.get(r.email) || null : null,
+    email: null,
+    replacedEmail: null,
+  }));
+  // Name matching for lines with no account yet, and for lines on a company
+  // email (the same person may also have a personal account).
   const pending = rows
     .map((r, i) => ({ i, name: String(r.extra?.[REGISTER_NAME_KEY] || `${r.first_name || ""} ${r.last_name || ""}`).trim() }))
-    .filter(({ i, name }) => !out[i].userId && name.length > 0);
+    .filter(({ i, name }) => name.length > 0 && (!out[i].userId || isCompanyEmail(rows[i].email)));
   if (pending.length === 0) return out;
   try {
     const dir = await loadEmployeeDirectory();
     const results = matchNames(pending.map((p) => p.name), dir);
     results.forEach((res, k) => {
-      if (res.status !== "matched" || !res.userId) return;
       const { i } = pending[k];
-      out[i].userId = res.userId;
-      if (!rows[i].email) {
-        const hit = res.candidates.find((c) => c.userId === res.userId);
-        if (hit?.email) out[i].email = hit.email.toLowerCase();
+      const row = rows[i];
+      // Accounts tied for the best score: the same name on two accounts.
+      const top = res.candidates.length ? res.candidates.filter((c) => c.score === res.candidates[0].score) : [];
+      const personal = top.filter((c) => !isCompanyEmail(c.email));
+
+      if (out[i].userId) {
+        // Linked by a company email: switch to the person's personal account
+        // when their two accounts share the name and exactly one is personal.
+        if (res.status === "ambiguous" && top.some((c) => c.userId === out[i].userId) && personal.length === 1) {
+          out[i].userId = personal[0].userId;
+          out[i].email = personal[0].email ? personal[0].email.toLowerCase() : null;
+          out[i].replacedEmail = row.email;
+        }
+        return;
       }
+
+      let pick = res.status === "matched" && res.userId ? res.candidates.find((c) => c.userId === res.userId) || null : null;
+      // Two accounts with this name: take the personal one when there is exactly one.
+      if (!pick && res.status === "ambiguous" && personal.length === 1) pick = personal[0];
+      if (!pick) return;
+      out[i].userId = pick.userId;
+      if (!row.email && pick.email) out[i].email = pick.email.toLowerCase();
     });
   } catch {
     // Name matching is a convenience; lines simply stay unlinked if it fails.

@@ -22,6 +22,7 @@ import {
   fetchAllPages,
   insertRowsInChunks,
   resolveAccounts,
+  type ResolvedAccount,
   parseIsoDate,
   requireHr,
   setUploadActive,
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "The upload has no payroll lines" }, { status: 400 });
   }
 
-  let accounts: Array<{ userId: string | null; email: string | null }>;
+  let accounts: ResolvedAccount[];
   try {
     accounts = await resolveAccounts(cleaned.rows);
   } catch (e: any) {
@@ -140,7 +141,10 @@ export async function POST(req: NextRequest) {
   const insertRows = cleaned.rows.map((row, index) => {
     const { id: _ignored, sort_order: _sort, from_file: _fromFile, source_file, source_sheet, source_row, extra, ...fields } = row;
     const account = accounts[index];
-    if (!fields.email && account.email) {
+    if (account.replacedEmail && account.email) {
+      extra["Company email replaced"] = account.replacedEmail;
+      fields.email = account.email;
+    } else if (!fields.email && account.email) {
       fields.email = account.email;
       extra["Email from employee account"] = true;
     }

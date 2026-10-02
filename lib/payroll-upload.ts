@@ -265,8 +265,11 @@ export const mapPayrollHeaders = (headerRow: unknown[]): HeaderMapping => {
   return { byColumn, recognized, unrecognized, layout, hasTotalColumn: Object.values(byColumn).includes("total_gross_pay") };
 };
 
-// Finds the header row within the first rows of a sheet: the row that maps
-// to the most payroll fields (at least two, one of them a name or email).
+// Finds where a sheet's lines start: the FIRST row in the first 20 that names
+// at least three payroll columns, one of them a name or email. Headers further
+// down (another block of employees, maybe with other columns) are picked up
+// while reading, so starting at the first one keeps the lines above a second
+// header. Without such a row, the row naming the most fields (at least two) is used.
 export const detectPayrollHeaderRow = (rows: unknown[][]): { index: number; score: number } => {
   let best = { index: -1, score: 0 };
   const limit = Math.min(rows.length, 20);
@@ -276,6 +279,7 @@ export const detectPayrollHeaderRow = (rows: unknown[][]): { index: number; scor
     const keys = Object.values(mapping.byColumn);
     const hasIdentity = keys.some((k) => k === "email" || k === "first_name" || k === "last_name" || k === "__full_name");
     const score = hasIdentity ? keys.length : 0;
+    if (score >= 3) return { index: i, score };
     if (score >= 2 && score > best.score) best = { index: i, score };
   }
   return best;
@@ -569,9 +573,27 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
     // ---- an employee line ----
     if (emailCellText && !email) {
       // The Email column holds something else: the row's columns may be shifted.
-      const found = cells.map((c) => (typeof c === "string" ? c.trim() : "")).find((c) => EMAIL_RE.test(c));
+      const at = cells.findIndex((c) => typeof c === "string" && EMAIL_RE.test(c.trim()));
+      const found = at >= 0 ? String(cells[at]).trim().toLowerCase() : null;
       extra["Email column had"] = emailCellText;
-      if (found) extra["Email found in another column"] = found.toLowerCase();
+      if (found) extra["Email found in another column"] = found;
+      // A row pasted in the Payroll tab export order (First Name, Last Name, Email,
+      // Category, Venue, City, State, Event Name, Event Date) under a header that
+      // starts with Venue: read the name and event from those positions. The amounts
+      // still follow the header. The line stays flagged for a check.
+      const textAt = (i: number) => (i >= 0 && typeof cells[i] === "string" ? String(cells[i]).replace(/\s+/g, " ").trim() : "");
+      if (found && at >= 2 && /^(hourly|commission)/i.test(textAt(at + 1)) && textAt(at - 2) && textAt(at - 1)) {
+        fields.first_name = textAt(at - 2);
+        fields.last_name = textAt(at - 1);
+        fields.email = found;
+        fields.category = textAt(at + 1) || fields.category;
+        fields.venue = textAt(at + 2) || null;
+        fields.city = textAt(at + 3) || null;
+        fields.state = textAt(at + 4) || null;
+        fields.event_name = textAt(at + 5) || null;
+        fields.event_date = parsePayrollText(cells[at + 6], "event_date");
+        extra[SHIFTED_FIXED_KEY] = "name and event read from the Payroll tab export column order";
+      }
     }
     if (mapping.layout === "register") {
       extra[REGISTER_KEY] = true;
@@ -587,6 +609,19 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
       // Keep the record readable: "Standalone" reimbursement with its description.
       const description = extra["Description"];
       if (typeof description === "string" && description.trim()) fields.event_name = `${fields.event_name}: ${description.trim()}`;
+    }
+    // "Ext pay" (hours x rate) repeats Reg/OT/DT pay on hourly sheets. Use it as the
+    // regular pay only when a line has no hourly pay of its own.
+    const extPay = parsePayrollNumber(extra["Ext pay"] ?? extra["Ext Pay"] ?? null);
+    if (
+      typeof extPay === "number" &&
+      extPay > 0 &&
+      !Number(fields.regular_pay || 0) &&
+      !Number(fields.overtime_pay || 0) &&
+      !Number(fields.doubletime_pay || 0)
+    ) {
+      fields.regular_pay = extPay;
+      extra["Regular pay"] = "taken from Ext pay";
     }
     const typed = fields as unknown as PayrollUploadFields;
     if (!mapping.hasTotalColumn && typed.total_gross_pay === null && hasAnyGrossComponent(typed)) {
@@ -667,6 +702,7 @@ export const combinePayrollSheets = (sheets: ParsedPayrollSheet[], selectedKeys:
 // - employees with no event lines get their summary line;
 // - event-line employees missing from the summary are flagged.
 export const REGISTER_KEY = "From Payroll Summary";
+export const SHIFTED_FIXED_KEY = "Columns shifted";
 export const REGISTER_NAME_KEY = "Name on Payroll Summary";
 export const REGISTER_PAID_KEY = "Payroll Summary Total Paid";
 export const REGISTER_SIMILAR_KEY = "Matched to Payroll Summary by a similar name";
@@ -818,6 +854,13 @@ export const payrollRowIssues = (
   if (row.extra?.[REGISTER_AMBIGUOUS_KEY] === true) {
     issues.push({ code: "register-ambiguous", message: "More than one employee on the other sheets has this name, so this Payroll Summary line was kept on its own" });
   }
+  const shiftedFixed = row.extra?.[SHIFTED_FIXED_KEY];
+  if (typeof shiftedFixed === "string" && shiftedFixed) {
+    issues.push({
+      code: "shifted-fixed",
+      message: `Columns were shifted on this line in the file, so the ${shiftedFixed}. Check it against the file`,
+    });
+  }
   const shiftedEmail = row.extra?.["Email found in another column"];
   if (typeof shiftedEmail === "string" && shiftedEmail && !row.email) {
     issues.push({
@@ -951,7 +994,7 @@ export const buildPayrollExportRows = (
   const known = new Set<string>(keys.map((k) => PAYROLL_EXPORT_HEADERS[k]));
   // Internal Payroll Summary markers stay out of the file, so a downloaded
   // upload re-reads as plain lines.
-  const internal = new Set<string>([REGISTER_KEY, REGISTER_PAID_KEY, REGISTER_SIMILAR_KEY, NOT_ON_REGISTER_KEY, "Payroll Summary name fits more than one employee"]);
+  const internal = new Set<string>([REGISTER_KEY, REGISTER_PAID_KEY, REGISTER_SIMILAR_KEY, NOT_ON_REGISTER_KEY, SHIFTED_FIXED_KEY, "Payroll Summary name fits more than one employee"]);
   const extraKeys = Array.from(new Set(rows.flatMap((r) => Object.keys(r.extra || {})))).filter((k) => !known.has(k) && !internal.has(k));
   const header = [...keys.map((k) => PAYROLL_EXPORT_HEADERS[k]), ...extraKeys];
 

@@ -9,6 +9,25 @@ import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } 
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
 import { getRestBreakPay } from '@/lib/rest-breaks';
+import {
+  PAYROLL_UPLOAD_FIELD_KEYS,
+  REGISTER_KEY,
+  REGISTER_PAID_KEY,
+  payrollRowName,
+  roundMoney as roundUploadMoney,
+  type PayrollUploadRow,
+} from '@/lib/payroll-upload';
+import {
+  buildPaystubFromUploadedLines,
+  matchUploadLineToEvent,
+  selectUploadedLinesForEmployee,
+  uploadedPayrollWarnings,
+  type PaystubUploadLine,
+  type PaystubUploadTotals,
+  type UploadedLineMatch,
+  type UploadedPayrollPayload,
+  type UploadedPayrollWarning,
+} from '@/lib/paystub-uploaded-payroll';
 
 interface PaymentData {
   effective_hours?: number | null;
@@ -185,6 +204,37 @@ interface FinalPayTotals {
 
 const PAYROLL_DIRTY_STORAGE_KEY = 'pds-payroll-data-dirty-at';
 
+// Uploaded payroll (HR dashboard Payroll tab > Upload Payroll) in use for exactly the
+// selected pay period, as returned by /api/hr/payroll-uploads/active.
+type UploadedPayrollForPeriod = {
+  periodStart: string;
+  periodEnd: string;
+  upload: {
+    id: string;
+    period_start: string;
+    period_end: string;
+    file_name: string | null;
+    status: string;
+    updated_at: string;
+    uploaded_by_email: string | null;
+  } | null;
+  rows: PayrollUploadRow[];
+  overlapping: Array<{ id: string; period_start: string; period_end: string; file_name: string | null }>;
+};
+
+// One employee's lines in the uploaded payroll, and what the paystub will make of them.
+type EmployeeUploadedPayroll = {
+  lines: PayrollUploadRow[];
+  matchedBy: UploadedLineMatch[];
+  paystubLines: PaystubUploadLine[];
+  totals: PaystubUploadTotals;
+  warnings: UploadedPayrollWarning[];
+  hasCommissionLines: boolean;
+};
+
+const formatUploadMoney = (n: number) =>
+  `$${roundUploadMoney(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 export default function PaystubGenerator() {
   const [formData, setFormData] = useState({
     // Employee Information
@@ -277,6 +327,17 @@ export default function PaystubGenerator() {
   const eventsRequestIdRef = useRef(0);
   const finalPayRequestIdRef = useRef(0);
   const handledPayrollDirtyAtRef = useRef<string | null>(null);
+
+  // Uploaded payroll in use for exactly this pay period. When it has lines for an
+  // employee, their paystub earnings come from those lines (lib/paystub-uploaded-payroll);
+  // employees not in the upload keep the system calculation. "Use system payroll"
+  // switches the whole period back, like Retrieve System Payroll on the HR dashboard.
+  const [uploadedPayroll, setUploadedPayroll] = useState<UploadedPayrollForPeriod | null>(null);
+  const [uploadedPayrollLoading, setUploadedPayrollLoading] = useState(false);
+  const [uploadedPayrollError, setUploadedPayrollError] = useState<string | null>(null);
+  const [useSystemPayroll, setUseSystemPayroll] = useState(false);
+  const uploadedPayrollRequestIdRef = useRef(0);
+  const uploadedPayrollCheckedAtRef = useRef(0);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -719,6 +780,92 @@ export default function PaystubGenerator() {
     void loadEventsForPayPeriod();
   }, [loadEventsForPayPeriod]);
 
+  const loadUploadedPayroll = useCallback(async () => {
+    const requestId = ++uploadedPayrollRequestIdRef.current;
+    const start = formData.payPeriodStart;
+    const end = formData.payPeriodEnd;
+    if (!start || !end) {
+      setUploadedPayroll(null);
+      setUploadedPayrollError(null);
+      setUploadedPayrollLoading(false);
+      return false;
+    }
+    // A failed refresh keeps what was loaded for these dates, so a network blip
+    // never quietly switches paystubs back to system payroll.
+    const keepSamePeriod = (prev: UploadedPayrollForPeriod | null) =>
+      prev && prev.periodStart === start && prev.periodEnd === end ? prev : null;
+
+    setUploadedPayrollLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/hr/payroll-uploads/active?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&ts=${Date.now()}`,
+        {
+          cache: 'no-store',
+          headers: {
+            'Cache-Control': 'no-cache',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        }
+      );
+      const body = await res.json().catch(() => ({}));
+      if (requestId !== uploadedPayrollRequestIdRef.current) return false;
+      if (!res.ok) {
+        setUploadedPayroll(keepSamePeriod);
+        setUploadedPayrollError(
+          res.status === 401 || res.status === 403
+            ? 'Your account cannot read uploaded payroll (HR, exec and admin only), so paystubs use the system calculation.'
+            : body?.error || 'Could not check for uploaded payroll.'
+        );
+        return false;
+      }
+      uploadedPayrollCheckedAtRef.current = Date.now();
+      setUploadedPayrollError(null);
+      setUploadedPayroll({
+        periodStart: start,
+        periodEnd: end,
+        upload: body?.upload || null,
+        rows: Array.isArray(body?.rows) ? body.rows : [],
+        overlapping: Array.isArray(body?.overlapping) ? body.overlapping : [],
+      });
+      return true;
+    } catch (error: any) {
+      if (requestId !== uploadedPayrollRequestIdRef.current) return false;
+      setUploadedPayroll(keepSamePeriod);
+      setUploadedPayrollError(error?.message || 'Could not check for uploaded payroll.');
+      return false;
+    } finally {
+      if (requestId === uploadedPayrollRequestIdRef.current) setUploadedPayrollLoading(false);
+    }
+  }, [formData.payPeriodStart, formData.payPeriodEnd]);
+
+  useEffect(() => {
+    void loadUploadedPayroll();
+  }, [loadUploadedPayroll]);
+
+  // HR may switch the upload in use on the HR dashboard in another tab: check again
+  // when this page is focused (at most every 30 seconds).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - uploadedPayrollCheckedAtRef.current < 30_000) return;
+      void loadUploadedPayroll();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [loadUploadedPayroll]);
+
+  // A different upload (or none) for the period: go back to using it by default.
+  const loadedUploadId = uploadedPayroll?.upload?.id || null;
+  useEffect(() => {
+    setUseSystemPayroll(false);
+  }, [loadedUploadId]);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -822,6 +969,7 @@ export default function PaystubGenerator() {
         if (eventsLoading || finalPayLoading) return;
 
         const eventsLoaded = await loadEventsForPayPeriod();
+        void loadUploadedPayroll();
         const finalPayLoaded = matchedUserId ? await loadFinalPayForMatchedUser() : true;
         if (!eventsLoaded || !finalPayLoaded) return;
 
@@ -867,6 +1015,7 @@ export default function PaystubGenerator() {
     finalPayLoading,
     loadEventsForPayPeriod,
     loadFinalPayForMatchedUser,
+    loadUploadedPayroll,
   ]);
 
   const calculateEarnings = () => {
@@ -978,6 +1127,138 @@ export default function PaystubGenerator() {
 
     return map;
   }, [events]);
+
+  // Uploaded payroll for the dates on screen (never a stale load for other dates).
+  const uploadedPayrollForPeriod =
+    uploadedPayroll?.upload &&
+    uploadedPayroll.periodStart === formData.payPeriodStart &&
+    uploadedPayroll.periodEnd === formData.payPeriodEnd
+      ? uploadedPayroll
+      : null;
+  const activeUploadedPayroll = useSystemPayroll ? null : uploadedPayrollForPeriod;
+
+  // Emails the period's events know for each worker, used to pick up uploaded lines
+  // that have an email but are not linked to an account.
+  const workerEmailsByUserId = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const event of [...events, ...linkedPartnerEvents]) {
+      for (const worker of event.workers || []) {
+        const userId = (worker?.user_id || '').toString();
+        const email = (worker?.user_email || '').toString().trim().toLowerCase();
+        if (!userId || !email) continue;
+        if (!map[userId]) map[userId] = [];
+        if (!map[userId].includes(email)) map[userId].push(email);
+      }
+    }
+    return map;
+  }, [events, linkedPartnerEvents]);
+
+  const uploadedPayrollCache = useMemo(
+    () => new Map<string, EmployeeUploadedPayroll | null>(),
+    [activeUploadedPayroll, workerEmailsByUserId]
+  );
+
+  // This employee's lines in the uploaded payroll in use, or null when there is no
+  // upload in use or the employee is not in it (their paystub uses system payroll).
+  const getUploadedPayrollForUser = (userId?: string | null): EmployeeUploadedPayroll | null => {
+    if (!activeUploadedPayroll || !userId) return null;
+    if (uploadedPayrollCache.has(userId)) return uploadedPayrollCache.get(userId) ?? null;
+    const selection = selectUploadedLinesForEmployee(activeUploadedPayroll.rows, {
+      userId,
+      emails: workerEmailsByUserId[userId] || [],
+    });
+    let result: EmployeeUploadedPayroll | null = null;
+    if (selection.lines.length > 0) {
+      const built = buildPaystubFromUploadedLines(selection.lines);
+      result = {
+        lines: selection.lines,
+        matchedBy: selection.matchedBy,
+        paystubLines: built.lines,
+        totals: built.totals,
+        warnings: uploadedPayrollWarnings(selection.lines, {
+          periodStart: activeUploadedPayroll.periodStart,
+          periodEnd: activeUploadedPayroll.periodEnd,
+          matchedBy: selection.matchedBy,
+        }),
+        hasCommissionLines: built.lines.some((line) => line.isCommission),
+      };
+    }
+    uploadedPayrollCache.set(userId, result);
+    return result;
+  };
+
+  // Request field for /api/generate-paystub: this employee's uploaded lines, or
+  // nothing (system payroll). Only the fields the paystub needs are sent.
+  const uploadedPayrollPayloadFor = (userId?: string | null): { uploadedPayroll?: UploadedPayrollPayload } => {
+    const info = getUploadedPayrollForUser(userId);
+    if (!info || !activeUploadedPayroll?.upload) return {};
+    return {
+      uploadedPayroll: {
+        uploadId: activeUploadedPayroll.upload.id,
+        periodStart: activeUploadedPayroll.periodStart,
+        periodEnd: activeUploadedPayroll.periodEnd,
+        fileName: activeUploadedPayroll.upload.file_name,
+        lines: info.lines.map((row) => {
+          const out: Record<string, unknown> = {
+            id: row.id,
+            user_id: row.user_id,
+            source_sheet: row.source_sheet,
+            extra: {
+              [REGISTER_KEY]: row.extra?.[REGISTER_KEY] === true,
+              ...(typeof row.extra?.[REGISTER_PAID_KEY] === 'number' ? { [REGISTER_PAID_KEY]: row.extra[REGISTER_PAID_KEY] } : {}),
+            },
+          };
+          PAYROLL_UPLOAD_FIELD_KEYS.forEach((key) => {
+            out[key] = row[key];
+          });
+          return out;
+        }),
+      },
+    };
+  };
+
+  // Batch runs make a paystub for employees in the upload or with payable events (the rest are skipped).
+  const willGetPaystub = (userId: string) =>
+    !!getUploadedPayrollForUser(userId) || filterEventsForUserIdWithHours(userId).length > 0;
+
+  // Paystubs wait for the uploaded payroll check, so none is made from the wrong data.
+  const uploadedPayrollStillLoading = () => {
+    if (!uploadedPayrollLoading) return false;
+    alert('Still checking for uploaded payroll for this pay period. Try again in a moment.');
+    return true;
+  };
+
+  // Before making paystubs with an upload in use: ask when an employee's uploaded lines
+  // need a look (they disagree with the ADP Payroll Summary, carry "paid"/"short" notes,
+  // only hold reimbursements...) or when employees are not in the upload at all.
+  const confirmUploadedPayrollUse = (people: Array<{ userId: string | null; name: string }>, action: string): boolean => {
+    if (!activeUploadedPayroll) return true;
+    const flagged: string[] = [];
+    const notInUpload: string[] = [];
+    for (const person of people) {
+      if (!person.userId) continue;
+      const info = getUploadedPayrollForUser(person.userId);
+      if (!info) {
+        notInUpload.push(person.name || person.userId);
+        continue;
+      }
+      const serious = info.warnings.filter((w) => w.confirm);
+      if (serious.length > 0) flagged.push(`- ${person.name}: ${serious.map((w) => w.message).join(' ')}`);
+    }
+    if (flagged.length === 0 && notInUpload.length === 0) return true;
+    const parts: string[] = [];
+    if (flagged.length > 0) {
+      parts.push(
+        `The uploaded payroll needs a look for ${flagged.length} employee${flagged.length === 1 ? '' : 's'}:\n${flagged.slice(0, 8).join('\n')}${flagged.length > 8 ? `\n...and ${flagged.length - 8} more` : ''}`
+      );
+    }
+    if (notInUpload.length > 0) {
+      parts.push(
+        `${notInUpload.length} employee${notInUpload.length === 1 ? ' is' : 's are'} not in the uploaded payroll, so ${notInUpload.length === 1 ? 'their paystub uses' : 'their paystubs use'} the system calculation: ${notInUpload.slice(0, 8).join(', ')}${notInUpload.length > 8 ? `, and ${notInUpload.length - 8} more` : ''}.`
+      );
+    }
+    return window.confirm(`${parts.join('\n\n')}\n\n${action} anyway?`);
+  };
 
   // Email candidates: matched batch employees or the single employee
   const emailCandidates = useMemo(() => {
@@ -1132,6 +1413,7 @@ export default function PaystubGenerator() {
       .replace(/[^a-zA-Z0-9._-]/g, '');
 
   const handleGenerate = async () => {
+    if (uploadedPayrollStillLoading()) return;
     setGenerating(true);
     try {
       const debugMode =
@@ -1161,6 +1443,10 @@ export default function PaystubGenerator() {
 
       if (resolvedUserId && resolvedUserId !== matchedUserId) {
         setMatchedUserId(resolvedUserId);
+      }
+
+      if (!confirmUploadedPayrollUse([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
+        return;
       }
 
       const filteredEvents = filterEventsForUserIdWithHours(resolvedUserId);
@@ -1222,6 +1508,9 @@ export default function PaystubGenerator() {
         // Used server-side to pick correct worker row per event (hours worked)
         matchedUserId: resolvedUserId,
 
+        // This employee's lines in the uploaded payroll in use, if any (replaces the system earnings)
+        ...uploadedPayrollPayloadFor(resolvedUserId),
+
         // Debug logging (opt-in via /paystub-generator?debug=1)
         debug: debugMode,
       };
@@ -1270,6 +1559,7 @@ export default function PaystubGenerator() {
   };
 
   const handleGenerateBatch = async (mode: 'merge' | 'separate') => {
+    if (uploadedPayrollStillLoading()) return;
     setBatchMessage(null);
     setBatchErrors([]);
 
@@ -1286,8 +1576,18 @@ export default function PaystubGenerator() {
       alert('Events are still loading. Try again in a moment.');
       return;
     }
-    if (!events || events.length === 0) {
+    if ((!events || events.length === 0) && !activeUploadedPayroll) {
       alert('No events loaded for the selected pay period.');
+      return;
+    }
+    if (
+      !confirmUploadedPayrollUse(
+        rows
+          .filter((emp) => !!emp.matchedUserId && willGetPaystub(emp.matchedUserId))
+          .map((emp) => ({ userId: emp.matchedUserId, name: emp.employeeName })),
+        'Generate the paystubs'
+      )
+    ) {
       return;
     }
 
@@ -1300,6 +1600,7 @@ export default function PaystubGenerator() {
       const outPdf = mode === 'merge' ? await PDFDocument.create() : null;
       let generated = 0;
       let skipped = 0;
+      let generatedFromUpload = 0;
       const errors: string[] = [];
       const generatedNames: string[] = [];
       let mergedPagesAdded = 0;
@@ -1322,12 +1623,14 @@ export default function PaystubGenerator() {
 
           const assignedCount = assignedEventsByUserId[emp.matchedUserId] || 0;
           const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
-          if (assignedCount <= 0) {
+          // Employees in the uploaded payroll get a paystub even with no events (salaried staff).
+          const uploadedForRow = getUploadedPayrollForUser(emp.matchedUserId);
+          if (!uploadedForRow && assignedCount <= 0) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): not in any event teams during selected period`);
             continue;
           }
-          if (filteredEvents.length === 0) {
+          if (!uploadedForRow && filteredEvents.length === 0) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): no payable data found in selected period`);
             continue;
@@ -1398,6 +1701,7 @@ export default function PaystubGenerator() {
             sickLeave: sickLeaveForRow,
 
             matchedUserId: emp.matchedUserId,
+            ...uploadedPayrollPayloadFor(emp.matchedUserId),
             debug: debugMode,
           };
 
@@ -1432,6 +1736,7 @@ export default function PaystubGenerator() {
           }
 
           generated++;
+          if (uploadedForRow) generatedFromUpload++;
           generatedNames.push(employeeName);
         } catch (err: any) {
           skipped++;
@@ -1452,9 +1757,12 @@ export default function PaystubGenerator() {
         downloadBlob(blob, `paystubs-${safePayDate}.pdf`);
       }
 
+      const sourceNote = activeUploadedPayroll
+        ? ` ${generatedFromUpload} from the uploaded payroll, ${generated - generatedFromUpload} from the system calculation (not in the upload).`
+        : '';
       const msg = mode === 'merge'
-        ? `Generated ${generated} paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.`
-        : `Generated ${generated} paystub(s) as separate PDF downloads. Skipped ${skipped}.`;
+        ? `Generated ${generated} paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.${sourceNote}`
+        : `Generated ${generated} paystub(s) as separate PDF downloads. Skipped ${skipped}.${sourceNote}`;
       setBatchMessage(msg);
       setBatchErrors(errors);
       if (debugMode && errors.length) {
@@ -1506,6 +1814,7 @@ export default function PaystubGenerator() {
   };
 
   const handleDistribute = async () => {
+    if (uploadedPayrollStillLoading()) return;
     setDistributing(true);
     setDistributeMessage(null);
     setDistributeError(null);
@@ -1524,6 +1833,11 @@ export default function PaystubGenerator() {
 
       if (!resolvedUserId) {
         throw new Error('Could not match this employee to a user profile. Make sure the employee name matches exactly.');
+      }
+
+      if (!confirmUploadedPayrollUse([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
+        setDistributeStep(null);
+        return;
       }
 
       setDistributeUserId(resolvedUserId);
@@ -1561,6 +1875,7 @@ export default function PaystubGenerator() {
         events: filteredEvents,
         sickLeave: sickLeaveForPayload,
         matchedUserId: resolvedUserId,
+        ...uploadedPayrollPayloadFor(resolvedUserId),
         debug: debugMode,
       };
 
@@ -1599,6 +1914,17 @@ export default function PaystubGenerator() {
   };
 
   const handleDistributeBatch = async () => {
+    if (uploadedPayrollStillLoading()) return;
+    if (
+      !confirmUploadedPayrollUse(
+        (importedEmployees || [])
+          .filter((emp) => !!emp.matchedUserId && willGetPaystub(emp.matchedUserId))
+          .map((emp) => ({ userId: emp.matchedUserId, name: emp.employeeName })),
+        'Distribute the paystubs to employee profiles'
+      )
+    ) {
+      return;
+    }
     setBatchDistributing(true);
     setBatchDistributeMessage(null);
     setBatchDistributeErrors([]);
@@ -1636,7 +1962,8 @@ export default function PaystubGenerator() {
           }
 
           const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
-          if (filteredEvents.length === 0) {
+          // Employees in the uploaded payroll get a paystub even with no events (salaried staff).
+          if (filteredEvents.length === 0 && !getUploadedPayrollForUser(emp.matchedUserId)) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): no payable events in period`);
             continue;
@@ -1690,6 +2017,7 @@ export default function PaystubGenerator() {
             events: filteredEvents,
             sickLeave: sickLeaveByUserId[emp.matchedUserId] ?? null,
             matchedUserId: emp.matchedUserId,
+            ...uploadedPayrollPayloadFor(emp.matchedUserId),
             debug: debugMode,
           };
 
@@ -1728,6 +2056,15 @@ export default function PaystubGenerator() {
   };
 
   const handleSendEmails = async () => {
+    if (uploadedPayrollStillLoading()) return;
+    if (
+      !confirmUploadedPayrollUse(
+        emailCandidates.filter((c) => emailSelectedIds.has(c.key)).map((c) => ({ userId: c.userId, name: c.name })),
+        'Email the paystubs'
+      )
+    ) {
+      return;
+    }
     setEmailSending(true);
     const results: { name: string; success: boolean; error?: string }[] = [];
 
@@ -1796,6 +2133,7 @@ export default function PaystubGenerator() {
               events: filterEventsForUserIdWithHours(emp.matchedUserId!),
               sickLeave: sickLeaveByUserId[emp.matchedUserId!] ?? null,
               matchedUserId: emp.matchedUserId,
+              ...uploadedPayrollPayloadFor(emp.matchedUserId),
               debug: debugMode,
             };
           } else {
@@ -1823,6 +2161,7 @@ export default function PaystubGenerator() {
               events: filterEventsForUserIdWithHours(candidate.userId),
               sickLeave: sickLeaveByUserId[candidate.userId] ?? null,
               matchedUserId: candidate.userId,
+              ...uploadedPayrollPayloadFor(candidate.userId),
               debug: debugMode,
             };
           }
@@ -1884,6 +2223,7 @@ export default function PaystubGenerator() {
   };
 
   const handleCreateReport = async () => {
+    if (uploadedPayrollStillLoading()) return;
     setCreatingReport(true);
 
     try {
@@ -1905,7 +2245,13 @@ export default function PaystubGenerator() {
       }
 
       const filteredEvents = filterEventsForUserId(reportUserId);
-      if (!hasCommissionReportEventsForUserId(reportUserId)) {
+      // In the uploaded payroll in use: the report lists the uploaded commission lines,
+      // like the commission report page of the paystub PDF.
+      const uploadedForReport = getUploadedPayrollForUser(reportUserId);
+      if (uploadedForReport && !uploadedForReport.hasCommissionLines) {
+        throw new Error('The uploaded payroll has no commission lines for this employee, so there is no commission report.');
+      }
+      if (!uploadedForReport && !hasCommissionReportEventsForUserId(reportUserId)) {
         throw new Error('San Diego hourly employees do not have a commission report.');
       }
       const generatedAt = new Date().toISOString();
@@ -1948,6 +2294,12 @@ export default function PaystubGenerator() {
         ['Pay Period End', formData.payPeriodEnd],
         ['Pay Date', formData.payDate],
         ['State', formData.state],
+        [
+          'Payroll Source',
+          uploadedForReport
+            ? `Uploaded payroll${activeUploadedPayroll?.upload?.file_name ? ` (${activeUploadedPayroll.upload.file_name})` : ''}`
+            : 'System calculation',
+        ],
         ['Gross Pay', Number(grossPay.toFixed(2))],
         ['Total Deductions', appliedStatutoryDeductions],
         ['Misc Reimbursement', Number((parseFloat(formData.miscReimbursement) || 0).toFixed(2))],
@@ -1987,7 +2339,44 @@ export default function PaystubGenerator() {
         },
       ];
 
-      const commissionReportRows: CommissionReportRow[] =
+      // Rows from the uploaded commission lines, with the event's pool and head count when
+      // the line matches one of this employee's events in the period.
+      const uploadedReportRows: CommissionReportRow[] = uploadedForReport
+        ? uploadedForReport.paystubLines
+            .filter((line) => line.isCommission)
+            .map((line) => {
+              const event = matchUploadLineToEvent(line, filteredEvents);
+              const shares = event ? getDistributedSharesForEvent(event) : null;
+              const commissionPaidTotal = roundMoney(line.commission + line.variableIncentive);
+              return {
+                eventId: event ? String(event.id) : line.id,
+                showDate: line.eventDate ? formatCommissionReportDate(line.eventDate) : '',
+                eventName: line.eventName || (event ? (event.event_name ?? event.name ?? '').toString() : ''),
+                venueStadium: line.venue || (event?.venue ?? '').toString(),
+                stateCode: normalizeStateCode(line.state || event?.state || formData.state),
+                usesPeriodRate: false,
+                adjustedGross: event ? roundMoney(getAdjustedGrossForEvent(event)) : 0,
+                adjustedGrossPercent: shares ? shares.adjustedGrossPercent : 0,
+                grossCommission: shares ? shares.grossCommission : 0,
+                employeeCount: event && shares ? shares.employeeCount || getCommissionVendorCountForEvent(event) : '-',
+                commission: line.commission,
+                hoursWorked: roundHours(line.hours),
+                rateInEffect: line.hours > 0 ? roundMoney(line.commission / line.hours) : 0,
+                variableRate:
+                  line.hours > 0 && Math.abs(line.variableIncentive) >= 0.005
+                    ? roundMoney(line.variableIncentive / line.hours)
+                    : '',
+                commissionPaidTotal,
+                variableIncentive: Math.abs(line.variableIncentive) < 0.005 ? '' : line.variableIncentive,
+                tips: Math.abs(line.tips) < 0.005 ? '' : line.tips,
+                restPay: Math.abs(line.restBreak) < 0.005 ? '' : line.restBreak,
+                bonus: Math.abs(line.bonus) < 0.005 ? '' : line.bonus,
+                finalPay: roundMoney(commissionPaidTotal + line.tips + line.restBreak + line.bonus),
+              };
+            })
+        : [];
+
+      const commissionReportRows: CommissionReportRow[] = uploadedForReport ? uploadedReportRows :
         filteredEvents?.flatMap((event) => {
           const worker =
             (event.workers || []).find((candidate) => candidate.user_id === reportUserId) || null;
@@ -2679,6 +3068,32 @@ export default function PaystubGenerator() {
     }
   };
 
+  // Commission report availability: from the uploaded lines when the employee is in
+  // the upload in use, otherwise from the system events.
+  const reportUploadedPayroll = matchedUserId ? getUploadedPayrollForUser(matchedUserId) : null;
+  const commissionReportUnavailable =
+    !!matchedUserId &&
+    (reportUploadedPayroll ? !reportUploadedPayroll.hasCommissionLines : !hasCommissionReportEventsForUserId(matchedUserId));
+  const commissionReportUnavailableLabel = reportUploadedPayroll
+    ? 'No commission in uploaded payroll'
+    : 'No commission report for SD hourly employee';
+
+  const renderUploadedPayrollWarnings = (warnings: UploadedPayrollWarning[]) =>
+    warnings.length > 0 && (
+      <ul className="mt-2 space-y-1">
+        {warnings.map((warning) => (
+          <li
+            key={warning.code}
+            className={`text-xs rounded px-2 py-1 ${
+              warning.confirm ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-slate-50 border border-slate-200 text-slate-700'
+            }`}
+          >
+            {warning.message}
+          </li>
+        ))}
+      </ul>
+    );
+
   return (
     <>
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -2817,9 +3232,28 @@ export default function PaystubGenerator() {
                                 {e.matchedUserId ? (() => {
                                   const assignedCount = assignedEventsByUserId[e.matchedUserId] || 0;
                                   const st = periodStatsByUserId[e.matchedUserId];
-                                  const hours = st ? st.hours : 0;
-                                  const eligible = filterEventsForUserIdWithHours(e.matchedUserId).length > 0;
-                                  return eligible ? (
+                                  const uploadedForRow = getUploadedPayrollForUser(e.matchedUserId);
+                                  const hours = uploadedForRow ? uploadedForRow.totals.hours : st ? st.hours : 0;
+                                  const eligible = !!uploadedForRow || filterEventsForUserIdWithHours(e.matchedUserId).length > 0;
+                                  const needsLook = !!uploadedForRow && uploadedForRow.warnings.some((w) => w.confirm);
+                                  const sourceBadge = !activeUploadedPayroll ? null : uploadedForRow ? (
+                                    <span
+                                      title={uploadedForRow.warnings.map((w) => w.message).join('\n') || 'Paystub uses the uploaded payroll lines'}
+                                      className={`ml-1 px-2 py-0.5 rounded text-xs font-semibold ${
+                                        needsLook ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
+                                      }`}
+                                    >
+                                      {needsLook ? 'Uploaded, check' : 'Uploaded'}
+                                    </span>
+                                  ) : (
+                                    <span
+                                      title="Not in the uploaded payroll: the paystub uses the system calculation"
+                                      className="ml-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-xs font-semibold"
+                                    >
+                                      System
+                                    </span>
+                                  );
+                                  return (<>{eligible ? (
                                     <span className="px-2 py-0.5 rounded bg-green-100 text-green-800 text-xs font-semibold">
                                       Eligible ({hours.toFixed(2)}h)
                                     </span>
@@ -2831,7 +3265,7 @@ export default function PaystubGenerator() {
                                     <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
                                       Matched (no events)
                                     </span>
-                                  );
+                                  )}{sourceBadge}</>);
                                 })() : (
                                   <span className="px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 text-xs font-semibold">
                                     {e.matchError ? 'Unmatched' : 'Pending'}
@@ -2924,6 +3358,163 @@ export default function PaystubGenerator() {
               </div>
             </div>
 
+            {/* Payroll Source: uploaded payroll in use for this period, or the system calculation */}
+            {(formData.payPeriodStart && formData.payPeriodEnd) && (() => {
+              const upload = uploadedPayrollForPeriod?.upload || null;
+              const uploadRows = uploadedPayrollForPeriod?.rows || [];
+              const peopleInUpload = new Set(uploadRows.map((row) => row.user_id).filter(Boolean)).size;
+              const uploadGross = uploadRows.reduce((sum, row) => sum + Number(row.total_gross_pay || 0), 0);
+              const unlinkedRows = uploadRows.filter((row) => !row.user_id);
+              const unlinkedNames = Array.from(new Set(unlinkedRows.map((row) => payrollRowName(row) || row.email || '(no name)')));
+              const overlapping =
+                uploadedPayroll &&
+                uploadedPayroll.periodStart === formData.payPeriodStart &&
+                uploadedPayroll.periodEnd === formData.payPeriodEnd
+                  ? uploadedPayroll.overlapping
+                  : [];
+              const singleUserId = importedEmployees.length === 0 ? matchedUserId : null;
+              const singleUploaded = singleUserId ? getUploadedPayrollForUser(singleUserId) : null;
+              const batchMatched = importedEmployees.filter((emp) => !!emp.matchedUserId);
+              const batchFromUpload = batchMatched.filter((emp) => !!getUploadedPayrollForUser(emp.matchedUserId));
+              const batchNeedsLook = batchFromUpload.filter((emp) =>
+                (getUploadedPayrollForUser(emp.matchedUserId)?.warnings || []).some((w) => w.confirm)
+              );
+
+              return (
+                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <h2 className="text-lg font-semibold text-slate-900">Payroll Source</h2>
+                    <div className="flex items-center gap-3">
+                      {uploadedPayrollLoading && (
+                        <div className="inline-block h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void loadUploadedPayroll()}
+                        disabled={uploadedPayrollLoading}
+                        className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+                      >
+                        Check again
+                      </button>
+                    </div>
+                  </div>
+
+                  {uploadedPayrollError && (
+                    <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+                      {uploadedPayrollError}
+                    </div>
+                  )}
+
+                  {!upload && !uploadedPayrollLoading && !uploadedPayrollError && (
+                    <div className="text-sm text-slate-600">
+                      <p>No uploaded payroll is in use for these dates, so paystubs use the system calculation.</p>
+                      {overlapping.length > 0 && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          An uploaded payroll is in use for{' '}
+                          {overlapping.map((o) => `${o.period_start} to ${o.period_end}`).join(', ')}, which overlaps these dates.
+                          Paystubs only use an upload whose dates match the pay period exactly.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {!upload && uploadedPayrollLoading && (
+                    <p className="text-sm text-slate-500">Checking for uploaded payroll...</p>
+                  )}
+
+                  {upload && useSystemPayroll && (
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700">
+                      <p>
+                        An uploaded payroll is in use for this period on the HR dashboard
+                        {upload.file_name ? ` (${upload.file_name})` : ''}, but paystubs here use the system calculation.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setUseSystemPayroll(false)}
+                        className="mt-2 inline-flex items-center px-3 py-1.5 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700"
+                      >
+                        Use uploaded payroll
+                      </button>
+                    </div>
+                  )}
+
+                  {upload && activeUploadedPayroll && (
+                    <div className="space-y-3">
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900">
+                        <p className="font-semibold">Paystubs use the uploaded payroll</p>
+                        <p className="mt-1 text-xs text-blue-800">
+                          {upload.file_name || 'Uploaded payroll'} · {uploadRows.length} lines for {peopleInUpload} employee
+                          {peopleInUpload === 1 ? '' : 's'} · {formatUploadMoney(uploadGross)} · {upload.status === 'reviewed' ? 'reviewed' : 'not marked reviewed'}
+                        </p>
+                        <p className="mt-2 text-xs text-blue-800">
+                          Employees in the upload get their earnings from their uploaded lines. Employees not in it keep the
+                          system calculation. Reimbursements and mileage are added to net pay, not gross pay. YTD, deductions
+                          and sick leave work as usual.
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setUseSystemPayroll(true)}
+                            className="inline-flex items-center px-3 py-1.5 bg-white border border-blue-300 text-blue-800 rounded-md text-xs font-semibold hover:bg-blue-100"
+                          >
+                            Use system payroll instead
+                          </button>
+                          <Link href="/hr-dashboard" className="text-xs font-medium text-blue-700 underline hover:text-blue-900">
+                            Review or fix the upload on the HR dashboard
+                          </Link>
+                        </div>
+                      </div>
+
+                      {singleUserId && (
+                        <div className="text-sm">
+                          {singleUploaded ? (
+                            <>
+                              <p className="text-slate-800">
+                                <span className="font-semibold">{formData.employeeName || 'This employee'}</span>:{' '}
+                                {singleUploaded.lines.length} uploaded line{singleUploaded.lines.length === 1 ? '' : 's'}, gross pay{' '}
+                                {formatUploadMoney(singleUploaded.totals.taxableGross)}
+                                {singleUploaded.totals.reimbursement + singleUploaded.totals.mileage !== 0 &&
+                                  `, plus ${formatUploadMoney(singleUploaded.totals.reimbursement + singleUploaded.totals.mileage)} reimbursements`}
+                                .
+                              </p>
+                              {renderUploadedPayrollWarnings(singleUploaded.warnings)}
+                            </>
+                          ) : (
+                            <p className="text-slate-700">
+                              <span className="font-semibold">{formData.employeeName || 'This employee'}</span> is not in the uploaded
+                              payroll, so the paystub uses the system calculation.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {batchMatched.length > 0 && (
+                        <p className="text-sm text-slate-700">
+                          {batchFromUpload.length} of {batchMatched.length} matched employees are in the uploaded payroll; the rest
+                          use the system calculation.
+                          {batchNeedsLook.length > 0 && (
+                            <span className="text-amber-800">
+                              {' '}
+                              {batchNeedsLook.length} need{batchNeedsLook.length === 1 ? 's' : ''} a look (amber in the list above).
+                            </span>
+                          )}
+                        </p>
+                      )}
+
+                      {unlinkedRows.length > 0 && (
+                        <p className="text-xs text-slate-500">
+                          {unlinkedRows.length} uploaded line{unlinkedRows.length === 1 ? ' is' : 's are'} not linked to an employee
+                          account and {unlinkedRows.length === 1 ? 'is' : 'are'} only used when the email matches an employee on this
+                          period&apos;s events: {unlinkedNames.slice(0, 8).join(', ')}
+                          {unlinkedNames.length > 8 ? `, and ${unlinkedNames.length - 8} more` : ''}.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Events During Pay Period */}
             {(formData.payPeriodStart && formData.payPeriodEnd) && (
               <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
@@ -2933,6 +3524,12 @@ export default function PaystubGenerator() {
                     <div className="inline-block h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
                   )}
                 </div>
+                {activeUploadedPayroll && (
+                  <p className="-mt-2 mb-4 text-xs text-slate-500">
+                    These are the system&apos;s events and payment data. Paystubs for employees in the uploaded payroll use
+                    their uploaded lines instead.
+                  </p>
+                )}
 
                 {eventsError && (
                   <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
@@ -3454,11 +4051,7 @@ export default function PaystubGenerator() {
               {/* Create Report Button */}
               <button
                 onClick={handleCreateReport}
-                disabled={
-                  creatingReport ||
-                  !formData.employeeName ||
-                  (!!matchedUserId && !hasCommissionReportEventsForUserId(matchedUserId))
-                }
+                disabled={creatingReport || !formData.employeeName || commissionReportUnavailable}
                 className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-800 rounded-lg text-sm font-semibold shadow-sm hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
               >
                 {creatingReport ? (
@@ -3476,9 +4069,7 @@ export default function PaystubGenerator() {
                         d="M9 17v-6a2 2 0 012-2h2a2 2 0 012 2v6m-8 0h8m-8 0a2 2 0 01-2-2V7a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V15a2 2 0 01-2 2"
                       />
                     </svg>
-                    {!!matchedUserId && !hasCommissionReportEventsForUserId(matchedUserId)
-                      ? 'No commission report for SD hourly employee'
-                      : 'Download commission report'}
+                    {commissionReportUnavailable ? commissionReportUnavailableLabel : 'Download commission report'}
                   </>
                 )}
               </button>
