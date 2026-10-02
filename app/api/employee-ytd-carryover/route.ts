@@ -91,9 +91,12 @@ const NUMERIC_FIELDS: Record<string, string> = {
 
 function toNumberOrNull(value: unknown): number | null | Error {
   if (value === null || value === undefined || value === '') return null;
-  const num = typeof value === 'number' ? value : parseFloat(String(value).replace(/,/g, ''));
+  const raw = String(value).trim();
+  const isNegative = raw.startsWith('-') || /^\(.*\)$/.test(raw);
+  const cleaned = raw.replace(/[()$,\s]/g, '').replace(/^-/, '');
+  const num = typeof value === 'number' ? value : parseFloat(cleaned);
   if (Number.isNaN(num)) return new Error(`"${value}" is not a valid number`);
-  return num;
+  return isNegative ? -Math.abs(num) : num;
 }
 
 export async function GET(req: NextRequest) {

@@ -235,6 +235,52 @@ type EmployeeUploadedPayroll = {
 const formatUploadMoney = (n: number) =>
   `$${roundUploadMoney(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const YTD_OVERRIDE_KEYS = [
+  'federalIncomeYtd',
+  'socialSecurityYtd',
+  'medicareYtd',
+  'calSaversRothRetYtd',
+  'stateIncomeYtd',
+  'stateDIYtd',
+  'regularYtd',
+  'overtimeYtd',
+  'doubleTimeYtd',
+  'commissionYtd',
+  'variableIncentiveYtd',
+  'creditCardTipsYtd',
+  'restBreakPayYtd',
+  'travelPayYtd',
+  'bonusYtd',
+  'sickPayYtd',
+  'mealPremiumYtd',
+  'grossPayYtd',
+  'equipmentReimbYtd',
+  'mileageReimbYtd',
+  'miscReimbursementYtd',
+] as const;
+
+type YtdOverrideKey = typeof YTD_OVERRIDE_KEYS[number];
+type YtdOverrideSource = Partial<Record<YtdOverrideKey, string | number | null | undefined>>;
+
+const ytdOverridePayload = (source: YtdOverrideSource) =>
+  YTD_OVERRIDE_KEYS.reduce<Record<string, string | number>>((payload, key) => {
+    const value = source[key];
+    if (value !== null && value !== undefined && String(value).trim() !== '') {
+      payload[key] = value;
+    }
+    return payload;
+  }, {});
+
+const formatSickLeaveHHMM = (value: number) => {
+  const hours = Number(value || 0);
+  if (!Number.isFinite(hours)) return '00:00';
+  const sign = hours < 0 ? '-' : '';
+  const totalMinutes = Math.round(Math.abs(hours) * 60);
+  const hh = Math.floor(totalMinutes / 60);
+  const mm = totalMinutes % 60;
+  return `${sign}${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+};
+
 export default function PaystubGenerator() {
   const [formData, setFormData] = useState({
     // Employee Information
@@ -263,13 +309,31 @@ export default function PaystubGenerator() {
     stateIncome: '',
     stateDI: '',
     state: 'CA',
+    federalIncomeYtd: '',
+    socialSecurityYtd: '',
+    medicareYtd: '',
+    calSaversRothRetYtd: '',
+    stateIncomeYtd: '',
+    stateDIYtd: '',
+    regularYtd: '',
+    overtimeYtd: '',
+    doubleTimeYtd: '',
+    commissionYtd: '',
+    variableIncentiveYtd: '',
+    creditCardTipsYtd: '',
+    restBreakPayYtd: '',
+    travelPayYtd: '',
+    bonusYtd: '',
+    sickPayYtd: '',
+    mealPremiumYtd: '',
+    grossPayYtd: '',
+    equipmentReimbYtd: '',
+    mileageReimbYtd: '',
+    miscReimbursementYtd: '',
 
     // Other
     miscDeduction: '',
     miscReimbursement: '',
-    calSaversRothRetYtd: '',
-    grossPayYtd: '',
-    miscReimbursementYtd: '',
   });
 
   const [generating, setGenerating] = useState(false);
@@ -1205,6 +1269,7 @@ export default function PaystubGenerator() {
             user_id: row.user_id,
             source_sheet: row.source_sheet,
             extra: {
+              ...(row.extra || {}),
               [REGISTER_KEY]: row.extra?.[REGISTER_KEY] === true,
               ...(typeof row.extra?.[REGISTER_PAID_KEY] === 'number' ? { [REGISTER_PAID_KEY]: row.extra[REGISTER_PAID_KEY] } : {}),
             },
@@ -1515,9 +1580,7 @@ export default function PaystubGenerator() {
         stateIncome: formData.stateIncome,
         stateDI: formData.stateDI,
         state: stateForPayload,
-        ...(formData.calSaversRothRetYtd && { calSaversRothRetYtd: formData.calSaversRothRetYtd }),
-        ...(formData.grossPayYtd && { grossPayYtd: formData.grossPayYtd }),
-        ...(formData.miscReimbursementYtd && { miscReimbursementYtd: formData.miscReimbursementYtd }),
+        ...ytdOverridePayload(formData),
 
         // Other
         miscDeduction: formData.miscDeduction,
@@ -1692,27 +1755,7 @@ export default function PaystubGenerator() {
             state: stateForRow,
 
             // YTD overrides from Excel
-            ...(emp.grossPayYtd && { grossPayYtd: emp.grossPayYtd }),
-            ...(emp.federalIncomeYtd && { federalIncomeYtd: emp.federalIncomeYtd }),
-            ...(emp.socialSecurityYtd && { socialSecurityYtd: emp.socialSecurityYtd }),
-            ...(emp.medicareYtd && { medicareYtd: emp.medicareYtd }),
-            ...(emp.calSaversRothRetYtd && { calSaversRothRetYtd: emp.calSaversRothRetYtd }),
-            ...(emp.stateIncomeYtd && { stateIncomeYtd: emp.stateIncomeYtd }),
-            ...(emp.stateDIYtd && { stateDIYtd: emp.stateDIYtd }),
-            ...(emp.regularYtd && { regularYtd: emp.regularYtd }),
-            ...(emp.overtimeYtd && { overtimeYtd: emp.overtimeYtd }),
-            ...(emp.doubleTimeYtd && { doubleTimeYtd: emp.doubleTimeYtd }),
-            ...(emp.commissionYtd && { commissionYtd: emp.commissionYtd }),
-            ...(emp.variableIncentiveYtd && { variableIncentiveYtd: emp.variableIncentiveYtd }),
-            ...(emp.creditCardTipsYtd && { creditCardTipsYtd: emp.creditCardTipsYtd }),
-            ...(emp.restBreakPayYtd && { restBreakPayYtd: emp.restBreakPayYtd }),
-            ...(emp.travelPayYtd && { travelPayYtd: emp.travelPayYtd }),
-            ...(emp.bonusYtd && { bonusYtd: emp.bonusYtd }),
-            ...(emp.sickPayYtd && { sickPayYtd: emp.sickPayYtd }),
-            ...(emp.mealPremiumYtd && { mealPremiumYtd: emp.mealPremiumYtd }),
-            ...(emp.equipmentReimbYtd && { equipmentReimbYtd: emp.equipmentReimbYtd }),
-            ...(emp.mileageReimbYtd && { mileageReimbYtd: emp.mileageReimbYtd }),
-            ...(emp.miscReimbursementYtd && { miscReimbursementYtd: emp.miscReimbursementYtd }),
+            ...ytdOverridePayload(emp),
 
             // Other
             miscDeduction: emp.calSaversRothRet || emp.miscDeduction,
@@ -1889,9 +1932,7 @@ export default function PaystubGenerator() {
         stateIncome: formData.stateIncome,
         stateDI: formData.stateDI,
         state: stateForPayload,
-        ...(formData.calSaversRothRetYtd && { calSaversRothRetYtd: formData.calSaversRothRetYtd }),
-        ...(formData.grossPayYtd && { grossPayYtd: formData.grossPayYtd }),
-        ...(formData.miscReimbursementYtd && { miscReimbursementYtd: formData.miscReimbursementYtd }),
+        ...ytdOverridePayload(formData),
         miscDeduction: formData.miscDeduction,
         miscReimbursement: formData.miscReimbursement,
         mealPremium: parseFloat(getOverride(resolvedUserId).mealPremium) || 0,
@@ -2013,27 +2054,7 @@ export default function PaystubGenerator() {
             stateIncome: emp.stateIncome,
             stateDI: emp.stateDI,
             state: profileStateByUserId[emp.matchedUserId] || emp.state || formData.state,
-            ...(emp.grossPayYtd && { grossPayYtd: emp.grossPayYtd }),
-            ...(emp.federalIncomeYtd && { federalIncomeYtd: emp.federalIncomeYtd }),
-            ...(emp.socialSecurityYtd && { socialSecurityYtd: emp.socialSecurityYtd }),
-            ...(emp.medicareYtd && { medicareYtd: emp.medicareYtd }),
-            ...(emp.calSaversRothRetYtd && { calSaversRothRetYtd: emp.calSaversRothRetYtd }),
-            ...(emp.stateIncomeYtd && { stateIncomeYtd: emp.stateIncomeYtd }),
-            ...(emp.stateDIYtd && { stateDIYtd: emp.stateDIYtd }),
-            ...(emp.regularYtd && { regularYtd: emp.regularYtd }),
-            ...(emp.overtimeYtd && { overtimeYtd: emp.overtimeYtd }),
-            ...(emp.doubleTimeYtd && { doubleTimeYtd: emp.doubleTimeYtd }),
-            ...(emp.commissionYtd && { commissionYtd: emp.commissionYtd }),
-            ...(emp.variableIncentiveYtd && { variableIncentiveYtd: emp.variableIncentiveYtd }),
-            ...(emp.creditCardTipsYtd && { creditCardTipsYtd: emp.creditCardTipsYtd }),
-            ...(emp.restBreakPayYtd && { restBreakPayYtd: emp.restBreakPayYtd }),
-            ...(emp.travelPayYtd && { travelPayYtd: emp.travelPayYtd }),
-            ...(emp.bonusYtd && { bonusYtd: emp.bonusYtd }),
-            ...(emp.sickPayYtd && { sickPayYtd: emp.sickPayYtd }),
-            ...(emp.mealPremiumYtd && { mealPremiumYtd: emp.mealPremiumYtd }),
-            ...(emp.equipmentReimbYtd && { equipmentReimbYtd: emp.equipmentReimbYtd }),
-            ...(emp.mileageReimbYtd && { mileageReimbYtd: emp.mileageReimbYtd }),
-            ...(emp.miscReimbursementYtd && { miscReimbursementYtd: emp.miscReimbursementYtd }),
+            ...ytdOverridePayload(emp),
             miscDeduction: emp.calSaversRothRet || emp.miscDeduction,
             miscReimbursement: emp.miscReimbursement,
             mealPremium: parseFloat(getOverride(emp.matchedUserId).mealPremium) || 0,
@@ -2129,27 +2150,7 @@ export default function PaystubGenerator() {
               stateIncome: emp.stateIncome,
               stateDI: emp.stateDI,
               state: profileStateByUserId[emp.matchedUserId!] || emp.state || formData.state,
-              ...(emp.grossPayYtd && { grossPayYtd: emp.grossPayYtd }),
-              ...(emp.federalIncomeYtd && { federalIncomeYtd: emp.federalIncomeYtd }),
-              ...(emp.socialSecurityYtd && { socialSecurityYtd: emp.socialSecurityYtd }),
-              ...(emp.medicareYtd && { medicareYtd: emp.medicareYtd }),
-              ...(emp.calSaversRothRetYtd && { calSaversRothRetYtd: emp.calSaversRothRetYtd }),
-              ...(emp.stateIncomeYtd && { stateIncomeYtd: emp.stateIncomeYtd }),
-              ...(emp.stateDIYtd && { stateDIYtd: emp.stateDIYtd }),
-              ...(emp.regularYtd && { regularYtd: emp.regularYtd }),
-              ...(emp.overtimeYtd && { overtimeYtd: emp.overtimeYtd }),
-              ...(emp.doubleTimeYtd && { doubleTimeYtd: emp.doubleTimeYtd }),
-              ...(emp.commissionYtd && { commissionYtd: emp.commissionYtd }),
-              ...(emp.variableIncentiveYtd && { variableIncentiveYtd: emp.variableIncentiveYtd }),
-              ...(emp.creditCardTipsYtd && { creditCardTipsYtd: emp.creditCardTipsYtd }),
-              ...(emp.restBreakPayYtd && { restBreakPayYtd: emp.restBreakPayYtd }),
-              ...(emp.travelPayYtd && { travelPayYtd: emp.travelPayYtd }),
-              ...(emp.bonusYtd && { bonusYtd: emp.bonusYtd }),
-              ...(emp.sickPayYtd && { sickPayYtd: emp.sickPayYtd }),
-              ...(emp.mealPremiumYtd && { mealPremiumYtd: emp.mealPremiumYtd }),
-              ...(emp.equipmentReimbYtd && { equipmentReimbYtd: emp.equipmentReimbYtd }),
-              ...(emp.mileageReimbYtd && { mileageReimbYtd: emp.mileageReimbYtd }),
-              ...(emp.miscReimbursementYtd && { miscReimbursementYtd: emp.miscReimbursementYtd }),
+              ...ytdOverridePayload(emp),
               miscDeduction: emp.calSaversRothRet || emp.miscDeduction,
               miscReimbursement: emp.miscReimbursement,
               mealPremium: parseFloat(getOverride(emp.matchedUserId!).mealPremium) || 0,
@@ -2175,9 +2176,7 @@ export default function PaystubGenerator() {
               stateIncome: formData.stateIncome,
               stateDI: formData.stateDI,
               state: profileStateByUserId[candidate.userId] || formData.state,
-              ...(formData.calSaversRothRetYtd && { calSaversRothRetYtd: formData.calSaversRothRetYtd }),
-              ...(formData.grossPayYtd && { grossPayYtd: formData.grossPayYtd }),
-              ...(formData.miscReimbursementYtd && { miscReimbursementYtd: formData.miscReimbursementYtd }),
+              ...ytdOverridePayload(formData),
               miscDeduction: formData.miscDeduction,
               miscReimbursement: formData.miscReimbursement,
               mealPremium: parseFloat(getOverride(candidate.userId).mealPremium) || 0,
@@ -2586,6 +2585,9 @@ export default function PaystubGenerator() {
             {
               total_hours: sickLeave.total_hours,
               carry_over_hours: sickLeave.carry_over_hours,
+              year_to_date_hours:
+                sickLeave.year_to_date_hours ??
+                Math.max(0, sickLeave.accrued_hours - Number(sickLeave.carry_over_hours || 0)),
               accrued_hours: sickLeave.accrued_hours,
               balance_hours: sickLeave.balance_hours,
             },
@@ -2892,11 +2894,20 @@ export default function PaystubGenerator() {
         return '';
       };
 
+      const parseCurrencyNumber = (value: any) => {
+        const raw = String(value ?? '').trim();
+        if (!raw) return NaN;
+        const isNegative = raw.startsWith('-') || /^\(.*\)$/.test(raw);
+        const normalized = raw.replace(/[()$,\s]/g, '').replace(/^-/, '');
+        const num = parseFloat(normalized);
+        return Number.isFinite(num) ? (isNegative ? -num : num) : NaN;
+      };
+
       // Helper to get absolute value for deductions (handle negative values)
       const getAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
         const value = getValueByHeader(valuesRow, possibleNames);
         if (!value) return '';
-        const num = parseFloat(value);
+        const num = parseCurrencyNumber(value);
         return isNaN(num) ? value : String(Math.abs(num));
       };
 
@@ -3013,10 +3024,26 @@ export default function PaystubGenerator() {
           restBreakPayYtd: getAbsoluteValue(valuesRow, ['rest break pay ytd']),
           travelPayYtd: getAbsoluteValue(valuesRow, ['travel pay ytd']),
           bonusYtd: getAbsoluteValue(valuesRow, ['bonus ytd']),
-          sickPayYtd: getAbsoluteValue(valuesRow, ['sick pay ytd']),
-          mealPremiumYtd: getAbsoluteValue(valuesRow, ['meal premium ytd']),
-          grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd'])
-            || getAbsoluteValue(valuesRow, ['gross pay']),
+          sickPayYtd: getAbsoluteValue(valuesRow, ['sick pay ytd', 'sick ytd', 'sick pay year to date', 'sick year to date', 'ytd sick pay', 'ytd sick']),
+          mealPremiumYtd: getAbsoluteValue(valuesRow, [
+            'meal premium ytd',
+            'meal premium year to date',
+            'year to date meal premium',
+            'meal prem ytd',
+            'meal prem year to date',
+            'year to date meal prem',
+            'meal time premium ytd',
+            'meal time premium year to date',
+            'year to date meal time premium',
+            'meal time prem ytd',
+            'meal time prem year to date',
+            'year to date meal time prem',
+            'ytd meal premium',
+            'ytd meal prem',
+            'ytd meal time premium',
+            'ytd meal time prem',
+          ]),
+          grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd']),
           equipmentReimbYtd: getAbsoluteValue(valuesRow, ['equipment reimbursement ytd']),
           mileageReimbYtd: getAbsoluteValue(valuesRow, ['mileage reimbursement ytd']),
           miscReimbursementYtd: getAbsoluteValue(valuesRow, ['misc reimbursement ytd']),
@@ -3050,8 +3077,26 @@ export default function PaystubGenerator() {
           state: first.state || prev.state,
           miscDeduction: first.calSaversRothRet || first.miscDeduction || prev.miscDeduction,
           miscReimbursement: first.miscReimbursement || prev.miscReimbursement,
+          federalIncomeYtd: first.federalIncomeYtd || prev.federalIncomeYtd,
+          socialSecurityYtd: first.socialSecurityYtd || prev.socialSecurityYtd,
+          medicareYtd: first.medicareYtd || prev.medicareYtd,
           calSaversRothRetYtd: first.calSaversRothRetYtd || prev.calSaversRothRetYtd,
+          stateIncomeYtd: first.stateIncomeYtd || prev.stateIncomeYtd,
+          stateDIYtd: first.stateDIYtd || prev.stateDIYtd,
+          regularYtd: first.regularYtd || prev.regularYtd,
+          overtimeYtd: first.overtimeYtd || prev.overtimeYtd,
+          doubleTimeYtd: first.doubleTimeYtd || prev.doubleTimeYtd,
+          commissionYtd: first.commissionYtd || prev.commissionYtd,
+          variableIncentiveYtd: first.variableIncentiveYtd || prev.variableIncentiveYtd,
+          creditCardTipsYtd: first.creditCardTipsYtd || prev.creditCardTipsYtd,
+          restBreakPayYtd: first.restBreakPayYtd || prev.restBreakPayYtd,
+          travelPayYtd: first.travelPayYtd || prev.travelPayYtd,
+          bonusYtd: first.bonusYtd || prev.bonusYtd,
+          sickPayYtd: first.sickPayYtd || prev.sickPayYtd,
+          mealPremiumYtd: first.mealPremiumYtd || prev.mealPremiumYtd,
           grossPayYtd: first.grossPayYtd || prev.grossPayYtd,
+          equipmentReimbYtd: first.equipmentReimbYtd || prev.equipmentReimbYtd,
+          mileageReimbYtd: first.mileageReimbYtd || prev.mileageReimbYtd,
           miscReimbursementYtd: first.miscReimbursementYtd || prev.miscReimbursementYtd,
         }));
       }
@@ -3739,19 +3784,21 @@ export default function PaystubGenerator() {
                                           <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
                                             <div>
                                               <span className="text-slate-500">Hours Used:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.total_hours.toFixed(2)}</span>
+                                              <span className="font-medium text-slate-900">{formatSickLeaveHHMM(sickLeave.total_hours)}</span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Carry Over:</span>{' '}
-                                              <span className="font-medium text-slate-900">{Number(sickLeave.carry_over_hours || 0).toFixed(2)}</span>
+                                              <span className="font-medium text-slate-900">{formatSickLeaveHHMM(Number(sickLeave.carry_over_hours || 0))}</span>
                                             </div>
                                             <div>
-                                              <span className="text-slate-500">Hours Accrued:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.accrued_hours.toFixed(2)}</span>
+                                              <span className="text-slate-500">YTD Earned:</span>{' '}
+                                              <span className="font-medium text-slate-900">
+                                                {formatSickLeaveHHMM(sickLeave.year_to_date_hours ?? Math.max(0, sickLeave.accrued_hours - Number(sickLeave.carry_over_hours || 0)))}
+                                              </span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Balance:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.balance_hours.toFixed(2)}</span>
+                                              <span className="font-medium text-slate-900">{formatSickLeaveHHMM(sickLeave.balance_hours)}</span>
                                             </div>
                                           </div>
                                         ) : sickLeaveError ? (

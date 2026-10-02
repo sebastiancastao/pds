@@ -18,15 +18,13 @@ import {
   sanitizeUploadedPayrollLines,
   type PaystubUploadLine,
   type PaystubUploadTotals,
+  type UploadedPayrollLineInput,
 } from "@/lib/paystub-uploaded-payroll";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
-const CARRY_OVER_OVERRIDE_REASON_MARKER = "HR_CARRY_OVER_OVERRIDE";
-const YEAR_TO_DATE_OVERRIDE_REASON_MARKER = "HR_YEAR_TO_DATE_OVERRIDE";
-
 interface EventEarning {
   date: string;
   eventName: string;
@@ -53,6 +51,13 @@ interface SickLeaveSummary {
   year_to_date_days?: number;
   balance_hours: number;
   balance_days: number;
+  entries?: Array<{
+    start_date?: string | null;
+    approved_at?: string | null;
+    created_at?: string | null;
+    duration_hours?: number | string | null;
+    status?: string | null;
+  }>;
 }
 
 export async function POST(req: NextRequest) {
@@ -121,6 +126,7 @@ export async function POST(req: NextRequest) {
     } = body;
 
     let uploadedPaystub: { uploadId: string; lines: PaystubUploadLine[]; totals: PaystubUploadTotals } | null = null;
+    let uploadedPayrollLinesForYtd: UploadedPayrollLineInput[] = [];
     if (uploadedPayroll && typeof uploadedPayroll === "object") {
       const upStart = String((uploadedPayroll as any).periodStart || "").trim();
       const upEnd = String((uploadedPayroll as any).periodEnd || "").trim();
@@ -133,6 +139,7 @@ export async function POST(req: NextRequest) {
         );
       }
       const cleanLines = sanitizeUploadedPayrollLines((uploadedPayroll as any).lines);
+      uploadedPayrollLinesForYtd = cleanLines;
       if (cleanLines.length > 0) {
         uploadedPaystub = {
           uploadId: String((uploadedPayroll as any).uploadId || ""),
@@ -184,20 +191,15 @@ export async function POST(req: NextRequest) {
       sickLeave && typeof sickLeave === "object"
         ? (sickLeave as Partial<SickLeaveSummary>)
         : null;
-    let profileSickCarryOverHours = toFiniteNumber(sickLeaveSummary?.carry_over_hours);
     if (matchedUserId) {
       try {
         const { data: profile } = await supabaseAdmin
           .from("profiles")
-          .select("state, address, city, zip_code, sick_leave_carry_over_hours")
+          .select("state, address, city, zip_code")
           .eq("user_id", matchedUserId)
           .maybeSingle();
         const profileState = normalizeStateCode(decryptText((profile as any)?.state));
         if (profileState) paystubState = profileState;
-        const savedCarryOverHours = toFiniteNumber((profile as any)?.sick_leave_carry_over_hours);
-        if (savedCarryOverHours !== null) {
-          profileSickCarryOverHours = savedCarryOverHours;
-        }
         if (!displayAddress) {
           const profileAddress = buildProfileAddress(profile);
           if (profileAddress) displayAddress = profileAddress;
@@ -922,43 +924,7 @@ export async function POST(req: NextRequest) {
       return adjustedGrossFromSales;
     };
 
-    const isUsedSickLeaveRow = (row: any): boolean => {
-      const status = String(row?.status || "").toLowerCase().trim();
-      if (status !== "approved") return false;
-      const reasonUpper = String(row?.reason || "").toUpperCase();
-      if (
-        reasonUpper.includes(CARRY_OVER_OVERRIDE_REASON_MARKER) ||
-        reasonUpper.includes(YEAR_TO_DATE_OVERRIDE_REASON_MARKER)
-      ) {
-        return false;
-      }
-      return true;
-    };
-
-    const toDateSafe = (value: any): Date | null => {
-      if (!value) return null;
-      const d = new Date(String(value));
-      return Number.isNaN(d.getTime()) ? null : d;
-    };
-
-    const getAccrualOverrideFieldFromReason = (
-      reason: unknown
-    ): "carry_over" | "year_to_date" | null => {
-      const reasonUpper = String(reason || "").toUpperCase();
-      if (reasonUpper.includes(CARRY_OVER_OVERRIDE_REASON_MARKER)) return "carry_over";
-      if (reasonUpper.includes(YEAR_TO_DATE_OVERRIDE_REASON_MARKER)) return "year_to_date";
-      return null;
-    };
-
-    const normalizeSickStatus = (raw: unknown): "pending" | "approved" | "denied" => {
-      const normalized = String(raw || "pending").toLowerCase();
-      if (normalized === "approved") return "approved";
-      if (normalized === "denied") return "denied";
-      return "pending";
-    };
-
     const round2 = (n: number) => Number(n.toFixed(2));
-    const round3 = (n: number) => Number(n.toFixed(3));
     const capDeductionValuesToGross = (values: number[], grossPay: number): number[] => {
       let remainingGross = round2(Math.max(0, grossPay));
       return values.map((value) => {
@@ -998,192 +964,14 @@ export async function POST(req: NextRequest) {
       }
       return roundPayrollAmount(Number(commissionPay || 0) / hoursWorked);
     };
-
-    const computeSickAccrualSnapshotForPayPeriod = async (
-      userId: string,
-      periodStart: string,
-      periodEnd: string
-    ) => {
-      const PAGE_SIZE = 1000;
-      const periodStartDate = new Date(`${periodStart}T00:00:00.000Z`);
-      const periodEndDate = new Date(`${periodEnd}T23:59:59.999Z`);
-      const yearStartDate = new Date(Date.UTC(periodEndDate.getUTCFullYear(), 0, 1, 0, 0, 0, 0));
-
-      // Match HR sick-leaves logic: only count time_entries tied to events where the vendor is on event_teams.
-      const vendorEventIds = new Set<string>();
-      for (let from = 0; ; from += PAGE_SIZE) {
-        const { data: teams, error: teamsError } = await supabaseAdmin
-          .from("event_teams")
-          .select("event_id")
-          .eq("vendor_id", userId)
-          .range(from, from + PAGE_SIZE - 1);
-        if (teamsError) throw teamsError;
-        if (!teams || teams.length === 0) break;
-        for (const row of teams as Array<{ event_id: string | null }>) {
-          if (row?.event_id) vendorEventIds.add(row.event_id);
-        }
-        if (teams.length < PAGE_SIZE) break;
-      }
-
-      let workedHours = 0;
-      let workedHoursYtd = 0;
-      let workedHoursThisPeriod = 0;
-      if (vendorEventIds.size > 0) {
-        const entriesByUserEvent = new Map<string, Array<{ action: string; timestamp: string }>>();
-        for (let from = 0; ; from += PAGE_SIZE) {
-          const { data: timeRows, error: timeRowsError } = await supabaseAdmin
-            .from("time_entries")
-            .select("event_id, action, timestamp")
-            .eq("user_id", userId)
-            .in("action", ["clock_in", "clock_out"])
-            .order("timestamp", { ascending: true })
-            .range(from, from + PAGE_SIZE - 1);
-          if (timeRowsError) throw timeRowsError;
-          if (!timeRows || timeRows.length === 0) break;
-
-          for (const row of timeRows as Array<{ event_id: string | null; action: string | null; timestamp: string | null }>) {
-            if (!row?.event_id || !vendorEventIds.has(row.event_id)) continue;
-            if (!row?.action || !row?.timestamp) continue;
-            const action = String(row.action).toLowerCase();
-            if (action !== "clock_in" && action !== "clock_out") continue;
-            const key = `${userId}::${row.event_id}`;
-            const existing = entriesByUserEvent.get(key) ?? [];
-            existing.push({ action, timestamp: row.timestamp });
-            entriesByUserEvent.set(key, existing);
-          }
-
-          if (timeRows.length < PAGE_SIZE) break;
-        }
-
-        for (const entries of entriesByUserEvent.values()) {
-          entries.sort((a, b) => {
-            const aTime = new Date(a.timestamp).getTime();
-            const bTime = new Date(b.timestamp).getTime();
-            if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
-            return aTime - bTime;
-          });
-
-          let clockIn: string | null = null;
-          for (const row of entries) {
-            if (row.action === "clock_in") {
-              clockIn = row.timestamp;
-              continue;
-            }
-            if (row.action === "clock_out" && clockIn) {
-              const shiftHours = Math.max(
-                0,
-                (new Date(row.timestamp).getTime() - new Date(clockIn).getTime()) / (1000 * 60 * 60)
-              );
-              workedHours += shiftHours;
-              const clockOutAt = toDateSafe(row.timestamp);
-              if (clockOutAt && clockOutAt >= yearStartDate && clockOutAt <= periodEndDate) {
-                workedHoursYtd += shiftHours;
-              }
-              if (clockOutAt && clockOutAt >= periodStartDate && clockOutAt <= periodEndDate) {
-                workedHoursThisPeriod += shiftHours;
-              }
-              clockIn = null;
-            }
-          }
-        }
-      }
-
-      let sickHoursAllTime = 0;
-      let sickHoursYtd = 0;
-      let sickHoursBeforeYear = 0;
-      let sickHoursThisPeriod = 0;
-      let carryOverOverride: { hours: number; ts: number } | null = null;
-      let yearToDateOverride: { hours: number; ts: number } | null = null;
-
-      for (let from = 0; ; from += PAGE_SIZE) {
-        const { data: sickRows, error: sickRowsError } = await supabaseAdmin
-          .from("sick_leaves")
-          .select("duration_hours, status, start_date, approved_at, created_at, updated_at, reason")
-          .eq("user_id", userId)
-          .range(from, from + PAGE_SIZE - 1);
-        if (sickRowsError) throw sickRowsError;
-        if (!sickRows || sickRows.length === 0) break;
-
-        for (const row of sickRows as Array<{
-          duration_hours: number | string | null;
-          status: string | null;
-          start_date: string | null;
-          approved_at: string | null;
-          created_at: string | null;
-          updated_at: string | null;
-          reason: string | null;
-        }>) {
-          const overrideField = getAccrualOverrideFieldFromReason(row.reason);
-          if (overrideField) {
-            const overrideHours = Number(row.duration_hours || 0);
-            const ts =
-              toDateSafe(row.updated_at)?.getTime() ||
-              toDateSafe(row.created_at)?.getTime() ||
-              toDateSafe(row.approved_at)?.getTime() ||
-              toDateSafe(row.start_date)?.getTime() ||
-              0;
-            if (overrideField === "carry_over") {
-              if (!carryOverOverride || ts >= carryOverOverride.ts) {
-                carryOverOverride = { hours: round2(overrideHours), ts };
-              }
-            } else if (!yearToDateOverride || ts >= yearToDateOverride.ts) {
-              yearToDateOverride = { hours: round2(overrideHours), ts };
-            }
-            continue;
-          }
-
-          if (normalizeSickStatus(row.status) !== "approved") continue;
-          const duration = Number(row.duration_hours || 0);
-          if (!Number.isFinite(duration) || duration <= 0) continue;
-
-          sickHoursAllTime += duration;
-          const usedAt =
-            toDateSafe(row.start_date) ||
-            toDateSafe(row.approved_at) ||
-            toDateSafe(row.created_at);
-
-          if (!usedAt || usedAt < yearStartDate) {
-            sickHoursBeforeYear += duration;
-            continue;
-          }
-          if (usedAt <= periodEndDate) {
-            sickHoursYtd += duration;
-          }
-          if (usedAt >= periodStartDate && usedAt <= periodEndDate) {
-            sickHoursThisPeriod += duration;
-          }
-        }
-
-        if (sickRows.length < PAGE_SIZE) break;
-      }
-
-      const workedHoursRounded = round3(workedHours);
-      const workedHoursYtdRounded = round3(workedHoursYtd);
-      const workedHoursBeforeYear = round3(Math.max(0, workedHoursRounded - workedHoursYtdRounded));
-      const baseYearToDateHours = round2(workedHoursYtdRounded / 30);
-      const accruedHoursBeforeYear = round2(workedHoursBeforeYear / 30);
-      const baseCarryOverHours = round2(Math.max(0, accruedHoursBeforeYear - round2(sickHoursBeforeYear)));
-
-      const carryOverHours = round2(
-        Math.max(0, profileSickCarryOverHours ?? carryOverOverride?.hours ?? baseCarryOverHours)
-      );
-      const yearToDateHours = round2(Math.max(0, yearToDateOverride?.hours ?? baseYearToDateHours));
-      const takenYtdHours = round2(Math.max(0, sickHoursYtd));
-      const takenThisPeriodHours = round2(Math.max(0, sickHoursThisPeriod));
-      const balanceYtdHours = round2(Math.max(0, carryOverHours + yearToDateHours - takenYtdHours));
-      const accruedAllTimeHours = round2(carryOverHours + yearToDateHours);
-      const balanceAllTimeHours = round2(Math.max(0, accruedAllTimeHours - round2(sickHoursAllTime)));
-
-      return {
-        carryOverHours,
-        yearToDateHours,
-        takenYtdHours,
-        takenThisPeriodHours,
-        balanceYtdHours,
-        accruedAllTimeHours,
-        balanceAllTimeHours,
-        workedHoursThisPeriod: round3(workedHoursThisPeriod),
-      };
+    const formatSickLeaveHHMM = (value: number) => {
+      const hours = Number(value || 0);
+      if (!Number.isFinite(hours)) return "00:00";
+      const sign = hours < 0 ? "-" : "";
+      const totalMinutes = Math.round(Math.abs(hours) * 60);
+      const hh = Math.floor(totalMinutes / 60);
+      const mm = totalMinutes % 60;
+      return `${sign}${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
     };
 
     // AZ/NY/SD weekly OT needs prior weekly hours per worker per event (Mon..day before event)
@@ -1617,15 +1405,6 @@ export async function POST(req: NextRequest) {
           maximumFractionDigits: 2,
         });
       const money = (value: number) => `$${fmt(value)}`;
-      const formatHoursHHMM = (value: number) => {
-        const hours = Number(value || 0);
-        if (!Number.isFinite(hours)) return "00:00";
-        const sign = hours < 0 ? "-" : "";
-        const totalMinutes = Math.round(Math.abs(hours) * 60);
-        const hh = Math.floor(totalMinutes / 60);
-        const mm = totalMinutes % 60;
-        return `${sign}${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-      };
       const topY = (valueFromTop: number) => height - valueFromTop;
       const drawTopText = (text: string, x: number, yFromTop: number, options: any = {}) => {
         drawText(text, x, topY(yFromTop), options);
@@ -2260,18 +2039,16 @@ export async function POST(req: NextRequest) {
       // ADP carryover baseline: everything this employee earned/had withheld
       // BEFORE this system started tracking them (see /adp-ytd-import and
       // supabase/migrations/20260922000001_create_employee_ytd_carryover_table.sql).
-      // Added on top of ytdSnapshot (this system's own running total) below,
-      // so an employee migrated mid-year gets a correct YTD on their very
-      // first paystub here, with no need for a manual Excel override.
-      // An explicit per-request override (parseYtdOverride, from paystub-generator's
-      // own Excel import) still always wins over both of these.
+      // ADP-imported carryover stays available as a fallback, but values sent
+      // in this request (from the paystub-generator Excel import) are treated
+      // as the final YTD values for this paystub.
       let ytdCarryover: any = null;
       if (matchedUserId) {
         try {
           const { data } = await supabaseAdmin
             .from("employee_ytd_carryover")
             .select(
-              "gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, misc_reimbursement_ytd"
+              "as_of_date, gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, travel_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, misc_reimbursement_ytd"
             )
             .eq("user_id", matchedUserId)
             .maybeSingle();
@@ -2280,7 +2057,38 @@ export async function POST(req: NextRequest) {
           ytdCarryover = null;
         }
       }
-      const co = (field: string) => Number(ytdCarryover?.[field] || 0);
+
+      const ytdNumberOrNull = (value: any): number | null => {
+        if (value === null || value === undefined || value === "") return null;
+        const raw = String(value).trim();
+        const isNegative = raw.startsWith("-") || /^\(.*\)$/.test(raw);
+        const cleaned = raw.replace(/[()$,\s]/g, "").replace(/^-/, "");
+        const n = typeof value === "number" ? value : parseFloat(cleaned);
+        if (Number.isFinite(n) && isNegative) return -Math.abs(n);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const normalizeYtdHeader = (value: unknown) =>
+        String(value ?? "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+
+      const uploadedExtraYtd = (aliases: string[]): number | null => {
+        if (uploadedPayrollLinesForYtd.length === 0) return null;
+        const normalizedAliases = new Set(aliases.map(normalizeYtdHeader));
+        const values: number[] = [];
+        for (const line of uploadedPayrollLinesForYtd) {
+          const extra = line.extra && typeof line.extra === "object" ? line.extra : {};
+          for (const [key, rawValue] of Object.entries(extra)) {
+            if (!normalizedAliases.has(normalizeYtdHeader(key))) continue;
+            const value = ytdNumberOrNull(rawValue);
+            if (value !== null) values.push(value);
+          }
+        }
+        if (values.length === 0) return null;
+        return Math.max(...values.map((value) => Math.abs(value)));
+      };
 
       const toIsoDate = (value: any): string | null => {
         const str = (value || "").toString().trim();
@@ -2293,80 +2101,195 @@ export async function POST(req: NextRequest) {
 
       const payDateIso = toIsoDate(effectivePayDate);
       const snapshotDateIso = toIsoDate(ytdSnapshot?.pay_date);
-      const snapshotIncludesCurrent =
-        payDateIso && snapshotDateIso ? snapshotDateIso >= payDateIso : null;
+      const carryoverDateIso = toIsoDate(ytdCarryover?.as_of_date);
 
-      const runningYtd = (previous: any, current: number) => {
-        const prev = Number(previous || 0);
-        if (!Number.isFinite(prev) || prev <= 0) return current;
-        if (snapshotIncludesCurrent === true) return prev;
-        if (snapshotIncludesCurrent === false) return prev + current;
-        return Math.max(prev, current);
+      type PriorYtdSource = { amount: number; asOfDate: string | null; includesCurrent?: boolean };
+
+      const datedYtdSource = (
+        amount: number | null,
+        asOfDate: string | null,
+        includesCurrent = false
+      ): PriorYtdSource | null =>
+        amount === null ? null : { amount, asOfDate, includesCurrent };
+
+      const hasCarryoverRow = !!ytdCarryover;
+      const carryoverYtd = (field: string): PriorYtdSource | null => {
+        const value = ytdNumberOrNull(ytdCarryover?.[field]);
+        if (value !== null) return datedYtdSource(value, carryoverDateIso);
+        return hasCarryoverRow ? datedYtdSource(0, carryoverDateIso) : null;
       };
 
-      const parseYtdOverride = (val: any) => { const n = parseFloat(val); return Number.isFinite(n) && n > 0 ? n : null; };
-      const ytdRegularHours = runningYtd(ytdSnapshot?.regular_hours, totalRegHours);
-      const ytdOvertimeHours = runningYtd(ytdSnapshot?.overtime_hours, totalOtHours);
-      const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
-      const ytdRegularPay = parseYtdOverride(regularYtd) ?? round2(runningYtd((ytdSnapshot?.regular_earnings || 0) + co('regular_ytd'), totalRegularPayRounded));
-      const ytdOvertimePay = parseYtdOverride(overtimeYtd) ?? round2(runningYtd((ytdSnapshot?.overtime_earnings || 0) + co('overtime_ytd'), totalOvertimePayRounded));
-      const ytdDoubletimePay = parseYtdOverride(doubleTimeYtd) ?? round2(runningYtd((ytdSnapshot?.doubletime_earnings || 0) + co('doubletime_ytd'), totalDoubletimePayRounded));
+      const hasRequestYtd = (value: any) => ytdNumberOrNull(value) !== null;
+      const hasCarryoverYtd = (field: string) => ytdNumberOrNull(ytdCarryover?.[field]) !== null;
+      const uploadedMealPremiumYtd = uploadedExtraYtd([
+        'meal premium ytd',
+        'meal premium year to date',
+        'year to date meal premium',
+        'meal prem ytd',
+        'meal prem year to date',
+        'year to date meal prem',
+        'meal time premium ytd',
+        'meal time premium year to date',
+        'year to date meal time premium',
+        'meal time prem ytd',
+        'meal time prem year to date',
+        'year to date meal time prem',
+        'ytd meal premium',
+        'ytd meal prem',
+        'ytd meal time premium',
+        'ytd meal time prem',
+      ]);
+      const effectiveMealPremiumYtd = hasRequestYtd(mealPremiumYtd)
+        ? mealPremiumYtd
+        : uploadedMealPremiumYtd;
+      const requestYtdValues = [
+        regularYtd,
+        overtimeYtd,
+        doubleTimeYtd,
+        commissionYtd,
+        variableIncentiveYtd,
+        creditCardTipsYtd,
+        restBreakPayYtd,
+        travelPayYtd,
+        bonusYtd,
+        sickPayYtd,
+        mealPremiumYtd,
+        grossPayYtd,
+        federalIncomeYtd,
+        socialSecurityYtd,
+        medicareYtd,
+        stateIncomeYtd,
+        stateDIYtd,
+        calSaversRothRetYtd,
+        equipmentReimbYtd,
+        mileageReimbYtd,
+        miscReimbursementYtd,
+      ];
+      const hasAnyRequestYtd = requestYtdValues.some(hasRequestYtd);
+      const requestYtd = (value: any): PriorYtdSource | null =>
+        datedYtdSource(ytdNumberOrNull(value), payDateIso, true);
+
+      const priorYtd = (requestValue: any, snapshotValue: any, carryoverField: string): PriorYtdSource | null => {
+        const requested = requestYtd(requestValue);
+        if (requested || hasAnyRequestYtd) return requested;
+        return carryoverYtd(carryoverField) || datedYtdSource(ytdNumberOrNull(snapshotValue), snapshotDateIso);
+      };
+
+      const carryoverPriorYtd = (requestValue: any, carryoverField: string): PriorYtdSource | null =>
+        requestYtd(requestValue) || (hasAnyRequestYtd ? null : carryoverYtd(carryoverField));
+
+      const runningYtd = (prior: PriorYtdSource | null, current: number) => {
+        const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
+        if (!prior) return curr;
+        if (prior.includesCurrent) return prior.amount;
+        if (payDateIso && prior.asOfDate && prior.asOfDate >= payDateIso) return prior.amount;
+        return prior.amount + curr;
+      };
+
+      const ytdRegularHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.regular_hours), snapshotDateIso), totalRegHours);
+      const ytdOvertimeHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.overtime_hours), snapshotDateIso), totalOtHours);
+      const ytdDoubleTimeHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.doubletime_hours), snapshotDateIso), totalDtHours);
+      const ytdRegularPay = round2(runningYtd(priorYtd(regularYtd, ytdSnapshot?.regular_earnings, 'regular_ytd'), totalRegularPayRounded));
+      const ytdOvertimePay = round2(runningYtd(priorYtd(overtimeYtd, ytdSnapshot?.overtime_earnings, 'overtime_ytd'), totalOvertimePayRounded));
+      const ytdDoubletimePay = round2(runningYtd(priorYtd(doubleTimeYtd, ytdSnapshot?.doubletime_earnings, 'doubletime_ytd'), totalDoubletimePayRounded));
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
-      const ytdCommission = parseYtdOverride(commissionYtd) ?? round2(co('commission_ytd') + totalCommissionRounded);
-      const ytdVariableIncentive = parseYtdOverride(variableIncentiveYtd) ?? round2(co('variable_incentive_ytd') + totalVariableIncentiveRounded);
-      const ytdTips = parseYtdOverride(creditCardTipsYtd) ?? round2(co('credit_card_tips_ytd') + totalTipsRounded);
-      const ytdRestBreak = parseYtdOverride(restBreakPayYtd) ?? round2(co('rest_break_pay_ytd') + totalRestBreakRounded);
-      const ytdOther = parseYtdOverride(bonusYtd) ?? round2(co('bonus_ytd') + totalOtherRounded);
-      const ytdMealPremium = parseYtdOverride(mealPremiumYtd) ?? round2(co('meal_premium_ytd') + mealPremiumThisPeriod);
-      const ytdSick = parseYtdOverride(sickPayYtd) ?? round2(co('sick_pay_ytd') + sickThisPeriod);
-      const ytdTravel = parseYtdOverride(travelPayYtd) ?? travelPayThisPeriod;
-      const ytdGross = parseYtdOverride(grossPayYtd) ?? round2(runningYtd((ytdSnapshot?.ytd_gross || 0) + co('gross_pay_ytd'), grossPayThisPeriod));
-      const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.federal_income_ytd || 0) + co('federal_income_ytd'), federalIncomeAmt));
-      const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd((ytdSnapshot?.social_security_ytd || 0) + co('social_security_ytd'), socialSecurityAmt));
-      const ytdMedicare = parseYtdOverride(medicareYtd) ?? round2(runningYtd((ytdSnapshot?.medicare_ytd || 0) + co('medicare_ytd'), medicareAmt));
-      const ytdStateIncome = parseYtdOverride(stateIncomeYtd) ?? round2(runningYtd((ytdSnapshot?.ca_state_income_ytd || 0) + co('state_income_ytd'), stateIncomeAmt));
-      const ytdStateDI = parseYtdOverride(stateDIYtd) ?? round2(runningYtd((ytdSnapshot?.ca_state_di_ytd || 0) + co('state_di_ytd'), stateDIAmt));
-      const ytdVoluntaryDeduction = parseYtdOverride(calSaversRothRetYtd) ?? round2(runningYtd((ytdSnapshot?.misc_non_taxable_ytd || 0) + co('calsavers_roth_ret_ytd'), miscDeductionAmt));
+      const ytdCommission = round2(runningYtd(carryoverPriorYtd(commissionYtd, 'commission_ytd'), totalCommissionRounded));
+      const ytdVariableIncentive = round2(runningYtd(carryoverPriorYtd(variableIncentiveYtd, 'variable_incentive_ytd'), totalVariableIncentiveRounded));
+      const ytdTips = round2(runningYtd(carryoverPriorYtd(creditCardTipsYtd, 'credit_card_tips_ytd'), totalTipsRounded));
+      const ytdRestBreak = round2(runningYtd(carryoverPriorYtd(restBreakPayYtd, 'rest_break_pay_ytd'), totalRestBreakRounded));
+      const ytdOther = round2(runningYtd(carryoverPriorYtd(bonusYtd, 'bonus_ytd'), totalOtherRounded));
+      const ytdMealPremium = round2(runningYtd(carryoverPriorYtd(effectiveMealPremiumYtd, 'meal_premium_ytd'), mealPremiumThisPeriod));
+      const ytdSick = round2(runningYtd(carryoverPriorYtd(sickPayYtd, 'sick_pay_ytd'), sickThisPeriod));
+      const ytdTravel = round2(runningYtd(carryoverPriorYtd(travelPayYtd, 'travel_pay_ytd'), travelPayThisPeriod));
+      const hasRequestEarningsYtd = [
+        regularYtd,
+        overtimeYtd,
+        doubleTimeYtd,
+        commissionYtd,
+        variableIncentiveYtd,
+        creditCardTipsYtd,
+        restBreakPayYtd,
+        travelPayYtd,
+        bonusYtd,
+        sickPayYtd,
+        mealPremiumYtd,
+      ].some(hasRequestYtd);
+      const hasCarryoverEarningsYtd = [
+        'regular_ytd',
+        'overtime_ytd',
+        'doubletime_ytd',
+        'commission_ytd',
+        'variable_incentive_ytd',
+        'credit_card_tips_ytd',
+        'rest_break_pay_ytd',
+        'travel_pay_ytd',
+        'bonus_ytd',
+        'sick_pay_ytd',
+        'meal_premium_ytd',
+      ].some(hasCarryoverYtd);
+      const ytdGrossFromPrior = round2(runningYtd(priorYtd(grossPayYtd, ytdSnapshot?.ytd_gross, 'gross_pay_ytd'), grossPayThisPeriod));
+      const ytdGrossFromEarnings = round2(
+        ytdRegularPay +
+        ytdOvertimePay +
+        ytdDoubletimePay +
+        ytdCommission +
+        ytdVariableIncentive +
+        ytdTips +
+        ytdRestBreak +
+        ytdOther +
+        ytdTravel +
+        ytdSick +
+        ytdMealPremium
+      );
+      let ytdGross = ytdGrossFromPrior;
+      if (!hasRequestYtd(grossPayYtd) && hasRequestEarningsYtd) {
+        ytdGross = ytdGrossFromEarnings;
+      } else if (
+        !hasRequestYtd(grossPayYtd) &&
+        !hasAnyRequestYtd &&
+        !hasCarryoverYtd('gross_pay_ytd') &&
+        hasCarryoverEarningsYtd
+      ) {
+        ytdGross = ytdGrossFromEarnings;
+      }
+      const ytdFederalIncome = round2(runningYtd(priorYtd(federalIncomeYtd, ytdSnapshot?.federal_income_ytd, 'federal_income_ytd'), federalIncomeAmt));
+      const ytdSocialSecurity = round2(runningYtd(priorYtd(socialSecurityYtd, ytdSnapshot?.social_security_ytd, 'social_security_ytd'), socialSecurityAmt));
+      const ytdMedicare = round2(runningYtd(priorYtd(medicareYtd, ytdSnapshot?.medicare_ytd, 'medicare_ytd'), medicareAmt));
+      const ytdStateIncome = round2(runningYtd(priorYtd(stateIncomeYtd, ytdSnapshot?.ca_state_income_ytd, 'state_income_ytd'), stateIncomeAmt));
+      const ytdStateDI = round2(runningYtd(priorYtd(stateDIYtd, ytdSnapshot?.ca_state_di_ytd, 'state_di_ytd'), stateDIAmt));
+      const ytdVoluntaryDeduction = round2(runningYtd(priorYtd(calSaversRothRetYtd, ytdSnapshot?.misc_non_taxable_ytd, 'calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
-      const ytdEquipmentReimb = parseYtdOverride(equipmentReimbYtd) ?? round2(co('equipment_reimb_ytd') + adjustmentReimbursementRounded);
+      const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd'), adjustmentReimbursementRounded));
       // Note: mileage reimbursement YTD is intentionally not itemized on the employee-facing
       // pay sheet, so no display variable is derived here (see mileageRowY removal below).
-      const ytdMiscReimbursement = parseYtdOverride(miscReimbursementYtd) ?? round2(co('misc_reimbursement_ytd') + reimbursement);
+      const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), reimbursement));
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
-      let sickAccruedThisPeriod =
+      const sickAccruedThisPeriod =
         totalHoursWorked > 0 ? totalHoursWorked / SICK_ACCRUAL_RATE : 0;
 
-      // Sick leave breakdown for this pay period and YTD
-      let sickTakenThisPeriod = 0;
-      let sickTakenYtdFromJan = toFiniteNumber(sickLeaveSummary?.total_hours) ?? 0; // fallback if DB query fails
-      let sickCarryOverYtd =
-        profileSickCarryOverHours ?? toFiniteNumber(sickLeaveSummary?.carry_over_hours) ?? 0;
-      let sickAccruedYtd = toFiniteNumber(sickLeaveSummary?.year_to_date_hours) ?? 0; // fallback if DB query fails
-      let sickBalanceYtd = toFiniteNumber(sickLeaveSummary?.balance_hours) ?? 0; // fallback if DB query fails
-
-      if (matchedUserId && (effectivePeriodStart || effectivePeriodEnd)) {
-        try {
-          const periodEnd = effectivePeriodEnd || new Date().toISOString().slice(0, 10);
-          const periodYear = periodEnd.substring(0, 4);
-          const yearStart = periodYear ? `${periodYear}-01-01` : periodEnd;
-          const periodStart = effectivePeriodStart || yearStart || periodEnd;
-
-          const sickSnapshot = await computeSickAccrualSnapshotForPayPeriod(
-            matchedUserId,
-            periodStart,
-            periodEnd
-          );
-          sickTakenThisPeriod = sickSnapshot.takenThisPeriodHours;
-          sickTakenYtdFromJan = sickSnapshot.takenYtdHours;
-          sickCarryOverYtd = sickSnapshot.carryOverHours;
-          sickAccruedYtd = sickSnapshot.yearToDateHours;
-          sickBalanceYtd = sickSnapshot.balanceYtdHours;
-          sickAccruedThisPeriod = round2(sickSnapshot.workedHoursThisPeriod / SICK_ACCRUAL_RATE);
-        } catch {
-          // Non-fatal: keep fallback values
-        }
-      }
+      const sickSummaryValue = (value: unknown, fallback = 0) => toFiniteNumber(value) ?? fallback;
+      const sickCarryOverYtd = sickSummaryValue(sickLeaveSummary?.carry_over_hours);
+      const sickAccruedYtd =
+        toFiniteNumber(sickLeaveSummary?.year_to_date_hours) ??
+        Math.max(0, sickSummaryValue(sickLeaveSummary?.accrued_hours) - sickCarryOverYtd);
+      const sickTakenYtdFromJan = sickSummaryValue(sickLeaveSummary?.total_hours);
+      const sickBalanceYtd = sickSummaryValue(sickLeaveSummary?.balance_hours);
+      const periodStartIso = toIsoDate(effectivePeriodStart);
+      const periodEndIso = toIsoDate(effectivePeriodEnd);
+      const sickTakenThisPeriod = round2(
+        (Array.isArray(sickLeaveSummary?.entries) ? sickLeaveSummary.entries : []).reduce((sum, entry) => {
+          if (String(entry?.status || "").toLowerCase() !== "approved") return sum;
+          const entryDate =
+            toIsoDate(entry?.start_date) ||
+            toIsoDate(entry?.approved_at) ||
+            toIsoDate(entry?.created_at);
+          if (!entryDate) return sum;
+          if (periodStartIso && entryDate < periodStartIso) return sum;
+          if (periodEndIso && entryDate > periodEndIso) return sum;
+          return sum + Math.max(0, Number(entry?.duration_hours || 0));
+        }, 0)
+      );
 
       const black = rgb(0, 0, 0);
       const gray = rgb(0.45, 0.45, 0.45);
@@ -2606,13 +2529,13 @@ export async function POST(req: NextRequest) {
       drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
       drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
       drawTopText("- Balance", 358.2, 237.0, { size: 8 });
-      drawTopText(formatHoursHHMM(0), 492.9, 214.9, { size: 8 });
-      drawTopText(formatHoursHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
-      drawTopText(formatHoursHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
-      drawTopText(formatHoursHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
-      drawTopText(formatHoursHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
-      drawTopText(formatHoursHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
-      drawTopText(formatHoursHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(0), 492.9, 214.9, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
+      drawTopText(formatSickLeaveHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
 
       drawTopText("Deposits", 353.1, 251.4, { size: 8, bold: true });
       drawTopText("account number", 353, 259.1, { size: 8 });
@@ -3248,13 +3171,26 @@ export async function POST(req: NextRequest) {
       yPosition -= 12;
     });
 
+    const sickLeaveYtdEarned = sickLeave
+      ? Number(
+          (
+            toFiniteNumber((sickLeave as any)?.year_to_date_hours) ??
+            Math.max(
+              0,
+              Number((sickLeave as any)?.accrued_hours || 0) -
+                Number((sickLeave as any)?.carry_over_hours || 0)
+            )
+          ).toFixed(2)
+        )
+      : 0;
+
     const sickLeaveDisplayY = yPosition +60;
     if (sickLeave) {
       drawText("Sick Leave Summary", 360, sickLeaveDisplayY + 12, { bold: true, size: 9 });
-      drawText(`Hours Used: ${sickLeave.total_hours.toFixed(2)}`, 360, sickLeaveDisplayY, { size: 8 });
-      drawText(`Carry Over: ${Number(sickLeave.carry_over_hours || 0).toFixed(2)}`, 360, sickLeaveDisplayY - 12, { size: 8 });
-      drawText(`Hours Accrued: ${sickLeave.accrued_hours.toFixed(2)}`, 360, sickLeaveDisplayY - 24, { size: 8 });
-      drawText(`Balance: ${sickLeave.balance_hours.toFixed(2)}`, 360, sickLeaveDisplayY - 36, { size: 8 });
+      drawText(`Hours Used: ${formatSickLeaveHHMM(sickLeave.total_hours)}`, 360, sickLeaveDisplayY, { size: 8 });
+      drawText(`Carry Over: ${formatSickLeaveHHMM(Number(sickLeave.carry_over_hours || 0))}`, 360, sickLeaveDisplayY - 12, { size: 8 });
+      drawText(`YTD Earned: ${formatSickLeaveHHMM(sickLeaveYtdEarned)}`, 360, sickLeaveDisplayY - 24, { size: 8 });
+      drawText(`Balance: ${formatSickLeaveHHMM(sickLeave.balance_hours)}`, 360, sickLeaveDisplayY - 36, { size: 8 });
     }
 
     // Reimbursement
@@ -3284,11 +3220,11 @@ export async function POST(req: NextRequest) {
       yPosition -= 20;
       drawText("Sick Leave Summary", 50, yPosition, { bold: true, size: 10 });
       yPosition -= 12;
-      drawText(`Hours Used: ${sickLeave.total_hours.toFixed(2)}`, 50, yPosition, { size: 9 });
-      drawText(`Carry Over: ${Number(sickLeave.carry_over_hours || 0).toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`Hours Used: ${formatSickLeaveHHMM(sickLeave.total_hours)}`, 50, yPosition, { size: 9 });
+      drawText(`Carry Over: ${formatSickLeaveHHMM(Number(sickLeave.carry_over_hours || 0))}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
-      drawText(`Hours Accrued: ${sickLeave.accrued_hours.toFixed(2)}`, 50, yPosition, { size: 9 });
-      drawText(`Balance: ${sickLeave.balance_hours.toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`YTD Earned: ${formatSickLeaveHHMM(sickLeaveYtdEarned)}`, 50, yPosition, { size: 9 });
+      drawText(`Balance: ${formatSickLeaveHHMM(sickLeave.balance_hours)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
 

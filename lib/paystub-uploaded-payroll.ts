@@ -33,6 +33,7 @@ import {
   payrollNameKey,
   payrollRowName,
   roundMoney,
+  sanitizePayrollExtra,
   sanitizePayrollFields,
   type PayrollUploadFields,
 } from "./payroll-upload";
@@ -166,13 +167,14 @@ export function sanitizeUploadedPayrollLines(input: unknown): UploadedPayrollLin
     const body = raw as Record<string, unknown>;
     const cleaned = sanitizePayrollFields(body);
     if ("error" in cleaned) return;
-    const extra = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra) ? (body.extra as Record<string, unknown>) : {};
+    const extra = sanitizePayrollExtra(body.extra);
     out.push({
       ...cleaned.fields,
       id: typeof body.id === "string" ? body.id.slice(0, 64) : `line-${i + 1}`,
       user_id: typeof body.user_id === "string" ? body.user_id : null,
       source_sheet: typeof body.source_sheet === "string" ? body.source_sheet.slice(0, 120) : null,
       extra: {
+        ...extra,
         [REGISTER_KEY]: extra[REGISTER_KEY] === true,
         ...(typeof extra[REGISTER_PAID_KEY] === "number" ? { [REGISTER_PAID_KEY]: extra[REGISTER_PAID_KEY] } : {}),
       },

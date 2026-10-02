@@ -7,10 +7,8 @@
 -- than accumulating duplicate rows.
 -- Accessed only through service-role API routes (RLS on, no policies); the
 -- API route itself checks the caller's role (exec/admin/hr/hr_admin).
--- Not yet read by /paystub-generator, which still gets its YTD figures from
--- its own "Import from Excel" upload or manual entry for each pay run. This
--- table is the durable source an admin maintains here and exports from, in
--- the paystub-generator import template's exact column format.
+-- Read by /paystub-generator as a durable fallback when the current paystub
+-- run does not provide YTD values from its Excel import.
 
 create table if not exists public.employee_ytd_carryover (
   id uuid primary key default gen_random_uuid(),

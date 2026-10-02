@@ -168,8 +168,8 @@ EXTRACTION RULES:
     - "Rest Break Pay" or "Rest Pay": last two → restBreakPay.thisPeriod / yearToDate
     - "Travel Pay": last two → travelPay.thisPeriod / yearToDate
     - "Bonus": last two → bonus.thisPeriod / yearToDate
-    - "Sick Pay": last two → sickPay.thisPeriod / yearToDate
-    - "Meal Premium": last two → mealPremium.thisPeriod / yearToDate
+    - "Sick Pay" / "Sick": last two → sickPay.thisPeriod / yearToDate
+    - "Meal Premium" / "Meal Time Premium" / "Meal Prem" / "Meal Break Premium" / "Meal Period Premium": last two → mealPremium.thisPeriod / yearToDate
 12. **Net Pay Adjustments** - Each row has exactly two amounts (thisPeriod and yearToDate):
     - "Equipment Reimbursement" / "Equipment Reimb" / "Misc reimburse Equipment" / "Misc reimbursement Equipment" / "Equip Reimb": → equipmentReimbursement.thisPeriod / yearToDate
     - "Mileage Reimbursement" / "Mileage Reimb": → mileageReimbursement.thisPeriod / yearToDate

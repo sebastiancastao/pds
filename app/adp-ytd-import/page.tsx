@@ -125,8 +125,29 @@ const FIELD_DEFS: { key: FieldKey; label: string; aliases: string[] }[] = [
   { key: 'restBreakPayYtd', label: 'Rest Break Pay', aliases: ['rest break pay ytd', 'ytd rest break pay'] },
   { key: 'travelPayYtd', label: 'Travel Pay', aliases: ['travel pay ytd', 'ytd travel pay'] },
   { key: 'bonusYtd', label: 'Bonus', aliases: ['bonus ytd', 'ytd bonus'] },
-  { key: 'sickPayYtd', label: 'Sick Pay', aliases: ['sick pay ytd', 'ytd sick pay'] },
-  { key: 'mealPremiumYtd', label: 'Meal Premium', aliases: ['meal premium ytd', 'ytd meal premium'] },
+  { key: 'sickPayYtd', label: 'Sick Pay', aliases: ['sick pay ytd', 'sick ytd', 'sick pay year to date', 'sick year to date', 'ytd sick pay', 'ytd sick'] },
+  {
+    key: 'mealPremiumYtd',
+    label: 'Meal Premium',
+    aliases: [
+      'meal premium ytd',
+      'meal premium year to date',
+      'year to date meal premium',
+      'meal prem ytd',
+      'meal prem year to date',
+      'year to date meal prem',
+      'meal time premium ytd',
+      'meal time premium year to date',
+      'year to date meal time premium',
+      'meal time prem ytd',
+      'meal time prem year to date',
+      'year to date meal time prem',
+      'ytd meal premium',
+      'ytd meal prem',
+      'ytd meal time premium',
+      'ytd meal time prem',
+    ],
+  },
   { key: 'grossPayYtd', label: 'Gross Pay', aliases: ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd'] },
   { key: 'equipmentReimbYtd', label: 'Equipment Reimb.', aliases: ['equipment reimbursement ytd', 'ytd equipment reimbursement'] },
   { key: 'mileageReimbYtd', label: 'Mileage Reimb.', aliases: ['mileage reimbursement ytd', 'ytd mileage reimbursement'] },
@@ -419,10 +440,18 @@ async function readSpreadsheetFile(file: File): Promise<Row[]> {
     if (typeof val === 'number' && val === 0) return '';
     return String(val).trim();
   };
+  const parseCurrencyNumber = (value: any) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return NaN;
+    const isNegative = raw.startsWith('-') || /^\(.*\)$/.test(raw);
+    const normalized = raw.replace(/[()$,\s]/g, '').replace(/^-/, '');
+    const n = parseFloat(normalized);
+    return Number.isFinite(n) ? (isNegative ? -n : n) : NaN;
+  };
   const getAbsolute = (valuesRow: any[], possibleNames: string[]): string => {
     const v = getValue(valuesRow, possibleNames);
     if (!v) return '';
-    const n = parseFloat(v.replace(/,/g, ''));
+    const n = parseCurrencyNumber(v);
     return Number.isNaN(n) ? v : String(Math.abs(n));
   };
   const formatDate = (value: any): string => {

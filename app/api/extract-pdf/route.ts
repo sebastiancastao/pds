@@ -20,6 +20,62 @@ function findPdfHeaderOffset(bytes: Uint8Array) {
   return -1;
 }
 
+async function extractPdfJsPageTexts(pdfBytes: Uint8Array) {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(pdfBytes),
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    disableFontFace: true,
+  });
+  const doc = await loadingTask.promise;
+  const pages: Array<{ pageNumber: number; text: string; width: number; height: number }> = [];
+
+  for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+    const page = await doc.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+    const rows: Array<{ y: number; items: Array<{ x: number; text: string }> }> = [];
+
+    for (const item of content.items as Array<any>) {
+      const text = String(item?.str ?? '').trim();
+      if (!text) continue;
+      const transform = Array.isArray(item?.transform) ? item.transform : [];
+      const x = Number(transform[4] ?? 0);
+      const y = Number(transform[5] ?? 0);
+      let row = rows.find((candidate) => Math.abs(candidate.y - y) <= 1.5);
+      if (!row) {
+        row = { y, items: [] };
+        rows.push(row);
+      }
+      row.items.push({ x, text });
+      row.y = (row.y * (row.items.length - 1) + y) / row.items.length;
+    }
+
+    const lines = rows
+      .sort((a, b) => b.y - a.y)
+      .map((row) =>
+        row.items
+          .sort((a, b) => a.x - b.x)
+          .map((item) => item.text)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      )
+      .filter(Boolean);
+
+    pages.push({
+      pageNumber,
+      text: `\n=== Page ${pageNumber} (${viewport.width.toFixed(0)}x${viewport.height.toFixed(0)}) ===\n${lines.join('\n')}`,
+      width: viewport.width,
+      height: viewport.height,
+    });
+  }
+
+  await loadingTask.destroy();
+  return pages;
+}
+
 type PayrollData = Record<string, any>;
 
 type ExtractResponse = {
@@ -854,25 +910,36 @@ function extractPayrollData(text: string) {
 
   // Split text into lines, find the first line matching the label, then take the last 1-4 numeric tokens.
   const textLines = text.split(/\r?\n|\r/);
+  const amountTokenPattern = /\(?-?\$?\s*\d[\d,.]*\)?/g;
+  const amountRunPattern = /^((?:\s*\(?-?\$?\s*\d[\d,.]*\)?){1,4})/;
+  const parseAmountToken = (token: string): number | null => {
+    const raw = token.trim();
+    const isNegative = raw.startsWith('-') || /^\(.*\)$/.test(raw);
+    const cleaned = raw.replace(/[()$,\s]/g, '').replace(/^-/, '');
+    const n = parseFloat(cleaned);
+    if (!Number.isFinite(n)) return null;
+    return isNegative ? -Math.abs(n) : n;
+  };
+  const numbersFromAmountRun = (run: string) =>
+    (run.match(amountTokenPattern) || [])
+      .map(parseAmountToken)
+      .filter((n): n is number => n !== null && n >= 0);
+
   const extractEarningsLine = (labelPattern: RegExp): { thisPeriod: number; yearToDate: number } | null => {
     for (const line of textLines) {
       if (!labelPattern.test(line)) continue;
       const afterLabel = line.replace(new RegExp('^.*?' + labelPattern.source, 'i'), '');
-      const runMatch = afterLabel.match(/^((?:\s*\d[\d,.]*){1,4})/);
+      const runMatch = afterLabel.match(amountRunPattern);
       if (!runMatch) continue;
-      const nums = runMatch[1].trim().split(/\s+/)
-        .map((n: string) => parseFloat(n.replace(/,/g, '')))
-        .filter((n: number) => !isNaN(n) && n >= 0);
+      const nums = numbersFromAmountRun(runMatch[1]);
       if (nums.length >= 2) return { thisPeriod: nums[nums.length - 2], yearToDate: nums[nums.length - 1] };
       if (nums.length === 1) return { thisPeriod: 0, yearToDate: nums[0] };
     }
     // Fallback: scan full text (handles no-newline pdf-parse output)
-    const pattern = new RegExp(labelPattern.source + '((?:\\s*\\d[\\d,.]*){1,4})', labelPattern.flags);
+    const pattern = new RegExp(labelPattern.source + '((?:\\s*\\(?-?\\$?\\s*\\d[\\d,.]*\\)?){1,4})', labelPattern.flags);
     const match = text.match(pattern);
     if (!match || !match[1]) return null;
-    const nums = match[1].trim().split(/\s+/)
-      .map((n: string) => parseFloat(n.replace(/,/g, '')))
-      .filter((n: number) => !isNaN(n) && n >= 0);
+    const nums = numbersFromAmountRun(match[1]);
     if (nums.length >= 2) return { thisPeriod: nums[nums.length - 2], yearToDate: nums[nums.length - 1] };
     if (nums.length === 1) return { thisPeriod: 0, yearToDate: nums[0] };
     return null;
@@ -906,10 +973,10 @@ function extractPayrollData(text: string) {
   const bonusResult = extractEarningsLine(/Bonus\b/i);
   if (bonusResult) payrollData.earnings.bonus = bonusResult;
 
-  const sickResult = extractEarningsLine(/Sick\s+Pay\b/i);
+  const sickResult = extractEarningsLine(/Sick(?:\s+Pay)?\b/i);
   if (sickResult) payrollData.earnings.sickPay = sickResult;
 
-  const mealResult = extractEarningsLine(/Meal\s+Premium\b/i);
+  const mealResult = extractEarningsLine(/Meal\s+(?:Time\s+|Break\s+|Period\s+)?(?:Premium|Prem)(?:\s+Pay)?\b/i);
   if (mealResult) payrollData.earnings.mealPremium = mealResult;
 
   // Extract hourly rate
@@ -924,6 +991,17 @@ function extractPayrollData(text: string) {
   const ytdGrossMatch = text.match(ytdGrossPattern);
   if (ytdGrossMatch) {
     payrollData.employeeInfo.ytdGross = parseFloat(ytdGrossMatch[1].replace(/,/g, ''));
+  }
+
+  const grossPayLine = lines.find((line) => /\bGross\s+Pay\b/i.test(line));
+  if (grossPayLine) {
+    const grossAmounts = numbersFromAmountRun(grossPayLine);
+    if (grossAmounts.length >= 2) {
+      payrollData.employeeInfo.grossPay = grossAmounts[grossAmounts.length - 2];
+      payrollData.employeeInfo.ytdGross = grossAmounts[grossAmounts.length - 1];
+    } else if (grossAmounts.length === 1 && typeof payrollData.employeeInfo.grossPay !== 'number') {
+      payrollData.employeeInfo.grossPay = grossAmounts[0];
+    }
   }
 
   // Extract YTD net
@@ -1054,8 +1132,52 @@ export async function POST(req: NextRequest) {
       console.log('No form fields found or error extracting:', formError);
     }
 
+    let usedPdfJsText = false;
     try {
-      const pages = pdfDoc.getPages();
+      const pdfJsPages = await extractPdfJsPageTexts(pdfBytes);
+      const meaningfulText = pdfJsPages
+        .map((page) => page.text.replace(/===.*===/g, '').trim())
+        .join('\n')
+        .trim();
+
+      if (meaningfulText.length >= 100) {
+        usedPdfJsText = true;
+        console.log(`[EXTRACT_PDF] PDF.js extracted ${meaningfulText.length} characters across ${pdfJsPages.length} page(s)`);
+
+        for (const page of pdfJsPages) {
+          textParts.push(page.text);
+          const cleanedText = page.text.replace(/===.*===/g, '').trim();
+          console.log(`[EXTRACT_PDF] Page ${page.pageNumber}: PDF.js extracted ${cleanedText.length} characters`);
+          if (cleanedText.length > 50) {
+            console.log(`[EXTRACT_PDF] Page ${page.pageNumber}: First 200 chars:`, cleanedText.substring(0, 200));
+          }
+
+          const pagePayrollData = extractPayrollData(page.text);
+          const hasData =
+            pagePayrollData.employeeInfo?.name ||
+            pagePayrollData.employeeInfo?.ssn ||
+            Object.keys(pagePayrollData.statutoryDeductions || {}).length > 0 ||
+            Object.keys(pagePayrollData.voluntaryDeductions || {}).length > 0 ||
+            Object.keys(pagePayrollData.earnings || {}).length > 0 ||
+            Object.keys(pagePayrollData.hours || {}).length > 0;
+
+          if (hasData) {
+            pageDataArray.push({
+              pageNumber: page.pageNumber,
+              text: page.text,
+              payrollData: pagePayrollData,
+              extractionMethod: 'regex',
+            });
+          }
+        }
+      }
+    } catch (pdfJsError) {
+      console.log('[EXTRACT_PDF] PDF.js text extraction failed, falling back to pdf-lib content stream extraction:', pdfJsError);
+    }
+
+    if (!usedPdfJsText) {
+      try {
+        const pages = pdfDoc.getPages();
 
       for (let i = 0; i < pages.length; i++) {
         const page = pages[i];
@@ -1166,9 +1288,10 @@ export async function POST(req: NextRequest) {
           });
         }
       }
-    } catch (pageExtractionError) {
-      console.error('Error during text extraction:', pageExtractionError);
-      textParts.push('[Error during text extraction]');
+      } catch (pageExtractionError) {
+        console.error('Error during text extraction:', pageExtractionError);
+        textParts.push('[Error during text extraction]');
+      }
     }
 
     extractedText = textParts.join('\n');
