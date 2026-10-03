@@ -2394,7 +2394,7 @@ export default function PaystubGenerator() {
                 tips: Math.abs(line.tips) < 0.005 ? '' : line.tips,
                 restPay: Math.abs(line.restBreak) < 0.005 ? '' : line.restBreak,
                 bonus: Math.abs(line.bonus) < 0.005 ? '' : line.bonus,
-                finalPay: roundMoney(commissionPaidTotal + line.tips + line.restBreak + line.bonus),
+                finalPay: roundMoney(line.commission + line.tips + line.restBreak + line.bonus),
               };
             })
         : [];
@@ -2465,9 +2465,9 @@ export default function PaystubGenerator() {
             !isEventSD && hoursWorked > 0 && Math.abs(variableIncentiveValue) >= 0.005
               ? roundMoney(variableIncentiveValue / hoursWorked)
               : '';
-          // Sum of the row's own columns, so Final Pay always matches the Rest Pay shown beside it.
+          // Sum of the row-visible columns; variable incentive is shown only in the period summary.
           // (The saved payment total also bakes in the old rest break amount.)
-          const baseFinalPay = roundMoney(commissionPaidTotal + tips + restPay);
+          const baseFinalPay = roundMoney(commission + tips + restPay);
           const finalPay = roundMoney(baseFinalPay + bonusValue);
 
           return [{
@@ -2524,7 +2524,7 @@ export default function PaystubGenerator() {
           variableRate: variableRateValue,
           commissionPaidTotal: roundMoney(row.commission + variableIncentiveValue),
           variableIncentive: Math.abs(variableIncentiveValue) < 0.005 ? '' : variableIncentiveValue,
-          finalPay: roundMoney(row.commission + variableIncentiveValue + tips + restPay + bonus),
+          finalPay: roundMoney(row.commission + tips + restPay + bonus),
         };
       });
 

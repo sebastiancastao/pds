@@ -2761,15 +2761,18 @@ function HRDashboardContent() {
         // break, mileage, reimbursement, other) aren't tied to a single day, so
         // they're carried only on the last day's row — totals still reconcile.
         const dayCommissionPay = isHourlyEvent || !isLastDay ? 0 : Number(displayedCommissionPay.toFixed(2));
-        const dayVariableIncentive = isHourlyEvent || !isLastDay ? 0 : Number(variableIncentive.toFixed(2));
+        const dayVariableIncentiveAmount = !isLastDay ? 0 : Number(variableIncentive.toFixed(2));
+        const dayVariableIncentiveForTotal = isHourlyEvent ? 0 : dayVariableIncentiveAmount;
+        const dayVariableIncentive = isHourlyEvent ? dayVariableIncentiveAmount : 0;
         const dayTips = isLastDay ? Number(tips.toFixed(2)) : 0;
         const dayRestBreak = hideRest ? 'N/A' : (isLastDay ? Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)) : 0);
         const dayMileagePay = isLastDay ? Number(formatExactMoney(mileagePay)) : 0;
         const dayReimbursement = isLastDay ? Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)) : 0;
         const dayOther = isLastDay ? Number(roundUpThousandsToNextHundred(other).toFixed(2)) : 0;
+        const dayCommissionGrossPay = dayCommissionPay + dayTips + (typeof dayRestBreak === 'number' ? dayRestBreak : 0) + dayMileagePay + dayReimbursement + dayOther;
         const dayTotalGrossPay = isHourlyEvent
           ? Number(formatExactMoney(dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + dayMileagePay + (isLastDay ? adjustmentAmt : 0)))
-          : Number(formatExactMoney(breakdown.commissionPaidTotal + tips + restBreak + adjustmentAmt + mileagePay));
+          : Number(formatExactMoney(dayCommissionGrossPay));
 
         const baseRow: any = {
           'First Name': vendor.firstName || payment.firstName || '',
@@ -2787,6 +2790,7 @@ function HRDashboardContent() {
           'Hours in Decimal': roundHoursToTwoDecimals(dayHours),
           'Commission Pay': dayCommissionPay,
           'Variable Incentive': dayVariableIncentive,
+          __VariableIncentiveForTotal: dayVariableIncentiveForTotal,
           'Tips': dayTips,
           'Rest Break': dayRestBreak,
           'Mileage Miles': !mileagePaid || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
@@ -2814,6 +2818,10 @@ function HRDashboardContent() {
       const rowsToSum = sourceRows ?? targetRows;
       if (rowsToSum.length === 0) return;
       const sumNum = (key: string) => rowsToSum.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
+      const hiddenCommissionVariableIncentive = rowsToSum.reduce(
+        (s, r) => s + (typeof r.__VariableIncentiveForTotal === 'number' ? r.__VariableIncentiveForTotal : 0),
+        0
+      );
       const includeHourlyColumns = hourlyOnlyKeys.some((key) =>
         rowsToSum.some((row) => Object.prototype.hasOwnProperty.call(row, key))
       );
@@ -2832,14 +2840,17 @@ function HRDashboardContent() {
         'Hours': '',
         'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
         'Commission Pay': Number(sumNum('Commission Pay').toFixed(2)),
-        'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
+        'Variable Incentive': Number((sumNum('Variable Incentive') + hiddenCommissionVariableIncentive).toFixed(2)),
         'Tips': Number(sumNum('Tips').toFixed(2)),
         'Rest Break': Number(rowsToSum.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
         'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
         'Other': Number(sumNum('Other').toFixed(2)),
-        'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
+        'Total Gross Pay': Number((
+          sumNum('Total Gross Pay') +
+          hiddenCommissionVariableIncentive
+        ).toFixed(2)),
       };
 
       if (includeHourlyColumns) {
@@ -2918,7 +2929,10 @@ function HRDashboardContent() {
         }, 0);
         const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
-          return sum + breakdown.commissionPaidTotal + getDisplayedTips(event, p) + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
+          const eventRowBasePay = isHourlyPayrollEvent(event, p)
+            ? breakdown.commissionPaidTotal
+            : breakdown.commissionPay;
+          return sum + eventRowBasePay + getDisplayedTips(event, p) + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
         }, 0) + totalDisplayedMileagePay;
 
         summaryRows.push({
@@ -3003,7 +3017,7 @@ function HRDashboardContent() {
         'Total Rest Break': Number(sumNum('Total Rest Break').toFixed(2)),
         'Total Other': Number(sumNum('Total Other').toFixed(2)),
         'Total Mileage Pay': Number(sumNum('Total Mileage Pay').toFixed(2)),
-        'Total': Number(sumNum('Total').toFixed(2)),
+        'Total': Number((sumNum('Total') + payPeriodVariableIncentiveTotal).toFixed(2)),
         'Total Ext Amt Reg Rate': Number(sumNum('Total Ext Amt Reg Rate').toFixed(2)),
       });
     }
@@ -3036,8 +3050,9 @@ function HRDashboardContent() {
           const reimbursementBve = Number(roundUpThousandsToNextHundred(Number(payment.reimbursementAmount ?? 0)).toFixed(2));
           const other = Number(roundUpThousandsToNextHundred(Number(payment.otherAmount ?? 0)).toFixed(2));
           const adjAmtBve = reimbursementBve + other;
+          const rowBasePay = isHourlyEvent ? breakdown.commissionPaidTotal : commPay;
           const totalGrossPay = Number(formatExactMoney(
-            breakdown.commissionPaidTotal + tipsRaw + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay
+            rowBasePay + tipsRaw + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay
           ));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
@@ -3047,7 +3062,7 @@ function HRDashboardContent() {
           bveTotals.mileagePay += mileagePay;
           bveTotals.reimbursement += reimbursementBve;
           bveTotals.other += other;
-          bveTotals.totalGrossPay += totalGrossPay;
+          bveTotals.totalGrossPay += totalGrossPay + varIncentive;
           byVenueEventRows.push({
             'Venue': venueGroup.venue,
             'City': venueGroup.city || '',
@@ -3062,7 +3077,7 @@ function HRDashboardContent() {
             'Hours': formatHoursHHMM(breakdown.hours),
             'Hours in Decimal': hoursInDecimal,
             'Commission Pay': commPay,
-            'Variable Incentive': varIncentive,
+            'Variable Incentive': isHourlyEvent ? varIncentive : '',
             'Tips': tips,
             'Rest Break': restBreak,
             'Mileage Miles': !mileagePaid ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
@@ -3099,7 +3114,7 @@ function HRDashboardContent() {
       const excludedKeySet = new Set(excludedKeys);
       const sanitizedRows = dataRows.map((row) =>
         Object.fromEntries(
-          Object.entries(row).filter(([key]) => !excludedKeySet.has(key))
+          Object.entries(row).filter(([key]) => !excludedKeySet.has(key) && !key.startsWith('__'))
         )
       );
       const visibleColumns = detailColumnConfig.filter(({ key }) =>
@@ -5812,7 +5827,8 @@ function HRDashboardContent() {
                               const currentAdjustmentTypeLabel = getOtherAdjustmentTypeLabel(currentAdjustmentType);
                               const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
                               const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
-                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + sickPay;
+                              const rowBasePay = isHourlyEvent ? breakdown.commissionPaidTotal : breakdown.commissionPay;
+                              const rowTotal = rowBasePay + Number(payment.tips || 0) + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + sickPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
                               const dailyBreakdown = Array.isArray(payment.dailyBreakdown) ? payment.dailyBreakdown : [];
                               return (
@@ -6360,7 +6376,7 @@ function HRDashboardContent() {
                                                 const loadedRate = breakdown.rateInEffect;
                                                 const hours = breakdown.hours;
                                                 const otRate = Number(p.otRate || 0);
-                                                const displayedCommissionPay = breakdown.commissionPaidTotal;
+                                                const displayedCommissionPay = isHourlyEvent ? breakdown.commissionPaidTotal : breakdown.commissionPay;
                                                 const tips = getDisplayedTips(ev, p);
                                                 const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
@@ -6374,7 +6390,7 @@ function HRDashboardContent() {
                                                 const sickHours = Number((sickHoursByEvent[ev.id] || {})[p.userId] || 0);
                                                 const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
                                                 const totalGrossPay =
-                                                  breakdown.commissionPaidTotal +
+                                                  displayedCommissionPay +
                                                   tips +
                                                   restBreak +
                                                   reimbursementForRow +

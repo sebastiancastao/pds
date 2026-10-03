@@ -1137,7 +1137,7 @@ export async function POST(req: NextRequest) {
         const variableRate = roundPayrollAmount(rawVariableRate);
         const variableIncentive = roundPayrollAmount(rawVariableRate * row.hoursWorked);
         const finalPay = roundPayrollAmount(
-          row.commissionPerEmployee + variableIncentive + row.tips + row.restBreak + row.bonus
+          row.commissionPerEmployee + row.tips + row.restBreak + row.bonus
         );
         return {
           ...row,
@@ -1368,7 +1368,7 @@ export async function POST(req: NextRequest) {
             tips: line.tips,
             restBreak: line.restBreak,
             bonus: line.bonus,
-            finalPay: roundPayrollAmount(line.commission + line.variableIncentive + line.tips + line.restBreak + line.bonus),
+            finalPay: roundPayrollAmount(line.commission + line.tips + line.restBreak + line.bonus),
             fromUpload: true,
             poolUnknown: !event,
           };
@@ -1919,7 +1919,7 @@ export async function POST(req: NextRequest) {
             ...row,
             variableRate,
             variableIncentive,
-            finalPay: roundPayrollAmount(row.commissionPerEmployee + variableIncentive + row.tips + row.restBreak),
+            finalPay: roundPayrollAmount(row.commissionPerEmployee + row.tips + row.restBreak + row.bonus),
           };
         });
 
