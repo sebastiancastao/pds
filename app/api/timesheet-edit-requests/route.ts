@@ -124,9 +124,13 @@ function renderProposalEmailHtml(proposal: TimesheetEditProposal | null) {
     })
     .join("");
 
-  const dayNote = proposal.workDate
-    ? `<p style="margin:0 0 8px 0;color:#64748b;font-size:12px;">Work day: ${proposal.workDate}</p>`
-    : "";
+  const dayNote =
+    (proposal.workDate
+      ? `<p style="margin:0 0 8px 0;color:#64748b;font-size:12px;">Work day: ${proposal.workDate}</p>`
+      : "") +
+    (proposal.requested.lastOut
+      ? ""
+      : `<p style="margin:0 0 8px 0;color:#64748b;font-size:12px;">No Clock Out requested. The worker was still on shift, so approving keeps their clock out as recorded.</p>`);
 
   return `
               <div style="margin-top:24px;">
@@ -573,13 +577,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Event not found." }, { status: 404 });
     }
 
+    // A request no longer waits for the worker to clock out and attest. It can
+    // be filed during the shift, for example to fix a wrong clock in. The status
+    // is still read so the reviewer email says where the timesheet stands.
     const timesheetStatus = await loadTimesheetStatus(targetUserId, eventId);
-    if (timesheetStatus === "not_submitted") {
-      return NextResponse.json(
-        { error: "An edit request can only be submitted after the timesheet has been attested." },
-        { status: 400 }
-      );
-    }
 
     const { data: existingRequest, error: existingRequestError } = await supabaseAdmin
       .from("timesheet_edit_requests")
@@ -631,7 +632,16 @@ export async function POST(req: NextRequest) {
     const eventDate = eventRow.data.event_date ? String(eventRow.data.event_date).split("T")[0] : null;
     const reviewUrl = `https://pds-murex.vercel.app/timesheet-edit-requests?requestId=${insertedRequest.id}`;
     const subject = `Timesheet Edit Request - ${targetUser.name} - ${eventName}`;
-    const statusLabel = timesheetStatus === "submitted" ? "Attested" : "Rejected";
+    const statusLabel =
+      timesheetStatus === "submitted"
+        ? "Attested"
+        : timesheetStatus === "rejected"
+        ? "Rejected"
+        : "Not attested yet";
+    const statusIntro =
+      timesheetStatus === "not_submitted"
+        ? "A timesheet that has not been clocked out and attested yet needs review."
+        : `A previously ${statusLabel.toLowerCase()} timesheet needs review.`;
     const submittedAt = new Date(insertedRequest.created_at).toLocaleString("en-US", {
       year: "numeric",
       month: "long",
@@ -655,7 +665,7 @@ export async function POST(req: NextRequest) {
           <tr>
             <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
               <h1 style="margin:0;font-size:24px;">Timesheet Edit Request</h1>
-              <p style="margin:10px 0 0 0;font-size:14px;color:#cbd5e1;">A previously ${statusLabel.toLowerCase()} timesheet needs review.</p>
+              <p style="margin:10px 0 0 0;font-size:14px;color:#cbd5e1;">${statusIntro}</p>
             </td>
           </tr>
           <tr>
@@ -746,6 +756,7 @@ type RequestToApprove = {
   review_notes: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
+  created_at: string | null;
 };
 
 // Approving a request that carries times changes the timesheet to those times.
@@ -797,6 +808,7 @@ async function approveAndApply(args: {
     actor: { role: reviewer.role },
     requestId: request.id,
     reason: request.request_reason,
+    requestCreatedAt: request.created_at,
   });
 
   if (!applied.ok) {
@@ -866,7 +878,7 @@ export async function PATCH(req: NextRequest) {
     const { data: existingRequest, error: loadError } = await supabaseAdmin
       .from("timesheet_edit_requests")
       .select(
-        "id, status, user_id, requested_by, event_id, request_reason, requested_changes, review_notes, reviewed_by, reviewed_at"
+        "id, status, user_id, requested_by, event_id, request_reason, requested_changes, review_notes, reviewed_by, reviewed_at, created_at"
       )
       .eq("id", requestId)
       .maybeSingle();

@@ -579,11 +579,15 @@ export default function WorkerProfilePage() {
     attestationStatus: PerEvent["timesheet_attestation_status"] = "not_submitted",
     editRequestStatus: PerEvent["timesheet_edit_request_status"] = null,
     eventName = "this event",
-    className = "inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+    className = "inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors",
+    // Whether an edit can be requested before the worker clocks out and
+    // attests. False for events that have not started for this worker yet.
+    allowRequestBeforeClockOut = true
   ) => {
     if (!eventId) return null;
-    // The worker can ask for their own timesheet to be reopened, and reviewers
-    // can ask on the worker behalf.
+    const isAttested = attestationStatus !== "not_submitted";
+    // The worker can ask for their own timesheet to be corrected, and reviewers
+    // can ask on the worker behalf. This no longer waits for the clock out.
     const canRequestTimesheetEdit = isOwnProfile || timesheetEdits.viewer?.canReview === true;
     const requestEditButton = (label: string) =>
       canRequestTimesheetEdit && employeeId ? (
@@ -595,6 +599,7 @@ export default function WorkerProfilePage() {
               eventName,
               workerId: employeeId,
               workerName: employee ? `${employee.first_name} ${employee.last_name}`.trim() : null,
+              locked: isAttested,
             })
           }
           className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
@@ -602,25 +607,31 @@ export default function WorkerProfilePage() {
           {label}
         </button>
       ) : null;
-    if (attestationStatus !== "not_submitted") {
-      if (editRequestStatus === "approved") {
-        return (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-blue-200 bg-blue-50 text-blue-700">
-              Edit Approved
-            </span>
-            <Link
-              href={`/time-sheets/${eventId}${timeSheetUserQuery}`}
-              className={className}
-            >
-              Open Timesheet
-            </Link>
-          </div>
-        );
-      }
+    const timesheetLink = (label: string) => (
+      <Link href={`/time-sheets/${eventId}${timeSheetUserQuery}`} className={className}>
+        {label}
+      </Link>
+    );
 
+    if (editRequestStatus === "approved") {
       return (
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-blue-200 bg-blue-50 text-blue-700">
+            Edit Approved
+          </span>
+          {timesheetLink("Open Timesheet")}
+        </div>
+      );
+    }
+
+    const hasOpenRequest = editRequestStatus === "submitted" || editRequestStatus === "in_review";
+    if (!isAttested && !allowRequestBeforeClockOut && !hasOpenRequest && editRequestStatus !== "rejected") {
+      return timesheetLink("View Timesheet");
+    }
+
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {isAttested ? (
           <span
             className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border ${
               attestationStatus === "submitted"
@@ -630,43 +641,41 @@ export default function WorkerProfilePage() {
           >
             {attestationStatus === "submitted" ? "Attested" : "Rejected"}
           </span>
-          {editRequestStatus === "submitted" || editRequestStatus === "in_review" ? (
-            <>
-              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
-                Edit Requested
-              </span>
-              {timesheetEdits.viewer?.canReview && (
-                <a
-                  href={`#${TIMESHEET_EDIT_PANEL_ID}`}
-                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 bg-white text-amber-800 hover:bg-amber-50 transition-colors"
-                >
-                  Review
-                </a>
-              )}
-            </>
-          ) : editRequestStatus === "rejected" ? (
-            <>
-              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
-                Edit Request Rejected
-              </span>
-              {requestEditButton("Request Again")}
-            </>
-          ) : (
-            <>
-              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-slate-50 text-slate-600">
-                Locked
-              </span>
-              {requestEditButton("Request Edit")}
-            </>
-          )}
-        </div>
-      );
-    }
-
-    return (
-      <Link href={`/time-sheets/${eventId}${timeSheetUserQuery}`} className={className}>
-        View Timesheet
-      </Link>
+        ) : (
+          timesheetLink("View Timesheet")
+        )}
+        {hasOpenRequest ? (
+          <>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
+              Edit Requested
+            </span>
+            {timesheetEdits.viewer?.canReview && (
+              <a
+                href={`#${TIMESHEET_EDIT_PANEL_ID}`}
+                className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 bg-white text-amber-800 hover:bg-amber-50 transition-colors"
+              >
+                Review
+              </a>
+            )}
+          </>
+        ) : editRequestStatus === "rejected" ? (
+          <>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+              Edit Request Rejected
+            </span>
+            {requestEditButton("Request Again")}
+          </>
+        ) : isAttested ? (
+          <>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-slate-50 text-slate-600">
+              Locked
+            </span>
+            {requestEditButton("Request Edit")}
+          </>
+        ) : (
+          requestEditButton("Request Edit")
+        )}
+      </div>
     );
   };
 
@@ -4114,7 +4123,14 @@ export default function WorkerProfilePage() {
                               inv.event_id,
                               agg?.timesheet_attestation_status,
                               agg?.timesheet_edit_request_status,
-                              inv.event_name || inv.event_id
+                              inv.event_name || inv.event_id,
+                              undefined,
+                              // An edit can be requested once the worker has clocked
+                              // in (even if not out yet), or for a past event they
+                              // worked but never clocked into.
+                              eventEntries.length > 0 ||
+                                (agg?.shifts ?? 0) > 0 ||
+                                (!showResponseButtons && inv.status !== "declined")
                             )}
                             {invitationFeedback[inv.id] && (
                               <span className={`w-full text-xs ${invitationFeedback[inv.id].type === "error" ? "text-red-600" : "text-green-600"}`}>

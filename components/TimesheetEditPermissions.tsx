@@ -60,6 +60,9 @@ export type TimesheetEditRequestTarget = {
   eventName: string;
   workerId: string;
   workerName?: string | null;
+  // False when the worker has not clocked out and attested yet, so the
+  // timesheet is not locked. Defaults to locked.
+  locked?: boolean;
 };
 
 export function TimesheetEditRequestModal({
@@ -156,6 +159,12 @@ export function TimesheetEditRequestModal({
         setError(timesError);
         return;
       }
+      // An empty Clock Out means "still on shift". Once a clock out is
+      // recorded, clearing it would ask for nothing and change nothing.
+      if (previous?.lastOut && !times.lastOut) {
+        setError("A clock out is already recorded, so Clock Out cannot be left empty.");
+        return;
+      }
       requestedChanges = { workDate: activeDate || null, requested: times, previous };
     }
 
@@ -194,8 +203,11 @@ export function TimesheetEditRequestModal({
         </h3>
         <p className="mt-1 text-sm text-gray-500">
           {target.eventName}
-          {target.workerName ? ` for ${target.workerName}` : ""}. This timesheet is locked. A
-          reviewer has to approve the request first. Any times you change below are applied to the
+          {target.workerName ? ` for ${target.workerName}` : ""}.{" "}
+          {target.locked === false
+            ? "This timesheet has not been clocked out and attested yet. "
+            : "This timesheet is locked. "}
+          A reviewer has to approve the request first. Any times you change below are applied to the
           timesheet once it is approved.
         </p>
 
@@ -237,6 +249,12 @@ export function TimesheetEditRequestModal({
             disabled={submitting || isLoading}
             onChange={(key, next) => setTimes((current) => ({ ...current, [key]: next }))}
           />
+          {!isLoading && previous !== null && !previous.lastOut && (
+            <p className="mt-2 text-xs text-gray-500">
+              No clock out is recorded yet. Leave Clock Out empty if the worker is still on shift.
+              The shift then stays open after approval.
+            </p>
+          )}
           {!isLoading && changedKeys.length === 0 && (
             <p className="mt-2 text-xs text-gray-400">
               No times changed. The request will only include your reason.
@@ -436,8 +454,8 @@ export function TimesheetEditPermissionsPanel({
 
         {canReviewThis && isOpen && request.requestedChanges && (
           <p className="mt-2 text-xs text-gray-500">
-            Approving changes the timesheet to the requested times. The worker keeps their
-            existing attestation.
+            Approving changes the timesheet to the requested times. Any attestation the worker
+            already signed stays valid.
           </p>
         )}
 

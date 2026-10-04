@@ -8,6 +8,9 @@
 //  - Only an exec may delete an entry, for example to remove a meal break.
 //  - Times must run in order. A time that falls before the previous one is only
 //    accepted as the next day when the event runs overnight.
+//  - A request filed before the worker clocked out may leave Clock Out empty.
+//    The clock out is then left as it is: an open shift stays open, and a clock
+//    out recorded since the request was filed is kept.
 //
 // Server only. The database client is passed in so the logic can be tested.
 
@@ -23,6 +26,7 @@ type EntryRow = {
   action: string;
   timestamp: string;
   notes: string | null;
+  created_at?: string | null;
   event_id: string | null;
 };
 
@@ -97,8 +101,11 @@ export async function applyTimesheetProposal(input: {
   actor: { role: string };
   requestId: string;
   reason: string;
+  // When the request was filed. On an open shift request, entries the worker
+  // recorded after this moment were never seen by the requester and are kept.
+  requestCreatedAt?: string | null;
 }): Promise<ApplyTimesheetResult> {
-  const { db, eventId, userId, proposal, actor, requestId, reason } = input;
+  const { db, eventId, userId, proposal, actor, requestId, reason, requestCreatedAt } = input;
   const fail = (status: number, error: string): ApplyTimesheetResult => ({ ok: false, status, error });
 
   const { data: event, error: eventError } = await db
@@ -131,18 +138,17 @@ export async function applyTimesheetProposal(input: {
     ? targetDate < eventEndDate! || eventAllowsOvernight(event || {})
     : eventAllowsOvernight(event || {});
 
-  // Build the day's timeline: clock in, up to two meals, clock out.
+  // Build the day's timeline: clock in, up to two meals, clock out. Validation
+  // guarantees a meal end always has its start, and that only an open shift has
+  // a meal still in progress.
   const requested = proposal.requested;
+  const keepRecordedClockOut = !requested.lastOut;
   const steps: Array<{ action: string; time: string }> = [{ action: "clock_in", time: requested.firstIn }];
-  if (requested.firstMealStart && requested.lastMealEnd) {
-    steps.push({ action: "meal_start", time: requested.firstMealStart });
-    steps.push({ action: "meal_end", time: requested.lastMealEnd });
-  }
-  if (requested.secondMealStart && requested.secondMealEnd) {
-    steps.push({ action: "meal_start", time: requested.secondMealStart });
-    steps.push({ action: "meal_end", time: requested.secondMealEnd });
-  }
-  steps.push({ action: "clock_out", time: requested.lastOut });
+  if (requested.firstMealStart) steps.push({ action: "meal_start", time: requested.firstMealStart });
+  if (requested.lastMealEnd) steps.push({ action: "meal_end", time: requested.lastMealEnd });
+  if (requested.secondMealStart) steps.push({ action: "meal_start", time: requested.secondMealStart });
+  if (requested.secondMealEnd) steps.push({ action: "meal_end", time: requested.secondMealEnd });
+  if (!keepRecordedClockOut) steps.push({ action: "clock_out", time: requested.lastOut });
 
   const timeline: TimelineEntry[] = [];
   for (const step of steps) {
@@ -183,7 +189,7 @@ export async function applyTimesheetProposal(input: {
   // inside the day that this edit takes over.
   let eventBoundQuery = db
     .from("time_entries")
-    .select("id, action, timestamp, notes, event_id")
+    .select("id, action, timestamp, notes, event_id, created_at")
     .eq("user_id", userId)
     .eq("event_id", eventId)
     .order("timestamp", { ascending: true });
@@ -194,7 +200,7 @@ export async function applyTimesheetProposal(input: {
     eventBoundQuery,
     db
       .from("time_entries")
-      .select("id, action, timestamp, notes, event_id")
+      .select("id, action, timestamp, notes, event_id, created_at")
       .eq("user_id", userId)
       .is("event_id", null)
       .gte("timestamp", dayRange.startIso)
@@ -233,6 +239,25 @@ export async function applyTimesheetProposal(input: {
   const newByAction: Record<string, TimelineEntry[]> = {};
   for (const entry of timeline) (newByAction[entry.action] ||= []).push(entry);
 
+  const requestFiledMs = requestCreatedAt ? new Date(requestCreatedAt).getTime() : NaN;
+  const recordedAfterRequest = (entry: EntryRow) => {
+    const createdMs = entry.created_at ? new Date(entry.created_at).getTime() : NaN;
+    return Number.isFinite(requestFiledMs) && Number.isFinite(createdMs) && createdMs > requestFiledMs;
+  };
+
+  // With no Clock Out requested, the recorded clock out (if the worker has
+  // clocked out since filing) stays, so every requested time must come before it.
+  const recordedClockOut = existingByAction.clock_out?.[0];
+  if (keepRecordedClockOut && recordedClockOut) {
+    const lastRequestedMs = new Date(timeline[timeline.length - 1].timestamp).getTime();
+    if (lastRequestedMs >= new Date(recordedClockOut.timestamp).getTime()) {
+      return fail(
+        400,
+        "The worker has clocked out since this request was filed, and the requested times run past that clock out. Ask for a new request that includes the Clock Out time."
+      );
+    }
+  }
+
   const buildNote = (clientActionId: string) => {
     const base = `Manual edit by ${actor.role} | Reason: ${shortReason(reason)} | Approved edit request: ${requestId}`;
     return clientActionId ? `${base} | ${CLIENT_ACTION_ID_MARKER}${clientActionId}` : base;
@@ -247,6 +272,7 @@ export async function applyTimesheetProposal(input: {
   const toMinute = (iso: string) => Math.floor(new Date(iso).getTime() / 60000);
 
   for (const action of new Set([...Object.keys(existingByAction), ...Object.keys(newByAction)])) {
+    if (action === "clock_out" && keepRecordedClockOut) continue;
     const oldList = existingByAction[action] || [];
     const newList = newByAction[action] || [];
     for (let i = 0; i < Math.max(oldList.length, newList.length); i += 1) {
@@ -271,6 +297,10 @@ export async function applyTimesheetProposal(input: {
           event_id: eventId,
           notes: buildNote(randomUUID()),
         });
+      } else if (keepRecordedClockOut && recordedAfterRequest(oldList[i])) {
+        // For example, the worker ended a meal break after asking for the
+        // edit. The request could not know about it, so it is not a removal.
+        continue;
       } else {
         toDelete.push(oldList[i]);
       }

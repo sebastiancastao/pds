@@ -5,6 +5,10 @@
 // a reviewer approves or rejects it. An approved request re-opens the timesheet
 // for exactly one correction, after which it is closed as "completed".
 //
+// A request can also be filed before the worker clocks out, for example to fix
+// a wrong clock in while the shift is still running. Such a request may leave
+// Clock Out empty, which keeps the shift open when the times are applied.
+//
 // This file is imported by both API routes and client components, so it must
 // stay free of server-only imports.
 
@@ -186,21 +190,34 @@ export function changedTimeKeys(
   );
 }
 
-// The same rules the submit endpoint applies: a shift needs a clock in and a
-// clock out, and each meal needs both a start and an end.
+// A shift needs a clock in, and each meal needs both a start and an end.
+//
+// Clock Out may be empty while the worker is still on shift. Applying the
+// request then leaves the clock out alone, so the shift stays open. On an open
+// shift the last meal may also have a start and no end yet, because the worker
+// can be on that break right now.
 export function validateTimesheetTimes(times: TimesheetTimes): string | null {
   for (const field of TIMESHEET_TIME_FIELDS) {
     if (times[field.key] && !TIME_PATTERN.test(times[field.key])) {
       return `${field.label} must be a valid time.`;
     }
   }
-  if (!times.firstIn || !times.lastOut) {
-    return "Clock In and Clock Out are both required.";
+  if (!times.firstIn) {
+    return "Clock In is required.";
   }
-  if (!!times.firstMealStart !== !!times.lastMealEnd) {
+  const stillOnShift = !times.lastOut;
+  if (times.lastMealEnd && !times.firstMealStart) {
+    return "Meal 1 needs a start time.";
+  }
+  if (times.secondMealEnd && !times.secondMealStart) {
+    return "Meal 2 needs a start time.";
+  }
+  const meal1Open = !!times.firstMealStart && !times.lastMealEnd;
+  const meal2Open = !!times.secondMealStart && !times.secondMealEnd;
+  if (meal1Open && (!stillOnShift || !!times.secondMealStart)) {
     return "Meal 1 needs both a start and an end time.";
   }
-  if (!!times.secondMealStart !== !!times.secondMealEnd) {
+  if (meal2Open && !stillOnShift) {
     return "Meal 2 needs both a start and an end time.";
   }
   return null;

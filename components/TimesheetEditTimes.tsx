@@ -154,6 +154,12 @@ export function TimesheetProposalView({
           })}
         </tbody>
       </table>
+      {!proposal.requested.lastOut && (
+        <p className="mt-1 text-xs text-gray-500">
+          No Clock Out requested. The worker was still on shift, so approving keeps their clock out
+          as recorded.
+        </p>
+      )}
     </div>
   );
 }
