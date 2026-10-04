@@ -2197,8 +2197,28 @@ export async function POST(req: NextRequest) {
         return carryoverYtd(carryoverField) || datedYtdSource(ytdNumberOrNull(snapshotValue), snapshotDateIso);
       };
 
-      const carryoverPriorYtd = (requestValue: any, carryoverField: string): PriorYtdSource | null =>
-        requestYtd(requestValue) || (hasAnyRequestYtd ? null : carryoverYtd(carryoverField));
+      // Earnings and net pay adjustment lines. A spreadsheet YTD already includes this
+      // period, and YTD only grows during the year, so it cannot be below this period's
+      // amount or below an earlier ADP carryover from the same year (the /pdf-reader
+      // export writes 0 for a line it could not read). A line with no usable
+      // spreadsheet value is figured as if no spreadsheet were imported: its ADP
+      // carryover plus this period. Otherwise the YTD showed blank or this period only.
+      const carryoverPriorYtd = (requestValue: any, carryoverField: string, current: number): PriorYtdSource | null => {
+        const requested = requestYtd(requestValue);
+        const carryover = carryoverYtd(carryoverField);
+        const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
+        let lowestPossibleYtd = Math.max(0, curr);
+        if (
+          carryover?.asOfDate &&
+          payDateIso &&
+          carryover.asOfDate < payDateIso &&
+          carryover.asOfDate.slice(0, 4) === payDateIso.slice(0, 4)
+        ) {
+          lowestPossibleYtd = Math.max(lowestPossibleYtd, carryover.amount);
+        }
+        if (requested && requested.amount >= lowestPossibleYtd - 0.005) return requested;
+        return carryover;
+      };
 
       const runningYtd = (prior: PriorYtdSource | null, current: number) => {
         const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
@@ -2215,14 +2235,14 @@ export async function POST(req: NextRequest) {
       const ytdOvertimePay = round2(runningYtd(priorYtd(overtimeYtd, ytdSnapshot?.overtime_earnings, 'overtime_ytd'), totalOvertimePayRounded));
       const ytdDoubletimePay = round2(runningYtd(priorYtd(doubleTimeYtd, ytdSnapshot?.doubletime_earnings, 'doubletime_ytd'), totalDoubletimePayRounded));
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
-      const ytdCommission = round2(runningYtd(carryoverPriorYtd(commissionYtd, 'commission_ytd'), totalCommissionRounded));
-      const ytdVariableIncentive = round2(runningYtd(carryoverPriorYtd(variableIncentiveYtd, 'variable_incentive_ytd'), totalVariableIncentiveRounded));
-      const ytdTips = round2(runningYtd(carryoverPriorYtd(creditCardTipsYtd, 'credit_card_tips_ytd'), totalTipsRounded));
-      const ytdRestBreak = round2(runningYtd(carryoverPriorYtd(restBreakPayYtd, 'rest_break_pay_ytd'), totalRestBreakRounded));
-      const ytdOther = round2(runningYtd(carryoverPriorYtd(bonusYtd, 'bonus_ytd'), totalOtherRounded));
-      const ytdMealPremium = round2(runningYtd(carryoverPriorYtd(effectiveMealPremiumYtd, 'meal_premium_ytd'), mealPremiumThisPeriod));
-      const ytdSick = round2(runningYtd(carryoverPriorYtd(sickPayYtd, 'sick_pay_ytd'), sickThisPeriod));
-      const ytdTravel = round2(runningYtd(carryoverPriorYtd(travelPayYtd, 'travel_pay_ytd'), travelPayThisPeriod));
+      const ytdCommission = round2(runningYtd(carryoverPriorYtd(commissionYtd, 'commission_ytd', totalCommissionRounded), totalCommissionRounded));
+      const ytdVariableIncentive = round2(runningYtd(carryoverPriorYtd(variableIncentiveYtd, 'variable_incentive_ytd', totalVariableIncentiveRounded), totalVariableIncentiveRounded));
+      const ytdTips = round2(runningYtd(carryoverPriorYtd(creditCardTipsYtd, 'credit_card_tips_ytd', totalTipsRounded), totalTipsRounded));
+      const ytdRestBreak = round2(runningYtd(carryoverPriorYtd(restBreakPayYtd, 'rest_break_pay_ytd', totalRestBreakRounded), totalRestBreakRounded));
+      const ytdOther = round2(runningYtd(carryoverPriorYtd(bonusYtd, 'bonus_ytd', totalOtherRounded), totalOtherRounded));
+      const ytdMealPremium = round2(runningYtd(carryoverPriorYtd(effectiveMealPremiumYtd, 'meal_premium_ytd', mealPremiumThisPeriod), mealPremiumThisPeriod));
+      const ytdSick = round2(runningYtd(carryoverPriorYtd(sickPayYtd, 'sick_pay_ytd', sickThisPeriod), sickThisPeriod));
+      const ytdTravel = round2(runningYtd(carryoverPriorYtd(travelPayYtd, 'travel_pay_ytd', travelPayThisPeriod), travelPayThisPeriod));
       const hasRequestEarningsYtd = [
         regularYtd,
         overtimeYtd,
@@ -2281,8 +2301,8 @@ export async function POST(req: NextRequest) {
       const ytdStateDI = round2(runningYtd(priorYtd(stateDIYtd, ytdSnapshot?.ca_state_di_ytd, 'state_di_ytd'), stateDIAmt));
       const ytdVoluntaryDeduction = round2(runningYtd(priorYtd(calSaversRothRetYtd, ytdSnapshot?.misc_non_taxable_ytd, 'calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
-      const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd'), adjustmentReimbursementRounded));
-      const ytdMileageReimb = round2(runningYtd(carryoverPriorYtd(effectiveMileageReimbYtd, 'mileage_reimb_ytd'), totalMileageReimbursementRounded));
+      const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd', adjustmentReimbursementRounded), adjustmentReimbursementRounded));
+      const ytdMileageReimb = round2(runningYtd(carryoverPriorYtd(effectiveMileageReimbYtd, 'mileage_reimb_ytd', totalMileageReimbursementRounded), totalMileageReimbursementRounded));
       const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), reimbursement));
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
@@ -2419,8 +2439,9 @@ export async function POST(req: NextRequest) {
         // Keep the label unchanged: /pdf-reader and the LLM extractor match "Rest Break Pay" followed by numbers.
         { label: "Rest Break Pay", color: black, rate: 0, hours: totalRestBreakCount, hoursAsCount: true, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
         { label: "Bonus", color: black, rate: 0, hours: 0, thisPeriod: totalOtherRounded, ytd: ytdOther },
-        // Only uploaded payroll can carry travel pay, so this row never shows on a system paystub.
-        ...(travelPayThisPeriod !== 0
+        // Travel pay this period only comes from uploaded payroll. The row also shows when
+        // only the YTD has travel (ADP carryover or the YTD spreadsheet).
+        ...(travelPayThisPeriod !== 0 || ytdTravel !== 0
           ? [{ label: "Travel Pay", color: black, rate: 0, hours: 0, thisPeriod: travelPayThisPeriod, ytd: ytdTravel }]
           : []),
         { label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },

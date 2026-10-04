@@ -1293,8 +1293,8 @@ export function extractPayrollData(text: string) {
   const rbResult = extractEarningsLine(/Rest\s+(?:Break\s+)?Pay\b/i);
   if (rbResult) payrollData.earnings.restBreakPay = rbResult;
 
-  // Extract Travel Pay
-  const travelResult = extractEarningsLine(/Travel\s+Pay\b/i);
+  // Extract Travel Pay (ADP labels it just "Travel"; never a travel reimbursement line)
+  const travelResult = extractEarningsLine(/Travel(?:\s+(?:Pay|Time))?\b(?!\s*Reimb)/i);
   if (travelResult) payrollData.earnings.travelPay = travelResult;
 
   // Extract Bonus

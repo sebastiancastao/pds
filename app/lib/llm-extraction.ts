@@ -166,7 +166,7 @@ EXTRACTION RULES:
     - "Variable Incentive": last two → variableIncentive.thisPeriod / yearToDate
     - "Credit card tips owed": last two → creditCardTips.thisPeriod / yearToDate
     - "Rest Break Pay" or "Rest Pay": last two → restBreakPay.thisPeriod / yearToDate
-    - "Travel Pay": last two → travelPay.thisPeriod / yearToDate
+    - "Travel Pay" / "Travel" / "Travel Time" (not a travel reimbursement): last two → travelPay.thisPeriod / yearToDate
     - "Bonus": last two → bonus.thisPeriod / yearToDate
     - "Sick Pay" / "Sick": last two → sickPay.thisPeriod / yearToDate
     - "Meal Premium" / "Meal Time Premium" / "Meal Prem" / "Meal Break Premium" / "Meal Period Premium": last two → mealPremium.thisPeriod / yearToDate
