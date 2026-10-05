@@ -107,6 +107,31 @@ type OnFileRecord = {
   medicare_ytd: number | null;
 };
 
+// A user with no saved YTD baseline, from /api/employee-ytd-carryover/report.
+type MissingPerson = {
+  userId: string;
+  name: string;
+  email: string;
+  role: string;
+  active: boolean;
+  createdAt: string | null;
+  // Pacific-time date of the last time entry this year, and distinct days clocked.
+  lastWorked: string | null;
+  daysWorked: number;
+};
+
+type MissingReport = {
+  year: number;
+  totalUsers: number;
+  withBaseline: number;
+  people: MissingPerson[];
+};
+
+type MissingFilter = 'worked' | 'workers' | 'all';
+
+// Roles that are paid as employees (the "Workers" filter of the report).
+const WORKER_ROLES = new Set(['worker', 'employee']);
+
 const mileageReimbursementYtdAliases = [
   'mileage reimbursement ytd',
   'mileage reimbursement year to date',
@@ -614,6 +639,22 @@ function sameName(a: string | null | undefined, b: string | null | undefined): b
   return norm(a) === norm(b);
 }
 
+// Why a pending row is not matched, for the "Not matched" report.
+function unmatchedStatus(row: Row): string {
+  if (!row.employeeName.trim()) return 'No name';
+  if (row.matchStatus === 'checking') return 'Checking…';
+  if (row.matchStatus === 'unchecked') return 'Not checked yet';
+  if (row.suggestions.length > 0) {
+    return `Pick from ${row.suggestions.length} suggestion${row.suggestions.length === 1 ? '' : 's'}`;
+  }
+  return 'No match';
+}
+
+function moneyCell(value: string): string {
+  const n = parseFloat(String(value || '').replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) && value !== '' ? `$${n.toFixed(2)}` : '—';
+}
+
 type MatchOutcome = { total: number; matched: number; suggested: number; none: number; seconds: number };
 
 export default function AdpYtdImportPage() {
@@ -633,6 +674,41 @@ export default function AdpYtdImportPage() {
 
   const [rematching, setRematching] = useState(false);
   const [view, setView] = useState<'all' | 'attention' | 'new'>('all');
+
+  // YTD coverage report: users with no saved baseline (from the server) and
+  // pending imported rows that did not match a user (from the grid).
+  const [report, setReport] = useState<MissingReport | null>(null);
+  const [loadingReport, setLoadingReport] = useState(true);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportTab, setReportTab] = useState<'missing' | 'unmatched'>('missing');
+  const [missingFilter, setMissingFilter] = useState<MissingFilter>('worked');
+  const [downloadingReport, setDownloadingReport] = useState(false);
+
+  const loadReport = useCallback(async () => {
+    setLoadingReport(true);
+    setReportError(null);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/employee-ytd-carryover/report', { headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Failed to load the YTD report (HTTP ${res.status})`);
+      setReport({
+        year: data.year,
+        totalUsers: data.totalUsers,
+        withBaseline: data.withBaseline,
+        people: data.people || [],
+      });
+    } catch (e: any) {
+      setReportError(e?.message || 'Failed to load the YTD report');
+    } finally {
+      setLoadingReport(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadReport();
+  }, [loadReport]);
 
   const loadOnFile = useCallback(async () => {
     setLoadingOnFile(true);
@@ -939,12 +1015,13 @@ export default function AdpYtdImportPage() {
       }
       setRows((prev) => prev.filter((r) => !r.userId || failedUserIds.has(r.userId)));
       loadOnFile();
+      loadReport();
     } catch (e: any) {
       setError(e?.message || 'Failed to save');
     } finally {
       setSaving(false);
     }
-  }, [rows, loadOnFile]);
+  }, [rows, loadOnFile, loadReport]);
 
   const handleDownloadTemplate = useCallback(async () => {
     if (rows.length === 0) return;
@@ -1070,6 +1147,137 @@ export default function AdpYtdImportPage() {
     setRows((prev) => prev.filter((r) => !isAlreadyOnFile(r)));
   }, [counts.alreadyOnFile, isAlreadyOnFile]);
 
+  // ---------- YTD coverage report ----------
+
+  // Pending rows already matched to a user (that user is fixed by saving).
+  const pendingMatchByUser = useMemo(() => {
+    const out = new Map<string, Row>();
+    for (const r of rows) if (r.userId && r.matchStatus === 'matched' && !out.has(r.userId)) out.set(r.userId, r);
+    return out;
+  }, [rows]);
+
+  // Unmatched pending rows that suggest a user, best score first, so the
+  // missing list can point at the imported row that is probably theirs.
+  const possibleRowsByUser = useMemo(() => {
+    const out = new Map<string, { name: string; score: number }[]>();
+    for (const r of rows) {
+      if (r.matchStatus !== 'unmatched') continue;
+      for (const c of r.suggestions) {
+        const list = out.get(c.userId) || [];
+        list.push({ name: r.employeeName.trim() || '(no name)', score: c.score });
+        out.set(c.userId, list);
+      }
+    }
+    for (const list of out.values()) list.sort((a, b) => b.score - a.score);
+    return out;
+  }, [rows]);
+
+  // Everyone still without a saved baseline. onFileIds also drops people
+  // saved since the report was loaded. Order: clocked time this year (most
+  // recent first), then active workers, then everyone else; by name within.
+  const missingAll = useMemo(() => {
+    if (!report) return [] as MissingPerson[];
+    const rank = (p: MissingPerson) =>
+      p.lastWorked ? 0 : WORKER_ROLES.has(p.role.toLowerCase()) && p.active ? 1 : 2;
+    return report.people
+      .filter((p) => !onFileIds.has(p.userId))
+      .sort((a, b) => {
+        const byRank = rank(a) - rank(b);
+        if (byRank !== 0) return byRank;
+        if (a.lastWorked && b.lastWorked && a.lastWorked !== b.lastWorked) {
+          return a.lastWorked < b.lastWorked ? 1 : -1;
+        }
+        return (a.name || a.email).localeCompare(b.name || b.email);
+      });
+  }, [report, onFileIds]);
+
+  const missingCounts = useMemo(() => {
+    let worked = 0;
+    let workers = 0;
+    for (const p of missingAll) {
+      if (p.lastWorked) worked++;
+      if (WORKER_ROLES.has(p.role.toLowerCase())) workers++;
+    }
+    return { worked, workers, all: missingAll.length };
+  }, [missingAll]);
+
+  const missingVisible = useMemo(() => {
+    if (missingFilter === 'worked') return missingAll.filter((p) => p.lastWorked);
+    if (missingFilter === 'workers') return missingAll.filter((p) => WORKER_ROLES.has(p.role.toLowerCase()));
+    return missingAll;
+  }, [missingAll, missingFilter]);
+
+  // Pending imported rows that are not matched to a user.
+  const unmatchedRows = useMemo(() => rows.filter((r) => r.matchStatus !== 'matched'), [rows]);
+
+  const missingNote = useCallback(
+    (p: MissingPerson): string => {
+      if (pendingMatchByUser.has(p.userId)) return 'Matched in pending rows, not saved yet';
+      const possible = possibleRowsByUser.get(p.userId);
+      if (possible && possible.length > 0) {
+        const top = possible[0];
+        return `Possible imported row: "${top.name}" (${Math.round(top.score * 100)}%)`;
+      }
+      return '';
+    },
+    [pendingMatchByUser, possibleRowsByUser]
+  );
+
+  const handleDownloadReport = useCallback(async () => {
+    if (downloadingReport) return;
+    setDownloadingReport(true);
+    try {
+      const XLSX = await import('xlsx');
+      const year = report?.year ?? new Date().getFullYear();
+      const missingSheet = missingAll.map((p) => ({
+        Employee: p.name || '(no name on profile)',
+        Email: p.email,
+        Role: p.role,
+        Active: p.active ? 'Yes' : 'No',
+        [`Worked in ${year}`]: p.lastWorked ? 'Yes' : 'No',
+        'Last worked': p.lastWorked || '',
+        [`Days worked in ${year}`]: p.daysWorked,
+        'Account created': p.createdAt ? p.createdAt.slice(0, 10) : '',
+        Note: missingNote(p),
+      }));
+      const unmatchedSheet = unmatchedRows.map((r) => {
+        const top = r.suggestions[0];
+        return {
+          'Imported name': r.employeeName.trim() || '(no name)',
+          'Source document': r.sourceName || (r.matchMethod === 'onfile' ? 'On file' : 'Typed in'),
+          Status: unmatchedStatus(r),
+          'As of': r.asOfDate,
+          State: r.stateCode,
+          'Gross Pay YTD': r.grossPayYtd,
+          'Federal Income YTD': r.federalIncomeYtd,
+          'Best suggestion': top?.name || '',
+          'Suggestion score': top ? `${Math.round(top.score * 100)}%` : '',
+          'Suggestion email': top?.email || '',
+          'Other suggestions': r.suggestions
+            .slice(1)
+            .map((c) => `${c.name} (${Math.round(c.score * 100)}%)`)
+            .join('; '),
+        };
+      });
+      const wb = XLSX.utils.book_new();
+      const missingWs =
+        missingSheet.length > 0
+          ? XLSX.utils.json_to_sheet(missingSheet)
+          : XLSX.utils.aoa_to_sheet([['Every user has a saved YTD baseline.']]);
+      const unmatchedWs =
+        unmatchedSheet.length > 0
+          ? XLSX.utils.json_to_sheet(unmatchedSheet)
+          : XLSX.utils.aoa_to_sheet([['No unmatched imported rows in this session.']]);
+      XLSX.utils.book_append_sheet(wb, missingWs, 'Missing YTD');
+      XLSX.utils.book_append_sheet(wb, unmatchedWs, 'Not matched');
+      XLSX.writeFile(wb, `ytd-coverage-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (e: any) {
+      setError(`Could not build the report file: ${e?.message || e}`);
+    } finally {
+      setDownloadingReport(false);
+    }
+  }, [downloadingReport, report, missingAll, unmatchedRows, missingNote]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <div className="container mx-auto max-w-7xl py-10 px-6">
@@ -1109,6 +1317,228 @@ export default function AdpYtdImportPage() {
             {success}
           </div>
         )}
+
+        {/* YTD coverage report */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
+          <div className="px-5 py-4 flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h2 className="text-lg font-semibold text-gray-900">YTD coverage report</h2>
+              {loadingReport ? (
+                <span className="text-sm text-gray-500">Loading…</span>
+              ) : reportError ? (
+                <span className="text-sm text-red-600">{reportError}</span>
+              ) : (
+                <>
+                  <span
+                    className={`inline-block px-2 py-0.5 rounded-full text-xs ${
+                      missingCounts.worked > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                    }`}
+                  >
+                    {missingCounts.worked} worked in {report?.year} with no YTD baseline
+                  </span>
+                  <span className="inline-block px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs">
+                    {missingCounts.all} users with no baseline in total
+                  </span>
+                </>
+              )}
+              <span
+                className={`inline-block px-2 py-0.5 rounded-full text-xs ${
+                  unmatchedRows.length > 0 ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-600'
+                }`}
+              >
+                {unmatchedRows.length} imported row(s) not matched
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={loadReport} disabled={loadingReport} className="text-sm text-blue-600 hover:underline disabled:opacity-50">
+                Refresh
+              </button>
+              <button
+                onClick={handleDownloadReport}
+                disabled={downloadingReport || loadingReport}
+                className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                {downloadingReport ? 'Building…' : 'Download report (.xlsx)'}
+              </button>
+              <button
+                onClick={() => setReportOpen((o) => !o)}
+                className="px-3 py-2 rounded-lg bg-gray-800 text-white text-sm font-medium hover:bg-gray-900"
+              >
+                {reportOpen ? 'Hide report' : 'Show report'}
+              </button>
+            </div>
+          </div>
+
+          {reportOpen && (
+            <div className="border-t border-gray-100">
+              <div className="px-5 pt-3 flex gap-2 border-b border-gray-100">
+                <button
+                  onClick={() => setReportTab('missing')}
+                  className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                    reportTab === 'missing' ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Missing YTD ({missingVisible.length})
+                </button>
+                <button
+                  onClick={() => setReportTab('unmatched')}
+                  className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                    reportTab === 'unmatched' ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Not matched to a user ({unmatchedRows.length})
+                </button>
+              </div>
+
+              {reportTab === 'missing' && (
+                <div className="p-5">
+                  <div className="flex items-center gap-3 flex-wrap mb-3">
+                    <select
+                      value={missingFilter}
+                      onChange={(e) => setMissingFilter(e.target.value as MissingFilter)}
+                      className="border border-gray-300 rounded-lg px-2 py-1 text-sm text-gray-700"
+                      aria-label="Which users to list"
+                    >
+                      <option value="worked">Clocked time in {report?.year ?? 'this year'} ({missingCounts.worked})</option>
+                      <option value="workers">All workers, any activity ({missingCounts.workers})</option>
+                      <option value="all">Every user, all roles ({missingCounts.all})</option>
+                    </select>
+                    {report && (
+                      <span className="text-xs text-gray-500">
+                        {report.totalUsers - missingCounts.all} of {report.totalUsers} users have a saved YTD baseline.
+                        &quot;Worked&quot; means at least one clock-in or clock-out this year.
+                      </span>
+                    )}
+                  </div>
+                  <div className="overflow-auto max-h-[28rem] border border-gray-100 rounded-lg">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-600 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium">Employee</th>
+                          <th className="px-3 py-2 text-left font-medium">Role</th>
+                          <th className="px-3 py-2 text-left font-medium">Account</th>
+                          <th className="px-3 py-2 text-left font-medium">Last worked</th>
+                          <th className="px-3 py-2 text-right font-medium">Days worked</th>
+                          <th className="px-3 py-2 text-left font-medium">Note</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {loadingReport && (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-6 text-center text-gray-500">Loading…</td>
+                          </tr>
+                        )}
+                        {!loadingReport && missingVisible.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
+                              {reportError ? 'The report could not be loaded.' : 'Nobody in this view is missing a YTD baseline.'}
+                            </td>
+                          </tr>
+                        )}
+                        {!loadingReport &&
+                          missingVisible.map((p) => {
+                            const note = missingNote(p);
+                            return (
+                              <tr key={p.userId}>
+                                <td className="px-3 py-2">
+                                  <div className="text-gray-900">{p.name || '(no name on profile)'}</div>
+                                  <div className="text-[11px] text-gray-500">{p.email}</div>
+                                </td>
+                                <td className="px-3 py-2 text-gray-600">{p.role || '—'}</td>
+                                <td className="px-3 py-2">
+                                  {p.active ? (
+                                    <span className="text-gray-600">Active</span>
+                                  ) : (
+                                    <span className="inline-block px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">Inactive</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 text-gray-700">{p.lastWorked || '—'}</td>
+                                <td className="px-3 py-2 text-right text-gray-700">{p.daysWorked || '—'}</td>
+                                <td className="px-3 py-2 text-xs text-gray-600">{note || '—'}</td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {reportTab === 'unmatched' && (
+                <div className="p-5">
+                  <div className="flex items-center gap-3 flex-wrap mb-3">
+                    <span className="text-xs text-gray-500 max-w-3xl">
+                      Imported rows in the pending list that are not linked to a user, so they cannot be saved.
+                      Unmatched rows are never stored: this list covers documents uploaded since the page was
+                      opened, and is empty again after a reload.
+                    </span>
+                    {unmatchedRows.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setView('attention');
+                          document.getElementById('pending-rows')?.scrollIntoView({ behavior: 'smooth' });
+                        }}
+                        className="text-sm text-blue-600 hover:underline"
+                      >
+                        Fix them in the pending rows
+                      </button>
+                    )}
+                  </div>
+                  <div className="overflow-auto max-h-[28rem] border border-gray-100 rounded-lg">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-600 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium">Imported name</th>
+                          <th className="px-3 py-2 text-left font-medium">Source</th>
+                          <th className="px-3 py-2 text-left font-medium">Status</th>
+                          <th className="px-3 py-2 text-left font-medium">As of</th>
+                          <th className="px-3 py-2 text-right font-medium">Gross YTD</th>
+                          <th className="px-3 py-2 text-left font-medium">Best suggestion</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {unmatchedRows.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
+                              {rows.length === 0
+                                ? 'No documents imported in this session yet. Upload the ADP report to see which names do not match a user.'
+                                : 'Every pending row is matched to a user.'}
+                            </td>
+                          </tr>
+                        )}
+                        {unmatchedRows.map((r) => {
+                          const top = r.suggestions[0];
+                          return (
+                            <tr key={r.key}>
+                              <td className="px-3 py-2 text-gray-900">{r.employeeName.trim() || '(no name)'}</td>
+                              <td className="px-3 py-2 text-gray-600 max-w-[14rem] truncate" title={r.sourceName}>
+                                {r.sourceName || 'Typed in'}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span
+                                  className={`inline-block px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${
+                                    r.suggestions.length > 0 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-700'
+                                  }`}
+                                >
+                                  {unmatchedStatus(r)}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-gray-700">{r.asOfDate || '—'}</td>
+                              <td className="px-3 py-2 text-right text-gray-900">{moneyCell(r.grossPayYtd)}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600">
+                                {top ? `${top.name} · ${Math.round(top.score * 100)}%${top.active ? '' : ' (inactive)'}` : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* On file */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
@@ -1307,7 +1737,7 @@ export default function AdpYtdImportPage() {
 
         {/* Editable grid */}
         {rows.length > 0 && (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
+          <div id="pending-rows" className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-3 flex-wrap">
                 <h2 className="text-lg font-semibold text-gray-900">Pending rows ({rows.length})</h2>
