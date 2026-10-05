@@ -20,8 +20,24 @@ function findPdfHeaderOffset(bytes: Uint8Array) {
   return -1;
 }
 
+// pdf.js runs its "fake worker" in-process on the server, but by default it
+// loads it with a dynamic import of pdf.worker.mjs next to the bundled
+// pdf.mjs. Webpack never emits that file into .next/server, so the import
+// failed ("Setting up fake worker failed"), every text PDF fell through to
+// the pdf-lib fallback below, came back empty and was treated as a scan.
+// Importing the worker module ourselves and exposing it as
+// globalThis.pdfjsWorker makes pdf.js use it directly, with no file lookup.
+async function ensurePdfJsServerWorker() {
+  const g = globalThis as any;
+  if (g.pdfjsWorker?.WorkerMessageHandler) return;
+  // @ts-expect-error pdfjs-dist ships no type declarations for the worker build
+  const worker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+  g.pdfjsWorker = worker;
+}
+
 async function extractPdfJsPageTexts(pdfBytes: Uint8Array) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  await ensurePdfJsServerWorker();
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(pdfBytes),
     useWorkerFetch: false,

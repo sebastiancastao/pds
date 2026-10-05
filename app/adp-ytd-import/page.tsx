@@ -39,6 +39,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import type { OcrHooks, OcrProgress, PayrollData } from '@/lib/pdf-reader-extraction';
 import type { MatchMethod, NameCandidate, NameMatchResult } from '@/lib/employee-name-match';
+import { collapseRepeatedText, readAdpStatementYtd } from '@/lib/adp-statement-ytd';
 
 type FieldKey =
   | 'federalIncomeYtd'
@@ -94,18 +95,50 @@ type UploadedDoc = {
   message: string | null;
 };
 
+// DB column of each grid field in employee_ytd_carryover (same mapping as
+// NUMERIC_FIELDS in app/api/employee-ytd-carryover/route.ts).
+const DB_COLUMN: Record<FieldKey, string> = {
+  federalIncomeYtd: 'federal_income_ytd',
+  socialSecurityYtd: 'social_security_ytd',
+  medicareYtd: 'medicare_ytd',
+  stateIncomeYtd: 'state_income_ytd',
+  stateDIYtd: 'state_di_ytd',
+  calSaversRothRetYtd: 'calsavers_roth_ret_ytd',
+  regularYtd: 'regular_ytd',
+  overtimeYtd: 'overtime_ytd',
+  doubleTimeYtd: 'doubletime_ytd',
+  commissionYtd: 'commission_ytd',
+  variableIncentiveYtd: 'variable_incentive_ytd',
+  creditCardTipsYtd: 'credit_card_tips_ytd',
+  restBreakPayYtd: 'rest_break_pay_ytd',
+  travelPayYtd: 'travel_pay_ytd',
+  bonusYtd: 'bonus_ytd',
+  sickPayYtd: 'sick_pay_ytd',
+  mealPremiumYtd: 'meal_premium_ytd',
+  grossPayYtd: 'gross_pay_ytd',
+  equipmentReimbYtd: 'equipment_reimb_ytd',
+  mileageReimbYtd: 'mileage_reimb_ytd',
+  miscReimbursementYtd: 'misc_reimbursement_ytd',
+};
+
+// A saved baseline as GET /api/employee-ytd-carryover returns it: every
+// YTD column (see DB_COLUMN) plus the fields below.
 type OnFileRecord = {
   id: string;
   user_id: string;
   employeeName: string;
   as_of_date: string | null;
   state_code: string | null;
+  notes: string | null;
   updated_at: string;
-  gross_pay_ytd: number | null;
-  federal_income_ytd: number | null;
-  social_security_ytd: number | null;
-  medicare_ytd: number | null;
-};
+} & Record<string, any>;
+
+function onFileValue(rec: OnFileRecord, key: FieldKey): number | null {
+  const raw = rec[DB_COLUMN[key]];
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
 
 // A user with no saved YTD baseline, from /api/employee-ytd-carryover/report.
 type MissingPerson = {
@@ -346,7 +379,8 @@ function rowFromPdfPage(
   fileName: string,
   pageNumber: number,
   extractionMethod: string | undefined,
-  lib: PdfReaderLib
+  lib: PdfReaderLib,
+  pageText: string
 ): Row {
   const info = payrollData?.employeeInfo || {};
   const sd = payrollData?.statutoryDeductions || {};
@@ -354,9 +388,12 @@ function rowFromPdfPage(
   const earnings = payrollData?.earnings || {};
   const adj = payrollData?.netPayAdjustments || {};
 
-  // An overly long 'name' is garbled text from a PDF whose content could not
-  // be decoded. Leave it blank so the reviewer types the name instead.
-  const rawName = typeof info.name === 'string' && info.name.trim().length <= 80 ? info.name : '';
+  // ADP prints the name four times over (bold effect); a long name then
+  // reads as one 80+ character string, so collapse the repeat first. An
+  // overly long name after that is garbled text from a PDF whose content
+  // could not be decoded: leave it blank so the reviewer types it instead.
+  const collapsedName = typeof info.name === 'string' ? collapseRepeatedText(info.name) : '';
+  const rawName = collapsedName.length <= 80 ? collapsedName : '';
   const row = newRow(toDisplayName(rawName));
   row.asOfDate = pdfDateToIso(info.payDate) || pdfDateToIso(info.payPeriod?.end) || row.asOfDate;
   row.stateCode = pdfStateCode(payrollData, lib);
@@ -387,7 +424,50 @@ function rowFromPdfPage(
   row.mileageReimbYtd = ytdOf(adj, 'mileageReimbursement');
   row.miscReimbursementYtd = ytdOf(adj, 'miscReimbursement');
 
-  row.notes = `From PDF ${fileName}, page ${pageNumber}${extractionMethod ? ` (${extractionMethod})` : ''}`;
+  const notes = [`From PDF ${fileName}, page ${pageNumber}${extractionMethod ? ` (${extractionMethod})` : ''}`];
+
+  // Line-by-line YTD read of the statement (lib/adp-statement-ytd.ts). The
+  // general parser above misses YTD-only lines (Gross Pay, Rest Pay, CC tips,
+  // NY state income, ...) and can invent amounts (e.g. Social Security from
+  // the "Social Security Number" line). A page with a Gross Pay line is a
+  // full earnings statement, so every YTD column comes from the line read
+  // alone; on any other layout it only fills the columns left blank.
+  const adp = readAdpStatementYtd(pageText);
+  const isStatement = adp.fields.grossPayYtd !== undefined;
+  if (isStatement || adp.linesRead > 0) {
+    for (const f of FIELD_DEFS) {
+      const value = adp.fields[f.key];
+      const fromLines = value !== undefined ? ytdString(value) : '';
+      if (isStatement) row[f.key] = fromLines;
+      else if (!row[f.key] && fromLines) row[f.key] = fromLines;
+    }
+    if (adp.stateCode && (isStatement || !row.stateIncomeYtd)) {
+      row.stateCode = adp.stateCode;
+      row.stateIncomeYtd = ytdString(adp.stateIncomes[adp.stateCode]);
+    }
+    // State DI on the paystub is California SDI; keep it only for CA rows.
+    if (isStatement && row.stateCode !== 'CA' && adp.stateCode) row.stateDIYtd = '';
+  }
+
+  if (isStatement) {
+    const otherStates = Object.entries(adp.stateIncomes).filter(([code]) => code !== row.stateCode);
+    if (otherStates.length > 0) {
+      notes.push(
+        `Other state income YTD not in this row: ${otherStates.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(', ')}`
+      );
+    }
+    if (adp.unmapped.length > 0) {
+      notes.push(
+        `YTD lines with no column: ${adp.unmapped.map((u) => `${u.label} ${Math.abs(u.ytd).toFixed(2)}`).join(', ')}`
+      );
+    }
+    const gross = adp.fields.grossPayYtd ?? 0;
+    if (Math.abs(gross - adp.earningsTotal) >= 0.01) {
+      notes.push(`Check: earnings lines add up to ${adp.earningsTotal.toFixed(2)} but Gross Pay YTD is ${gross.toFixed(2)}`);
+    }
+  }
+
+  row.notes = notes.join('. ');
   return row;
 }
 
@@ -563,7 +643,7 @@ async function readPdfFile(
         : [];
   const rows: Row[] = [];
   for (const page of pages) {
-    const row = rowFromPdfPage(page.payrollData, file.name, page.pageNumber, page.extractionMethod, lib);
+    const row = rowFromPdfPage(page.payrollData, file.name, page.pageNumber, page.extractionMethod, lib, page.text || '');
     // Skip pages that carry neither a name nor any YTD figure
     // (cover pages, continuation pages, blank scans).
     if (!row.employeeName && !hasAnyYtd(row)) continue;
@@ -1075,12 +1155,25 @@ export default function AdpYtdImportPage() {
     row.matchedQuery = rec.employeeName.trim();
     row.asOfDate = rec.as_of_date || row.asOfDate;
     row.stateCode = rec.state_code || 'CA';
-    row.grossPayYtd = rec.gross_pay_ytd != null ? String(rec.gross_pay_ytd) : '';
-    row.federalIncomeYtd = rec.federal_income_ytd != null ? String(rec.federal_income_ytd) : '';
-    row.socialSecurityYtd = rec.social_security_ytd != null ? String(rec.social_security_ytd) : '';
-    row.medicareYtd = rec.medicare_ytd != null ? String(rec.medicare_ytd) : '';
+    // Every saved column: the save upserts the whole row, so a field left
+    // out here would be wiped when the edited row is saved again.
+    for (const f of FIELD_DEFS) {
+      const value = onFileValue(rec, f.key);
+      row[f.key] = value !== null ? String(value) : '';
+    }
+    row.notes = rec.notes || '';
     setRows((prev) => [...prev, row]);
   }, []);
+
+  // On-file columns: gross and taxes always, then every other column in grid
+  // order that at least one saved record uses.
+  const onFileColumns = useMemo(() => {
+    const lead: FieldKey[] = ['grossPayYtd', 'federalIncomeYtd', 'socialSecurityYtd', 'medicareYtd', 'stateIncomeYtd', 'stateDIYtd'];
+    const rest = FIELD_DEFS.map((f) => f.key).filter(
+      (k) => !lead.includes(k) && onFile.some((rec) => onFileValue(rec, k) !== null)
+    );
+    return [...lead, ...rest].map((key) => ({ key, label: FIELD_DEFS.find((f) => f.key === key)?.label || key }));
+  }, [onFile]);
 
   // user_ids matched by more than one pending row (flagged "Duplicate"; only
   // the most recent of them is saved).
@@ -1548,15 +1641,18 @@ export default function AdpYtdImportPage() {
               Refresh
             </button>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[32rem]">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-gray-600">
+              <thead className="bg-gray-50 text-gray-600 sticky top-0 z-10">
                 <tr>
-                  <th className="px-4 py-2 text-left font-medium">Employee</th>
+                  <th className="px-4 py-2 text-left font-medium sticky left-0 bg-gray-50">Employee</th>
                   <th className="px-4 py-2 text-left font-medium">State</th>
                   <th className="px-4 py-2 text-left font-medium">As Of</th>
-                  <th className="px-4 py-2 text-right font-medium">Gross YTD</th>
-                  <th className="px-4 py-2 text-right font-medium">Federal YTD</th>
+                  {onFileColumns.map((c) => (
+                    <th key={c.key} className="px-3 py-2 text-right font-medium whitespace-nowrap">
+                      {c.label}
+                    </th>
+                  ))}
                   <th className="px-4 py-2 text-right font-medium">Updated</th>
                   <th className="px-4 py-2" />
                 </tr>
@@ -1564,27 +1660,29 @@ export default function AdpYtdImportPage() {
               <tbody className="divide-y divide-gray-100">
                 {loadingOnFile && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-gray-500">Loading…</td>
+                    <td colSpan={onFileColumns.length + 5} className="px-4 py-6 text-center text-gray-500">Loading…</td>
                   </tr>
                 )}
                 {!loadingOnFile && onFile.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                    <td colSpan={onFileColumns.length + 5} className="px-4 py-6 text-center text-gray-500">
                       No carryover records saved yet.
                     </td>
                   </tr>
                 )}
                 {onFile.map((rec) => (
                   <tr key={rec.id}>
-                    <td className="px-4 py-2 text-gray-900">{rec.employeeName}</td>
+                    <td className="px-4 py-2 text-gray-900 sticky left-0 bg-white whitespace-nowrap">{rec.employeeName}</td>
                     <td className="px-4 py-2 text-gray-600">{rec.state_code || '—'}</td>
-                    <td className="px-4 py-2 text-gray-600">{rec.as_of_date || '—'}</td>
-                    <td className="px-4 py-2 text-right text-gray-900">
-                      {rec.gross_pay_ytd != null ? `$${Number(rec.gross_pay_ytd).toFixed(2)}` : '—'}
-                    </td>
-                    <td className="px-4 py-2 text-right text-gray-900">
-                      {rec.federal_income_ytd != null ? `$${Number(rec.federal_income_ytd).toFixed(2)}` : '—'}
-                    </td>
+                    <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{rec.as_of_date || '—'}</td>
+                    {onFileColumns.map((c) => {
+                      const value = onFileValue(rec, c.key);
+                      return (
+                        <td key={c.key} className="px-3 py-2 text-right text-gray-900 whitespace-nowrap">
+                          {value !== null ? `$${value.toFixed(2)}` : <span className="text-gray-400">—</span>}
+                        </td>
+                      );
+                    })}
                     <td className="px-4 py-2 text-right text-gray-500">
                       {rec.updated_at ? new Date(rec.updated_at).toLocaleDateString() : '—'}
                     </td>
@@ -1655,7 +1753,10 @@ export default function AdpYtdImportPage() {
                 PDF Reader
               </Link>
               : text PDFs are parsed directly and scanned PDFs go through OCR. Each paystub page becomes
-              a row built from its year-to-date column. When one upload has several rows for the same
+              a row built from its year-to-date column. ADP earnings statements are read line by line, so
+              every year-to-date line is picked up (gross pay, each earnings type, federal and state taxes,
+              reimbursements); lines with no column here, such as Holiday or Medical, are listed in the
+              row&apos;s notes. When one upload has several rows for the same
               employee, only the most recent is kept; rows from separate uploads that match the same
               employee are marked Duplicate and only the most recent is saved.
             </p>
@@ -1838,6 +1939,17 @@ export default function AdpYtdImportPage() {
                             {row.sourceName}
                           </div>
                         )}
+                        {(() => {
+                          // Notes beyond "From PDF <file>, page N": YTD lines
+                          // with no column, other states, gross mismatch.
+                          const extra = row.notes.replace(/^From PDF .*?, page \d+(?: \([^)]*\))?(?:\. |$)/, '');
+                          if (!extra || extra === row.notes) return null;
+                          return (
+                            <div className="mt-1 w-40 truncate text-[11px] text-amber-700" title={extra}>
+                              {extra}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2 align-top">
                         {row.matchStatus === 'matched' && (
