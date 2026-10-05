@@ -81,16 +81,28 @@ export async function GET(req: NextRequest) {
     }
 
     // Generate a short-lived signed URL
+    const filename = `paystub-${String(logEntry.employee_name || "employee").replace(/\s+/g, "_")}-${logEntry.pay_date ?? "unknown"}.pdf`;
     const { data: signed, error: signErr } = await supabaseAdmin.storage
       .from(PAYSTUBS_BUCKET)
       .createSignedUrl(logEntry.pdf_storage_path, SIGNED_URL_EXPIRES_IN, {
-        download: `paystub-${(logEntry.employee_name as string).replace(/\s+/g, "_")}-${logEntry.pay_date ?? "unknown"}.pdf`,
+        download: filename,
       });
 
     if (signErr || !signed?.signedUrl) {
       return NextResponse.json(
         { error: signErr?.message || "Failed to generate download URL." },
         { status: 500 }
+      );
+    }
+
+    // The app keeps its Supabase session in localStorage, so browser
+    // navigation (a plain <a href>) carries no credentials. Pages call this
+    // with a Bearer token and ?format=json, then open the signed URL directly
+    // instead of following a cross-origin redirect inside fetch().
+    if (req.nextUrl.searchParams.get("format") === "json") {
+      return NextResponse.json(
+        { url: signed.signedUrl, filename },
+        { headers: { "Cache-Control": "no-store" } }
       );
     }
 
