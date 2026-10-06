@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { loginUrlFor, savePostLoginRedirect } from '@/lib/post-login-redirect';
 import { supabase } from '@/lib/supabase';
-import { groupReimbursementRequestsByBatch } from '@/lib/reimbursements';
+import { groupReimbursementRequestsByBatch, isReimbursementReviewer } from '@/lib/reimbursements';
 import '@/app/global-calendar/dashboard-styles.css';
 
 type PayrollSubmission = {
@@ -50,6 +50,24 @@ type ReimbursementReviewRequest = {
 };
 
 type TabKey = 'payroll' | 'reimbursements';
+
+type EditableReimbursementStatus = 'submitted' | 'approved' | 'rejected';
+
+type ReimbursementEditForm = {
+  description: string;
+  purchase_date: string;
+  requested_amount: string;
+  status: EditableReimbursementStatus;
+  approved_amount: string;
+  approved_pay_date: string;
+  review_notes: string;
+};
+
+const EDIT_STATUS_OPTIONS: Array<{ value: EditableReimbursementStatus; label: string }> = [
+  { value: 'submitted', label: 'Pending' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'rejected', label: 'Rejected' },
+];
 
 const PAYROLL_STATUS_STYLES: Record<PayrollSubmission['status'], string> = {
   submitted: 'bg-blue-100 text-blue-700',
@@ -116,6 +134,16 @@ export default function PayrollApprovalsPage() {
   const [reimbursementActionError, setReimbursementActionError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Viewer identity: only exec may edit (same rule as the API), and nobody may
+  // edit their own request.
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const [viewerRole, setViewerRole] = useState('');
+  const canEditReimbursements = isReimbursementReviewer(viewerRole);
+
+  const [reimbursementEditId, setReimbursementEditId] = useState<string | null>(null);
+  const [reimbursementEditForm, setReimbursementEditForm] = useState<ReimbursementEditForm | null>(null);
+  const [reimbursementEditError, setReimbursementEditError] = useState('');
+
   useEffect(() => {
     const check = async () => {
       try {
@@ -141,6 +169,8 @@ export default function PayrollApprovalsPage() {
           return;
         }
 
+        setViewerId(session.user.id);
+        setViewerRole(role);
         setIsAuthorized(true);
       } catch {
         const target = `${window.location.pathname}${window.location.search}`;
@@ -234,7 +264,81 @@ export default function PayrollApprovalsPage() {
     setSubmissionActionError('');
   };
 
+  const closeReimbursementEdit = () => {
+    setReimbursementEditId(null);
+    setReimbursementEditForm(null);
+    setReimbursementEditError('');
+  };
+
+  const openReimbursementEdit = (request: ReimbursementReviewRequest) => {
+    if (request.status === 'cancelled') return;
+    closeReimbursementAction();
+    setReimbursementEditId(request.id);
+    setReimbursementEditForm({
+      description: request.description || '',
+      purchase_date: String(request.purchase_date || '').slice(0, 10),
+      requested_amount: Number(request.requested_amount || 0).toFixed(2),
+      status: request.status,
+      approved_amount: Number(request.approved_amount ?? request.requested_amount ?? 0).toFixed(2),
+      approved_pay_date: request.approved_pay_date ? String(request.approved_pay_date).slice(0, 10) : '',
+      review_notes: request.review_notes || '',
+    });
+    setReimbursementEditError('');
+  };
+
+  const updateReimbursementEditForm = (patch: Partial<ReimbursementEditForm>) => {
+    setReimbursementEditForm((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
+
+  async function submitReimbursementEdit() {
+    if (!reimbursementEditId || !reimbursementEditForm) return;
+
+    setSubmitting(true);
+    setReimbursementEditError('');
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const form = reimbursementEditForm;
+      const res = await fetch('/api/payroll/reimbursements', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          action: 'edit',
+          id: reimbursementEditId,
+          description: form.description,
+          purchase_date: form.purchase_date,
+          requested_amount: form.requested_amount,
+          status: form.status,
+          approved_amount: form.status === 'approved' ? form.approved_amount : null,
+          approved_pay_date: form.status === 'approved' ? form.approved_pay_date || null : null,
+          review_notes: form.review_notes.trim() || null,
+        }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error || 'Failed to save reimbursement changes');
+      }
+
+      const updated = json.request as ReimbursementReviewRequest;
+      setReimbursementRequests((prev) =>
+        prev.map((entry) => (entry.id === updated.id ? updated : entry))
+      );
+      closeReimbursementEdit();
+    } catch (err: any) {
+      setReimbursementEditError(err.message || 'Failed to save reimbursement changes');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const openReimbursementAction = (request: ReimbursementReviewRequest, type: 'approve' | 'reject') => {
+    closeReimbursementEdit();
     setReimbursementActionId(request.id);
     setReimbursementActionType(type);
     setReimbursementApprovedAmount(
@@ -555,6 +659,8 @@ export default function PayrollApprovalsPage() {
                     )}
                     {group.items.map((request) => {
                   const isStandalone = !request.event_id;
+                  const canEditRequest =
+                    canEditReimbursements && request.status !== 'cancelled' && request.user_id !== viewerId;
                   return (
                     <div key={request.id} className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
                       <p className="text-center text-4xl font-bold text-gray-900">{formatMoney(request.requested_amount)}</p>
@@ -671,20 +777,164 @@ export default function PayrollApprovalsPage() {
                         </div>
                       </div>
 
-                      {request.status === 'submitted' && reimbursementActionId !== request.id && (
-                        <div className="mt-5 flex gap-2">
-                          <button
-                            onClick={() => openReimbursementAction(request, 'approve')}
-                            className="apple-button apple-button-primary text-sm px-4 py-2"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => openReimbursementAction(request, 'reject')}
-                            className="apple-button apple-button-danger text-sm px-4 py-2"
-                          >
-                            Reject
-                          </button>
+                      {(request.status === 'submitted' || canEditRequest) &&
+                        reimbursementActionId !== request.id &&
+                        reimbursementEditId !== request.id && (
+                        <div className="mt-5 flex flex-wrap gap-2">
+                          {request.status === 'submitted' && (
+                            <>
+                              <button
+                                onClick={() => openReimbursementAction(request, 'approve')}
+                                className="apple-button apple-button-primary text-sm px-4 py-2"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => openReimbursementAction(request, 'reject')}
+                                className="apple-button apple-button-danger text-sm px-4 py-2"
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {canEditRequest && (
+                            <button
+                              onClick={() => openReimbursementEdit(request)}
+                              className="apple-button apple-button-secondary text-sm px-4 py-2"
+                            >
+                              Edit
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {reimbursementEditId === request.id && reimbursementEditForm && (
+                        <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                          <p className="text-sm font-semibold mb-3 text-blue-700">Edit this reimbursement</p>
+                          {request.status === 'approved' && (
+                            <p className="text-xs text-blue-700 mb-3">
+                              This request is already approved. Changes apply to paystubs, final pay and exports generated after you save. Payroll that was already processed is not changed.
+                            </p>
+                          )}
+
+                          <div className="grid gap-3 md:grid-cols-2 mb-3">
+                            <div className="md:col-span-2">
+                              <label className="apple-label text-xs mb-1 block">Description</label>
+                              <textarea
+                                rows={2}
+                                value={reimbursementEditForm.description}
+                                onChange={(e) => updateReimbursementEditForm({ description: e.target.value })}
+                                className="apple-select resize-none text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="apple-label text-xs mb-1 block">Purchase Date</label>
+                              <input
+                                type="date"
+                                value={reimbursementEditForm.purchase_date}
+                                onChange={(e) => updateReimbursementEditForm({ purchase_date: e.target.value })}
+                                className="apple-select text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="apple-label text-xs mb-1 block">Requested Amount</label>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={reimbursementEditForm.requested_amount}
+                                onChange={(e) => updateReimbursementEditForm({ requested_amount: e.target.value })}
+                                className="apple-select text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="apple-label text-xs mb-1 block">Status</label>
+                              <select
+                                value={reimbursementEditForm.status}
+                                onChange={(e) =>
+                                  updateReimbursementEditForm({ status: e.target.value as EditableReimbursementStatus })
+                                }
+                                className="apple-select text-sm"
+                              >
+                                {EDIT_STATUS_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {reimbursementEditForm.status === 'approved' && (
+                              <>
+                                <div>
+                                  <label className="apple-label text-xs mb-1 block">Approved Amount</label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={reimbursementEditForm.approved_amount}
+                                    onChange={(e) => updateReimbursementEditForm({ approved_amount: e.target.value })}
+                                    className="apple-select text-sm"
+                                  />
+                                </div>
+                                {isStandalone ? (
+                                  <div>
+                                    <label className="apple-label text-xs mb-1 block">Pay Date (required)</label>
+                                    <input
+                                      type="date"
+                                      value={reimbursementEditForm.approved_pay_date}
+                                      onChange={(e) => updateReimbursementEditForm({ approved_pay_date: e.target.value })}
+                                      className="apple-select text-sm"
+                                    />
+                                  </div>
+                                ) : (
+                                  <p className="self-end text-xs text-gray-500">
+                                    Event reimbursements are paid with that event&apos;s payroll, so there is no pay date.
+                                  </p>
+                                )}
+                              </>
+                            )}
+                          </div>
+
+                          {reimbursementEditForm.status === 'submitted' && request.status !== 'submitted' && (
+                            <p className="text-xs text-blue-700 mb-3">
+                              Moving this back to Pending clears the approved amount, pay date and reviewer, and puts it back in the review queue.
+                            </p>
+                          )}
+                          {reimbursementEditForm.status === 'rejected' && request.status === 'approved' && (
+                            <p className="text-xs text-red-600 mb-3">
+                              Rejecting removes this reimbursement from payroll.
+                            </p>
+                          )}
+
+                          <label className="apple-label text-xs mb-1 block">Review Notes</label>
+                          <textarea
+                            rows={3}
+                            value={reimbursementEditForm.review_notes}
+                            onChange={(e) => updateReimbursementEditForm({ review_notes: e.target.value })}
+                            placeholder="Notes about this change..."
+                            className="apple-select resize-none text-sm mb-3"
+                          />
+
+                          {reimbursementEditError && (
+                            <p className="text-xs text-red-600 mb-2">{reimbursementEditError}</p>
+                          )}
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => void submitReimbursementEdit()}
+                              disabled={submitting}
+                              className={`apple-button text-sm ${submitting ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                            >
+                              {submitting ? 'Saving...' : 'Save Changes'}
+                            </button>
+                            <button
+                              onClick={closeReimbursementEdit}
+                              disabled={submitting}
+                              className="apple-button apple-button-secondary text-sm"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         </div>
                       )}
 

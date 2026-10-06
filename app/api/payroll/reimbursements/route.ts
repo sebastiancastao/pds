@@ -108,6 +108,156 @@ export async function GET(req: NextRequest) {
   }
 }
 
+async function respondWithReviewRow(updated: any) {
+  const [eventResult, userMap, receiptUrl] = await Promise.all([
+    updated.event_id
+      ? reimbursementSupabaseAdmin.from('events').select('*').eq('id', updated.event_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null } as any),
+    getUserDisplayMap(
+      Array.from(new Set([updated.user_id, updated.reviewed_by].filter(Boolean))) as string[]
+    ),
+    createSignedReceiptUrl(updated.receipt_path || null),
+  ]);
+
+  if (eventResult.error) {
+    return NextResponse.json({ error: eventResult.error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    success: true,
+    request: normalizeReviewRow(updated, eventResult.data || null, receiptUrl, userMap),
+  });
+}
+
+const EDITABLE_REIMBURSEMENT_STATUSES = new Set(['submitted', 'approved', 'rejected']);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function toCents(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : null;
+}
+
+// Exec-only edit of any non-cancelled request, before or after review: fixes the
+// vendor's details (description, purchase date, requested amount), changes the
+// approved amount / standalone pay date, or moves the request between
+// pending / approved / rejected. Event and receipt stay as the vendor set them.
+// Payroll readers (paystubs, final pay, HR exports) query approved rows live, so
+// an edit shows up in anything generated after it is saved.
+async function handleReimbursementEdit(editorId: string, id: string, body: any) {
+  const { data: existing, error: existingError } = await reimbursementSupabaseAdmin
+    .from('vendor_reimbursement_requests')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (existingError) {
+    return NextResponse.json({ error: existingError.message }, { status: 500 });
+  }
+  if (!existing) {
+    return NextResponse.json({ error: 'Reimbursement request not found' }, { status: 404 });
+  }
+  if (existing.status === 'cancelled') {
+    return NextResponse.json({ error: 'Cancelled requests cannot be edited' }, { status: 400 });
+  }
+  if (existing.user_id === editorId) {
+    return NextResponse.json(
+      { error: 'You cannot edit your own reimbursement request. Ask another reviewer to handle it.' },
+      { status: 403 }
+    );
+  }
+
+  const description = String(body?.description ?? '').trim();
+  const purchaseDate = String(body?.purchase_date ?? '').trim().slice(0, 10);
+  const requestedAmount = parseCurrencyInput(body?.requested_amount);
+  const status = String(body?.status ?? '').trim();
+  const reviewNotes = body?.review_notes == null ? null : String(body.review_notes).trim() || null;
+
+  if (!description) {
+    return NextResponse.json({ error: 'Description is required' }, { status: 400 });
+  }
+  if (!ISO_DATE_RE.test(purchaseDate)) {
+    return NextResponse.json({ error: 'Purchase date must be a valid date' }, { status: 400 });
+  }
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+    return NextResponse.json({ error: 'Requested amount must be greater than 0' }, { status: 400 });
+  }
+  if (!EDITABLE_REIMBURSEMENT_STATUSES.has(status)) {
+    return NextResponse.json({ error: 'status must be submitted, approved or rejected' }, { status: 400 });
+  }
+
+  const updatePayload: Record<string, any> = {
+    description,
+    purchase_date: purchaseDate,
+    requested_amount: Number(requestedAmount.toFixed(2)),
+    status,
+    review_notes: reviewNotes,
+  };
+
+  if (status === 'approved') {
+    const approvedAmount = parseCurrencyInput(body?.approved_amount);
+    const approvedPayDate =
+      body?.approved_pay_date == null ? null : String(body.approved_pay_date).trim().slice(0, 10) || null;
+
+    if (!Number.isFinite(approvedAmount) || approvedAmount < 0) {
+      return NextResponse.json({ error: 'Approved amount must be a valid number' }, { status: 400 });
+    }
+    if (!existing.event_id) {
+      if (!approvedPayDate) {
+        return NextResponse.json({ error: 'Pay date is required for standalone reimbursements' }, { status: 400 });
+      }
+      if (!ISO_DATE_RE.test(approvedPayDate)) {
+        return NextResponse.json({ error: 'Pay date must be a valid date' }, { status: 400 });
+      }
+    }
+
+    updatePayload.approved_amount = Number(approvedAmount.toFixed(2));
+    updatePayload.approved_pay_date = existing.event_id ? null : approvedPayDate;
+  } else {
+    updatePayload.approved_amount = null;
+    updatePayload.approved_pay_date = null;
+  }
+
+  if (status === 'submitted') {
+    // Back to the pending queue: it has not been reviewed any more.
+    updatePayload.reviewed_by = null;
+    updatePayload.reviewed_at = null;
+  } else {
+    // Credit the editor as reviewer only when the review outcome itself changed,
+    // so fixing a typo in the description keeps the original approver.
+    const reviewChanged =
+      existing.status !== status ||
+      toCents(existing.approved_amount) !== toCents(updatePayload.approved_amount) ||
+      String(existing.approved_pay_date || '').slice(0, 10) !== String(updatePayload.approved_pay_date || '');
+    if (reviewChanged || !existing.reviewed_by) {
+      updatePayload.reviewed_by = editorId;
+      updatePayload.reviewed_at = new Date().toISOString();
+    }
+  }
+
+  // Guard on the status we read so a concurrent vendor cancel or another
+  // reviewer's change is not silently overwritten.
+  const { data: updated, error: updateError } = await reimbursementSupabaseAdmin
+    .from('vendor_reimbursement_requests')
+    .update(updatePayload)
+    .eq('id', existing.id)
+    .eq('status', existing.status)
+    .select('*')
+    .maybeSingle();
+
+  if (updateError) {
+    return NextResponse.json({ error: updateError.message }, { status: 500 });
+  }
+  if (!updated) {
+    return NextResponse.json(
+      { error: 'This request changed while you were editing it. Refresh and try again.' },
+      { status: 409 }
+    );
+  }
+
+  return respondWithReviewRow(updated);
+}
+
 export async function PATCH(req: NextRequest) {
   try {
     const user = await getReimbursementAuthedUser(req);
@@ -129,6 +279,9 @@ export async function PATCH(req: NextRequest) {
 
     if (!id) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    }
+    if (body?.action === 'edit') {
+      return handleReimbursementEdit(user.id, id, body);
     }
     if (!['approved', 'rejected'].includes(status)) {
       return NextResponse.json({ error: 'status must be approved or rejected' }, { status: 400 });
@@ -189,24 +342,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
 
-    const [eventResult, userMap, receiptUrl] = await Promise.all([
-      updated.event_id
-        ? reimbursementSupabaseAdmin.from('events').select('*').eq('id', updated.event_id).maybeSingle()
-        : Promise.resolve({ data: null, error: null } as any),
-      getUserDisplayMap(
-        Array.from(new Set([updated.user_id, updated.reviewed_by].filter(Boolean))) as string[]
-      ),
-      createSignedReceiptUrl(updated.receipt_path || null),
-    ]);
-
-    if (eventResult.error) {
-      return NextResponse.json({ error: eventResult.error.message }, { status: 500 });
-    }
-
-    return NextResponse.json({
-      success: true,
-      request: normalizeReviewRow(updated, eventResult.data || null, receiptUrl, userMap),
-    });
+    return respondWithReviewRow(updated);
   } catch (err: any) {
     console.error('[PATCH /api/payroll/reimbursements]', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
