@@ -23,7 +23,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 4 mb
 const ACCEPTED_IMAGE_MIME = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif", "image/tiff"];
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
 const PDF_EXT_RE = /\.pdf$/i;
-const allowedRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "finance"]);
+const allowedRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor6", "finance"]);
 // Roles that can open /hr/employees/[id]. Only these may see HR-only files.
 const hrRoles = new Set(["admin", "exec", "hr", "hr_admin"]);
 

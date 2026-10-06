@@ -54,12 +54,12 @@ export async function GET(req: NextRequest) {
 
     // If user is a manager or supervisor, only return assigned venues
     // Supervisors see the same venues as their lead manager(s)
-    if (userData.role === 'manager' || userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor3' || userData.role === 'supervisor5') {
+    if (userData.role === 'manager' || userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor3' || userData.role === 'supervisor5' || userData.role === 'supervisor6') {
       // Always include direct assignments for the current user.
       const managerIds: string[] = [user.id];
 
       // For supervisors, also include their lead manager IDs.
-      if (userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor5') {
+      if (userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor5' || userData.role === 'supervisor6') {
         const { data: teamLinks } = await supabaseAdmin
           .from('manager_team_members')
           .select('manager_id')
@@ -103,7 +103,7 @@ export async function GET(req: NextRequest) {
       }
 
       // For supervisors: if they have specific sup3 venue assignments, those override the chain.
-      if (userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor5') {
+      if (userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor5' || userData.role === 'supervisor6') {
         const { data: sup3Specific } = await supabaseAdmin
           .from('supervisor3_team_venue_assignments')
           .select('venue:venue_reference(*)')

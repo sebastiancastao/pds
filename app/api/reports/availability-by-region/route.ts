@@ -11,7 +11,7 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const ALLOWED_ROLES = ['admin', 'manager', 'supervisor', 'supervisor2', 'supervisor3', 'hr', 'exec'];
+const ALLOWED_ROLES = ['admin', 'manager', 'supervisor', 'supervisor2', 'supervisor3', 'supervisor6', 'hr', 'exec'];
 const VENDOR_BATCH_SIZE = 200;
 
 type AvailabilityDay = {

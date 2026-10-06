@@ -15,6 +15,7 @@ const ALLOWED_ROLES = new Set([
   'admin',
   'manager',
   'supervisor',
+  'supervisor6',
   'supervisor2',
   'hr',
   'hr_admin',

@@ -22,9 +22,9 @@ const supabaseAnon = createClient(
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate" };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Only managers, exec and supervisor3 record rest breaks. Other staff who work the event
+// Only managers, exec, supervisor3 and supervisor6 record rest breaks. Other staff who work the event
 // dashboard can read them, since the Payment tab prices rest break pay from them.
-const EDITOR_ROLES = new Set(["manager", "exec", "supervisor3"]);
+const EDITOR_ROLES = new Set(["manager", "exec", "supervisor3", "supervisor6"]);
 const VIEWER_ROLES = new Set([
   "manager",
   "exec",
@@ -35,6 +35,7 @@ const VIEWER_ROLES = new Set([
   "supervisor3",
   "supervisor4",
   "supervisor5",
+  "supervisor6",
 ]);
 
 function json(body: unknown, status = 200) {

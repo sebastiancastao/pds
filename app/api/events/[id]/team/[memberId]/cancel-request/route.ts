@@ -16,7 +16,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3"]);
+const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor6"]);
 // Always kept in the loop on cancellations, per management request.
 const CANCELLATION_CC_RECIPIENTS = ["sebastiancastao379@gmail.com", "jenvillar625@gmail.com", "hr@1pds.net"];
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;

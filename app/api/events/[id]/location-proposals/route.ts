@@ -18,7 +18,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"]);
+const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor6"]);
 // supervisor5 is view-only: it can read proposals (GET) but not create them.
 const VIEW_ROLES = new Set([...Array.from(MANAGE_ROLES), "supervisor5"]);
 

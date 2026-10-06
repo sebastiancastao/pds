@@ -322,11 +322,13 @@ export default function EventDashboardPage() {
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   // Admin and exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
   const canEditTimesheetTimes = userRole === "admin" || userRole === "exec";
-  // Managers, exec and supervisor3 can sign off the timesheet; the signature unlocks Sales for everyone.
-  const canSignTimesheet = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
-  // Managers, exec and supervisor3 record how many rest breaks each worker took.
-  // supervisor3 still cannot edit timesheet times (see canEditTimesheetTimes).
-  const canEditRestBreaks = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
+  // Managers, exec, supervisor3 and supervisor6 can sign off the timesheet; the signature unlocks Sales for everyone.
+  const canSignTimesheet =
+    userRole === "exec" || userRole === "manager" || userRole === "supervisor3" || userRole === "supervisor6";
+  // Managers, exec, supervisor3 and supervisor6 record how many rest breaks each worker took.
+  // supervisor3 and supervisor6 still cannot edit timesheet times (see canEditTimesheetTimes).
+  const canEditRestBreaks =
+    userRole === "exec" || userRole === "manager" || userRole === "supervisor3" || userRole === "supervisor6";
   // Only managers and exec can see the reimbursements vendors submitted for this event (view only).
   const canViewEventReimbursements = userRole === "exec" || userRole === "manager";
   const canManageLocations =
@@ -336,13 +338,15 @@ export default function EventDashboardPage() {
     userRole === "supervisor" ||
     userRole === "supervisor2" ||
     userRole === "supervisor3" ||
-    userRole === "supervisor4";
+    userRole === "supervisor4" ||
+    userRole === "supervisor6";
   const canManageTeam =
     userRole === "exec" ||
     userRole === "manager" ||
     userRole === "supervisor" ||
     userRole === "supervisor3" ||
-    userRole === "supervisor4";
+    userRole === "supervisor4" ||
+    userRole === "supervisor6";
   const isNonEventTimesheet = event?.event_type === "special";
   const canUseImmediateTeamAdd =
     canManageTeam &&
@@ -390,7 +394,8 @@ export default function EventDashboardPage() {
     userRole === "supervisor" ||
     userRole === "supervisor2" ||
     userRole === "supervisor3" ||
-    userRole === "supervisor4";
+    userRole === "supervisor4" ||
+    userRole === "supervisor6";
   const canUninviteTeamMember =
     canManageTeam ||
     userRole === "admin" ||
@@ -5075,10 +5080,10 @@ export default function EventDashboardPage() {
   const signoffBlockedByRestBreaks =
     !restBreakCountsLoaded || workersMissingRestBreaks.length > 0;
   const restBreakColumnTitle = restBreaksMixed
-    ? `Rest breaks the worker took. Managers, exec and supervisor3 enter this. San Diego hourly workers: timesheet record only, not paid. Los Angeles-region vendors are on commission here, so their breaks are paid at $${REST_BREAK_RATE.toFixed(2)} each.`
+    ? `Rest breaks the worker took. Managers, exec, supervisor3 and supervisor6 enter this. San Diego hourly workers: timesheet record only, not paid. Los Angeles-region vendors are on commission here, so their breaks are paid at $${REST_BREAK_RATE.toFixed(2)} each.`
     : restBreaksRecordOnly
-    ? "Rest breaks the worker took. Managers, exec and supervisor3 enter this for the timesheet record only; hourly timesheets do not pay rest breaks."
-    : `Rest breaks the worker took. Managers, exec and supervisor3 enter this; it drives rest break pay at $${REST_BREAK_RATE.toFixed(2)} per break. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`;
+    ? "Rest breaks the worker took. Managers, exec, supervisor3 and supervisor6 enter this for the timesheet record only; hourly timesheets do not pay rest breaks."
+    : `Rest breaks the worker took. Managers, exec, supervisor3 and supervisor6 enter this; it drives rest break pay at $${REST_BREAK_RATE.toFixed(2)} per break. Leave blank to pay $${REST_BREAK_RATE.toFixed(2)} for every ${REST_BREAK_PERIOD_HOURS} hours worked.`;
 
   // Rest breaks cell for one worker on the Timesheet tab (single-day row, or the summary row of a
   // multi-day timesheet, where one count covers the whole timesheet).
@@ -8071,7 +8076,7 @@ export default function EventDashboardPage() {
                                               Manager
                                             </span>
                                           )}
-                                          {(["supervisor", "supervisor2", "supervisor3", "supervisor4"].includes((member?.role || "").toLowerCase())) && (
+                                          {(["supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor6"].includes((member?.role || "").toLowerCase())) && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
                                               Supervisor
                                             </span>
@@ -8332,7 +8337,7 @@ export default function EventDashboardPage() {
                                               Manager
                                             </span>
                                           )}
-                                          {(["supervisor", "supervisor2", "supervisor3", "supervisor4"].includes((member?.role || "").toLowerCase())) && (
+                                          {(["supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor6"].includes((member?.role || "").toLowerCase())) && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
                                               Supervisor
                                             </span>
@@ -9116,7 +9121,7 @@ export default function EventDashboardPage() {
                   {/* Hours */}
                   <td className="px-1 py-1.5 font-medium whitespace-nowrap">{hours}</td>
 
-                  {/* Rest breaks taken — managers, exec and supervisor3 enter it (see renderRestBreakCell) */}
+                  {/* Rest breaks taken — managers, exec, supervisor3 and supervisor6 enter it (see renderRestBreakCell) */}
                   {renderRestBreakCell(uid, "px-1 py-1.5 whitespace-nowrap")}
 
                   {/* Actions */}
@@ -9351,7 +9356,7 @@ export default function EventDashboardPage() {
                       <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
                     )}
                   </div>
-                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && userRole !== "supervisor4" && (
+                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && userRole !== "supervisor4" && userRole !== "supervisor6" && (
                     <button
                       onClick={handleExportPayments}
                       disabled={loadingPaymentTab || filteredTeamMembers.length === 0}

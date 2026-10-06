@@ -19,7 +19,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const ALLOWED_ROLES = ["manager", "supervisor", "supervisor2", "hr", "exec"];
+const ALLOWED_ROLES = ["manager", "supervisor", "supervisor2", "supervisor6", "hr", "exec"];
 
 type MaybeArray<T> = T | T[] | null | undefined;
 

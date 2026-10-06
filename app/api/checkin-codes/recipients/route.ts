@@ -39,7 +39,7 @@ async function getAuthenticatedUserId(req: NextRequest): Promise<string | null> 
 }
 
 function canManageCodes(role: string | null | undefined) {
-  return ["manager", "supervisor", "hr", "exec", "admin"].includes(String(role || ""));
+  return ["manager", "supervisor", "supervisor6", "hr", "exec", "admin"].includes(String(role || ""));
 }
 
 function chunkArray<T>(items: T[], size: number): T[][] {

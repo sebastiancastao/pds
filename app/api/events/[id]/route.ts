@@ -162,7 +162,7 @@ export async function PUT(
 
     // For supervisors, look up their lead manager(s) and group members to grant edit access
     let allowedCreatorIds: string[] = [user.id];
-    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3") {
+    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3" || userRole === "supervisor6") {
       const { data: teamLinks } = await supabaseAdmin
         .from("manager_team_members")
         .select("manager_id")
@@ -745,10 +745,11 @@ export async function DELETE(
       return NextResponse.json({ error: "Failed to verify user role" }, { status: 403 });
     }
 
+    // supervisor6 can delete events too, limited to the events it can see (checked below).
     const userRole = String(userData.role || "");
-    if (userRole !== "exec" && userRole !== "manager") {
+    if (userRole !== "exec" && userRole !== "manager" && userRole !== "supervisor6") {
       return NextResponse.json(
-        { error: "Access denied. Only exec or manager users can delete events." },
+        { error: "Access denied. Only exec, manager or supervisor6 users can delete events." },
         { status: 403 }
       );
     }
@@ -768,14 +769,19 @@ export async function DELETE(
       return NextResponse.json({ error: "Event not found" }, { status: 404 });
     }
 
-    if (userRole === "manager") {
+    if (userRole === "manager" || userRole === "supervisor6") {
       const hasAccess = await canUserAccessEventById(supabaseAdmin, eventId, {
         userId: user.id,
         role: userRole,
       });
       if (!hasAccess) {
         return NextResponse.json(
-          { error: "Access denied. You can only delete events at your assigned venues or events you are part of." },
+          {
+            error:
+              userRole === "manager"
+                ? "Access denied. You can only delete events at your assigned venues or events you are part of."
+                : "Access denied. You can only delete events you have access to.",
+          },
           { status: 403 }
         );
       }

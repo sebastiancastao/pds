@@ -18,7 +18,7 @@ const supabaseAnon = createClient(
 );
 
 const HR_ROLES = new Set([
-  "admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4",
+  "admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor6",
 ]);
 
 // The one HR account allowed to respond straight to an employee's real email

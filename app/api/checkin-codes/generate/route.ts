@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
       .eq("id", user.id)
       .single();
 
-    if (!userData || !["manager", "supervisor", "hr", "exec"].includes(userData.role)) {
+    if (!userData || !["manager", "supervisor", "supervisor6", "hr", "exec"].includes(userData.role)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 

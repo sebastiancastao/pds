@@ -12,7 +12,8 @@ type EventAccessEvent = {
 };
 
 // supervisor5 is view-only: same visibility as a supervisor, writes blocked in middleware.ts.
-const SUPERVISOR_ROLES = new Set(["supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor5"]);
+// supervisor6 sees what a supervisor sees (it adds rest breaks, sign-off and event delete).
+const SUPERVISOR_ROLES = new Set(["supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor5", "supervisor6"]);
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();

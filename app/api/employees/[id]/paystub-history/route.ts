@@ -16,7 +16,7 @@ const supabaseAnon = createClient(
 );
 
 const HR_ROLES = new Set([
-  "admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3",
+  "admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3", "supervisor6",
 ]);
 
 async function getAuthedUser(req: NextRequest) {

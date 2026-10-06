@@ -23,7 +23,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const allowedSenderRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3"]);
+const allowedSenderRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3", "supervisor6"]);
 const DEFAULT_BATCH_SIZE = 50;
 const MIN_BATCH_SIZE = 1;
 const MAX_BATCH_SIZE = 100;
@@ -51,7 +51,7 @@ type Audience = "manual" | "role" | "managers_supervisors" | "region" | "all";
 
 // All manager-tier roles in the user_role enum (see lib/event-access.ts
 // SUPERVISOR_ROLES and app/planned-calendar/page.tsx for the same grouping).
-const MANAGER_SUPERVISOR_ROLES = ["manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"];
+const MANAGER_SUPERVISOR_ROLES = ["manager", "supervisor", "supervisor2", "supervisor3", "supervisor4", "supervisor6"];
 type BodyFormat = "html" | "text";
 
 // Always BCC'd on every email sent from /admin-email-team
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
     if (!["manual", "role", "managers_supervisors", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
     }
-    if ((requesterRole === "manager" || requesterRole === "supervisor" || requesterRole === "supervisor3") && audience !== "manual") {
+    if ((requesterRole === "manager" || requesterRole === "supervisor" || requesterRole === "supervisor3" || requesterRole === "supervisor6") && audience !== "manual") {
       return NextResponse.json(
         { error: "Managers can only send to manual recipient lists." },
         { status: 403 }

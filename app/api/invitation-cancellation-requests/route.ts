@@ -32,6 +32,7 @@ const PRIVILEGED_ROLES = new Set([
   "hr",
   "manager",
   "supervisor",
+  "supervisor6",
   "supervisor2",
   "supervisor3",
   "supervisor4",

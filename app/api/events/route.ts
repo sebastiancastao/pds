@@ -250,7 +250,7 @@ export async function GET(req: NextRequest) {
       if (venueRefs) addVenueNames(venueRefs);
     }
 
-    if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4' || userRole === 'supervisor5') {
+    if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4' || userRole === 'supervisor5' || userRole === 'supervisor6') {
       // Venues an exec assigned to this supervisor on the supervisor-team venue
       // screen live in their own table, separate from venue_managers.
       const supervisorTeamVenueIds = await getSupervisorTeamVenueIds(supabaseAdmin, user.id);

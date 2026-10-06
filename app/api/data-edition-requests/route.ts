@@ -30,7 +30,7 @@ export async function PATCH(req: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    const isPrivileged = ['exec', 'hr', 'manager', 'supervisor', 'supervisor2', 'supervisor3', 'finance'].includes(
+    const isPrivileged = ['exec', 'hr', 'manager', 'supervisor', 'supervisor2', 'supervisor3', 'supervisor6', 'finance'].includes(
       callerProfile?.role ?? ''
     );
     if (!isPrivileged) {
@@ -131,7 +131,7 @@ export async function GET(req: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    const isPrivileged = ['exec', 'hr', 'manager', 'supervisor', 'supervisor2', 'supervisor3', 'finance'].includes(
+    const isPrivileged = ['exec', 'hr', 'manager', 'supervisor', 'supervisor2', 'supervisor3', 'supervisor6', 'finance'].includes(
       callerProfile?.role ?? ''
     );
 

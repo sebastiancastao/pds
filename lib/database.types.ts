@@ -16,7 +16,7 @@ export interface Database {
         Row: {
           id: string;
           email: string;
-          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3' | 'supervisor5';
+          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3' | 'supervisor5' | 'supervisor6';
           division: 'vendor' | 'trailers' | 'both';
           is_active: boolean;
           created_at: string;
@@ -33,7 +33,7 @@ export interface Database {
         Insert: {
           id?: string;
           email: string;
-          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3' | 'supervisor5';
+          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3' | 'supervisor5' | 'supervisor6';
           division: 'vendor' | 'trailers' | 'both';
           is_active?: boolean;
           created_at?: string;
@@ -252,7 +252,7 @@ export interface Database {
       [_ in never]: never;
     };
     Enums: {
-      user_role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3' | 'supervisor5';
+      user_role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3' | 'supervisor5' | 'supervisor6';
       division: 'vendor' | 'trailers' | 'both';
       document_type: 'i9' | 'w4' | 'w9' | 'direct_deposit' | 'handbook' | 'other';
       onboarding_status: 'pending' | 'in_progress' | 'completed';

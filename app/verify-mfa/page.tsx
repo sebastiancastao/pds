@@ -425,7 +425,7 @@ function VerifyMFAContent() {
         const isCWUser = String(userData?.division || '').toLowerCase().trim() === 'trailers';
         const isCWManagerLevelRole =
           userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' ||
-          userRole === 'supervisor3' || userRole === 'exec';
+          userRole === 'supervisor3' || userRole === 'supervisor6' || userRole === 'exec';
         if (isCWUser && isCWManagerLevelRole) {
           sessionStorage.removeItem('cw_user');
           console.log('[VERIFY-MFA DEBUG] CW manager-level user - Redirecting to /cw-dashboard');
@@ -445,7 +445,7 @@ function VerifyMFAContent() {
         if (userRole === 'supervisor4') {
           console.log('[VERIFY-MFA DEBUG] Supervisor4 role - Redirecting to /planned-calendar');
           router.push('/planned-calendar');
-        } else if (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor5') {
+        } else if (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor5' || userRole === 'supervisor6') {
           console.log('[VERIFY-MFA DEBUG] Manager/Supervisor role - Redirecting to /dashboard');
           router.push('/dashboard');
         } else if (userRole === 'exec') {

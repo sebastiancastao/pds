@@ -20,7 +20,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const HR_ROLES = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3"]);
+const HR_ROLES = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3", "supervisor6"]);
 
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });

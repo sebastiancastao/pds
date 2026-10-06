@@ -124,7 +124,7 @@ const EventCalendar = dynamic(
 );
 
 const isScopedManagerRole = (role?: string | null) =>
-  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3" || role === "supervisor4" || role === "supervisor5";
+  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3" || role === "supervisor4" || role === "supervisor5" || role === "supervisor6";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -149,6 +149,8 @@ export default function DashboardPage() {
   const [userRole, setUserRole] = useState<string>("");
   // supervisor5 opens the dashboard read-only: every create/invite/edit control is hidden.
   const isViewOnly = isViewOnlyRole(userRole);
+  // Exec, managers and supervisor6 can delete events (the API limits managers and supervisor6 to events they can see).
+  const canDeleteEvents = userRole === "exec" || userRole === "manager" || userRole === "supervisor6";
   const [userRegionId, setUserRegionId] = useState<string | null>(null);
   const [userCoordinates, setUserCoordinates] = useState<{ lat: number; lng: number } | null>(null);
   const [detectedRegion, setDetectedRegion] = useState<{ id: string; name: string } | null>(null);
@@ -580,7 +582,7 @@ export default function DashboardPage() {
           }
         }
 
-        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3' && role !== 'supervisor4' && role !== 'supervisor5') {
+        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3' && role !== 'supervisor4' && role !== 'supervisor5' && role !== 'supervisor6') {
           console.error('[DASHBOARD] Access denied - user role:', role);
           router.replace('/login');
           return;
@@ -627,7 +629,7 @@ export default function DashboardPage() {
 
                 // For managers, auto-set their region filter
                 // For executives, they can still change it
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4' || role === 'supervisor6') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                 }
@@ -654,7 +656,7 @@ export default function DashboardPage() {
               if (region) {
                 console.log('[DASHBOARD] â Region found from database:', region.name);
                 setDetectedRegion({ id: region.id, name: region.name });
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4' || role === 'supervisor6') {
                   setSelectedRegion(region.id);
                 }
                 regionDetected = true;
@@ -700,7 +702,7 @@ export default function DashboardPage() {
                 console.log('[DASHBOARD] â User location detected in region:', userRegion.name);
                 setDetectedRegion({ id: userRegion.id, name: userRegion.name });
                 setUserCoordinates({ lat: currentLat, lng: currentLng });
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3' || role === 'supervisor4' || role === 'supervisor6') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                 }
@@ -1069,7 +1071,7 @@ export default function DashboardPage() {
   };
 
   const openDeleteConfirmModal = (event: EventItem) => {
-    if ((userRole !== "exec" && userRole !== "manager") || deletingEventId) return;
+    if (!canDeleteEvents || deletingEventId) return;
     setDeleteReason("");
     setDeleteConfirmEvent(event);
   };
@@ -1078,7 +1080,7 @@ export default function DashboardPage() {
     if (!deleteConfirmEvent) return;
 
     const event = deleteConfirmEvent;
-    if ((userRole !== "exec" && userRole !== "manager") || deletingEventId) return;
+    if (!canDeleteEvents || deletingEventId) return;
 
     const reason = deleteReason.trim();
     if (!reason) return;
@@ -1519,7 +1521,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="apple-header-actions flex w-full flex-wrap items-center gap-2 sm:gap-3 lg:w-auto lg:justify-end">
-              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor4' && !isViewOnly && (
+              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor4' && userRole !== 'supervisor6' && !isViewOnly && (
                 <Link
                   href="/global-calendar"
                   className="apple-button apple-button-secondary flex items-center gap-2"
@@ -1857,7 +1859,8 @@ export default function DashboardPage() {
                           </div>
                         </div>
                         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto lg:justify-end">
-                          {isViewOnly ? null : ev.event_type === "special" ? (
+                          {/* supervisor6 cannot edit timesheets, so it gets no link to the non-event timesheet editor. */}
+                          {isViewOnly || (ev.event_type === "special" && userRole === "supervisor6") ? null : ev.event_type === "special" ? (
                             <Link href={`/time-sheets/${ev.id}`}>
                               <button className="apple-button apple-button-secondary text-sm py-2 px-4">
                                 <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1902,7 +1905,7 @@ export default function DashboardPage() {
                           </Link>
                         </div>
                       </div>
-                      {(userRole === "exec" || userRole === "manager") && (
+                      {canDeleteEvents && (
                         <div className="mt-4 flex justify-end">
                           <button
                             onClick={() => openDeleteConfirmModal(ev)}
@@ -2153,7 +2156,7 @@ export default function DashboardPage() {
                   {/* Region Filter - For both managers and executives */}
                   <div className="mb-6">
                     {/* Auto-detection notice for managers */}
-                    {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4') && detectedRegion && (
+                    {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3' || userRole === 'supervisor4' || userRole === 'supervisor6') && detectedRegion && (
                       <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
                         <div className="flex items-center text-xs text-blue-800">
                           <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
