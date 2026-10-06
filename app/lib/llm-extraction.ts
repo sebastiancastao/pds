@@ -46,6 +46,7 @@ type PayrollData = {
     bonus?: { thisPeriod: number; yearToDate: number };
     sickPay?: { thisPeriod: number; yearToDate: number };
     mealPremium?: { thisPeriod: number; yearToDate: number };
+    holidayPay?: { thisPeriod: number; yearToDate: number };
   };
   hours: {
     regular?: number;
@@ -133,7 +134,8 @@ Return a JSON object with this EXACT structure:
     "travelPay": {"thisPeriod": 0.00, "yearToDate": 0.00},
     "bonus": {"thisPeriod": 0.00, "yearToDate": 0.00},
     "sickPay": {"thisPeriod": 0.00, "yearToDate": 0.00},
-    "mealPremium": {"thisPeriod": 0.00, "yearToDate": 0.00}
+    "mealPremium": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "holidayPay": {"thisPeriod": 0.00, "yearToDate": 0.00}
   },
   "hours": {
     "regular": 0.0,
@@ -170,6 +172,7 @@ EXTRACTION RULES:
     - "Bonus": last two → bonus.thisPeriod / yearToDate
     - "Sick Pay" / "Sick": last two → sickPay.thisPeriod / yearToDate
     - "Meal Premium" / "Meal Time Premium" / "Meal Prem" / "Meal Break Premium" / "Meal Period Premium": last two → mealPremium.thisPeriod / yearToDate
+    - "Holiday" / "Holiday Pay": last two → holidayPay.thisPeriod / yearToDate
 12. **Net Pay Adjustments** - Each row has exactly two amounts (thisPeriod and yearToDate):
     - "Equipment Reimbursement" / "Equipment Reimb" / "Misc reimburse Equipment" / "Misc reimbursement Equipment" / "Equip Reimb": → equipmentReimbursement.thisPeriod / yearToDate
     - "Mileage Reimbursement" / "Mileage Reimb": → mileageReimbursement.thisPeriod / yearToDate

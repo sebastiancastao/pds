@@ -140,6 +140,7 @@ type ImportedEmployeeRow = {
   bonusYtd: string;
   sickPayYtd: string;
   mealPremiumYtd: string;
+  holidayPayYtd: string;
   grossPayYtd: string;
 
   // Net pay adjustments (year to date)
@@ -253,6 +254,7 @@ const YTD_OVERRIDE_KEYS = [
   'bonusYtd',
   'sickPayYtd',
   'mealPremiumYtd',
+  'holidayPayYtd',
   'grossPayYtd',
   'equipmentReimbYtd',
   'mileageReimbYtd',
@@ -351,6 +353,7 @@ export default function PaystubGenerator() {
     bonusYtd: '',
     sickPayYtd: '',
     mealPremiumYtd: '',
+    holidayPayYtd: '',
     grossPayYtd: '',
     equipmentReimbYtd: '',
     mileageReimbYtd: '',
@@ -2898,6 +2901,8 @@ export default function PaystubGenerator() {
             'ytd meal time premium',
             'ytd meal time prem',
           ]),
+          // ADP Holiday earnings ("Holiday Pay YTD" in the /pdf-reader export).
+          holidayPayYtd: getAbsoluteValue(valuesRow, ['holiday pay ytd', 'holiday ytd', 'holiday pay year to date', 'holiday year to date', 'ytd holiday pay', 'ytd holiday']),
           grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd']),
           equipmentReimbYtd: getAbsoluteValue(valuesRow, ['equipment reimbursement ytd']),
           mileageReimbYtd: getAbsoluteValue(valuesRow, [
@@ -2968,6 +2973,7 @@ export default function PaystubGenerator() {
           bonusYtd: first.bonusYtd,
           sickPayYtd: first.sickPayYtd,
           mealPremiumYtd: first.mealPremiumYtd,
+          holidayPayYtd: first.holidayPayYtd,
           grossPayYtd: first.grossPayYtd,
           equipmentReimbYtd: first.equipmentReimbYtd,
           mileageReimbYtd: first.mileageReimbYtd,

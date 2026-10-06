@@ -5040,17 +5040,22 @@ export default function EmployeeProfilePage() {
                                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                               />
                             </div>
-                            {!request.event_id && (
-                              <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-1">Pay date</label>
-                                <input
-                                  type="date"
-                                  value={reimbursementPayDate}
-                                  onChange={(e) => setReimbursementPayDate(e.target.value)}
-                                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                />
-                              </div>
-                            )}
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 mb-1">
+                                {request.event_id ? "Pay date (optional)" : "Pay date"}
+                              </label>
+                              <input
+                                type="date"
+                                value={reimbursementPayDate}
+                                onChange={(e) => setReimbursementPayDate(e.target.value)}
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                              />
+                              {request.event_id && (
+                                <p className="mt-1 text-xs text-gray-500">
+                                  Leave blank to pay with the event&apos;s payroll. Pick a date to pay it on that payday instead.
+                                </p>
+                              )}
+                            </div>
                           </div>
                         )}
                         <textarea

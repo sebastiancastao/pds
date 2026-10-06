@@ -83,6 +83,7 @@ const NUMERIC_FIELDS: Record<string, string> = {
   bonusYtd: 'bonus_ytd',
   sickPayYtd: 'sick_pay_ytd',
   mealPremiumYtd: 'meal_premium_ytd',
+  holidayPayYtd: 'holiday_pay_ytd',
   grossPayYtd: 'gross_pay_ytd',
   equipmentReimbYtd: 'equipment_reimb_ytd',
   mileageReimbYtd: 'mileage_reimb_ytd',

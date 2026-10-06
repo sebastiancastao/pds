@@ -35,6 +35,7 @@ export type AdpYtdKey =
   | 'bonusYtd'
   | 'sickPayYtd'
   | 'mealPremiumYtd'
+  | 'holidayPayYtd'
   | 'grossPayYtd'
   | 'equipmentReimbYtd'
   | 'mileageReimbYtd'
@@ -47,7 +48,7 @@ export type AdpStatementYtd = {
   stateCode: string | null;
   // Every state income-tax YTD found (a person can move mid-year).
   stateIncomes: Record<string, number>;
-  // YTD lines with no carryover column (Holiday, Medical, Child support, ...).
+  // YTD lines with no carryover column (Medical, Child support, Vacation, ...).
   unmapped: { label: string; ytd: number }[];
   // Earnings lines (mapped + unmapped earnings) added up, to check against Gross Pay.
   earningsTotal: number;
@@ -128,6 +129,7 @@ const LABEL_RULES: LabelRule[] = [
   { re: /^bonus( pay)?$/, key: 'bonusYtd', earning: true },
   { re: /^sick( pay| leave)?$/, key: 'sickPayYtd', earning: true },
   { re: /^meal( break| time| period)? (premium|prem)( pay)?$/, key: 'mealPremiumYtd', earning: true },
+  { re: /^holiday( pay)?$/, key: 'holidayPayYtd', earning: true },
   { re: /^federal income( tax)?$/, key: 'federalIncomeYtd' },
   { re: /^social security( tax)?$/, key: 'socialSecurityYtd' },
   { re: /^medicare( tax)?$/, key: 'medicareYtd' },
@@ -141,7 +143,7 @@ const LABEL_RULES: LabelRule[] = [
 const STATE_INCOME_RE = /^(california|arizona|new york|wisconsin|ca|az|ny|wi) state income( tax)?$/;
 
 // Earnings codes with no carryover column; still part of Gross Pay.
-const UNMAPPED_EARNING_RE = /^(holiday|other income|vacation|pto|retro|severance|jury duty|bereavement)( pay)?$/;
+const UNMAPPED_EARNING_RE = /^(other income|vacation|pto|retro|severance|jury duty|bereavement)( pay)?$/;
 
 // Lines that carry an amount but are not YTD items.
 const SKIP_LABEL_RE =

@@ -86,15 +86,19 @@ export async function GET(req: NextRequest) {
             .eq('user_id', userId)
             .eq('status', 'approved')
             .not('event_id', 'is', null)
+            // A pay date moves an event-linked request off the event onto that
+            // payday, so it is counted by the pay-date query below instead.
+            .is('approved_pay_date', null)
             .in('event_id', filteredEventIds)
         : Promise.resolve({ data: [], error: null } as any),
       (() => {
+        // Every approved request with a pay date: standalone ones, plus
+        // event-linked ones an exec moved to a specific payday.
         let query = reimbursementSupabaseAdmin
           .from('vendor_reimbursement_requests')
           .select('id, approved_amount, approved_pay_date, description, purchase_date, created_at')
           .eq('user_id', userId)
           .eq('status', 'approved')
-          .is('event_id', null)
           .not('approved_pay_date', 'is', null)
           .order('approved_pay_date', { ascending: false });
 

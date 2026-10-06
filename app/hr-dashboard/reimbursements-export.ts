@@ -40,10 +40,14 @@ export type PayrollCheckFn = (row: ReimbursementRow) => PayrollCheck | null;
 export const money = (n: number) =>
   `$${(Number.isFinite(n) ? n : 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// The date a reimbursement lands in payroll: the event date for event-linked
-// requests, the approved pay date for standalone ones, else the purchase date.
+// The date a reimbursement lands in payroll: the approved pay date when one is
+// set (always for standalone requests; for event-linked ones it means an exec
+// moved it to that payday), else the event date, else the purchase date.
 export const payDateOf = (row: ReimbursementRow): string =>
-  (row.event?.event_date || row.approved_pay_date || row.purchase_date || "").slice(0, 10);
+  (row.approved_pay_date || row.event?.event_date || row.purchase_date || "").slice(0, 10);
+
+// True when the request is paid with its event's payroll rather than on a pay date.
+export const isPaidWithEvent = (row: ReimbursementRow): boolean => Boolean(row.event_id) && !row.approved_pay_date;
 
 // The amount that matters for a row: approved amount once approved, otherwise requested.
 export const effectiveAmountOf = (row: ReimbursementRow): number =>
@@ -82,13 +86,20 @@ export function buildPayrollCheck(
 ): PayrollCheckFn {
   const approvedByKey: Record<string, number> = {};
   for (const r of rows) {
-    if (r.status !== "approved" || !r.event_id) continue;
+    if (r.status !== "approved" || !isPaidWithEvent(r)) continue;
     const key = `${r.event_id}|${r.user_id}`;
     approvedByKey[key] = (approvedByKey[key] || 0) + effectiveAmountOf(r);
   }
   return (row) => {
     if (!payrollLoaded || row.status !== "approved") return null;
     if (!row.event_id) return { label: "Standalone", className: "text-gray-500", title: "Not tied to an event; paid on the approved pay date." };
+    if (!isPaidWithEvent(row)) {
+      return {
+        label: "Paid on pay date",
+        className: "text-gray-500",
+        title: "Tied to an event but moved to its approved pay date, so it is not part of the event's payroll.",
+      };
+    }
     const eventMap = payrollReimbursements[row.event_id];
     if (!eventMap) return { label: "Not in loaded payroll", className: "text-gray-400", title: "This event is not part of the payroll currently loaded." };
     const onPayroll = Number(eventMap[row.user_id] || 0);

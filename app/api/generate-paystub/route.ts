@@ -102,6 +102,7 @@ export async function POST(req: NextRequest) {
       bonusYtd = null,
       sickPayYtd = null,
       mealPremiumYtd = null,
+      holidayPayYtd = null,
       grossPayYtd = null,
       equipmentReimbYtd = null,
       mileageReimbYtd = null,
@@ -1998,6 +1999,9 @@ export async function POST(req: NextRequest) {
         uploadedPaystub && manualSickThisPeriod === 0 ? round2(uploadedPaystub.totals.sick) : manualSickThisPeriod;
       // Travel pay only comes from uploaded payroll (the system has none on the CA paystub).
       const travelPayThisPeriod = uploadedPaystub ? round2(uploadedPaystub.totals.travel) : 0;
+      // Holiday pay is an ADP earnings line. Neither the system nor uploaded payroll pays
+      // it, so it only shows up in YTD (the /pdf-reader export or the ADP carryover).
+      const holidayPayThisPeriod = 0;
       const adjustmentReimbursementRounded = round2(totalAdjustmentReimbursement);
       const grossPayThisPeriod = round2(
         // Regular pay is wages on San Diego hourly events and on uploaded payroll lines
@@ -2048,7 +2052,7 @@ export async function POST(req: NextRequest) {
           const { data } = await supabaseAdmin
             .from("employee_ytd_carryover")
             .select(
-              "as_of_date, gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, travel_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, equipment_reimb_ytd, mileage_reimb_ytd, misc_reimbursement_ytd"
+              "as_of_date, gross_pay_ytd, federal_income_ytd, social_security_ytd, medicare_ytd, state_income_ytd, state_di_ytd, calsavers_roth_ret_ytd, regular_ytd, overtime_ytd, doubletime_ytd, commission_ytd, variable_incentive_ytd, credit_card_tips_ytd, rest_break_pay_ytd, travel_pay_ytd, bonus_ytd, meal_premium_ytd, sick_pay_ytd, holiday_pay_ytd, equipment_reimb_ytd, mileage_reimb_ytd, misc_reimbursement_ytd"
             )
             .eq("user_id", matchedUserId)
             .maybeSingle();
@@ -2176,6 +2180,7 @@ export async function POST(req: NextRequest) {
         bonusYtd,
         sickPayYtd,
         mealPremiumYtd,
+        holidayPayYtd,
         grossPayYtd,
         federalIncomeYtd,
         socialSecurityYtd,
@@ -2243,6 +2248,7 @@ export async function POST(req: NextRequest) {
       const ytdMealPremium = round2(runningYtd(carryoverPriorYtd(effectiveMealPremiumYtd, 'meal_premium_ytd', mealPremiumThisPeriod), mealPremiumThisPeriod));
       const ytdSick = round2(runningYtd(carryoverPriorYtd(sickPayYtd, 'sick_pay_ytd', sickThisPeriod), sickThisPeriod));
       const ytdTravel = round2(runningYtd(carryoverPriorYtd(travelPayYtd, 'travel_pay_ytd', travelPayThisPeriod), travelPayThisPeriod));
+      const ytdHoliday = round2(runningYtd(carryoverPriorYtd(holidayPayYtd, 'holiday_pay_ytd', holidayPayThisPeriod), holidayPayThisPeriod));
       const hasRequestEarningsYtd = [
         regularYtd,
         overtimeYtd,
@@ -2255,6 +2261,7 @@ export async function POST(req: NextRequest) {
         bonusYtd,
         sickPayYtd,
         mealPremiumYtd,
+        holidayPayYtd,
       ].some(hasRequestYtd);
       const hasCarryoverEarningsYtd = [
         'regular_ytd',
@@ -2268,6 +2275,7 @@ export async function POST(req: NextRequest) {
         'bonus_ytd',
         'sick_pay_ytd',
         'meal_premium_ytd',
+        'holiday_pay_ytd',
       ].some(hasCarryoverYtd);
       const ytdGrossFromPrior = round2(runningYtd(priorYtd(grossPayYtd, ytdSnapshot?.ytd_gross, 'gross_pay_ytd'), grossPayThisPeriod));
       const ytdGrossFromEarnings = round2(
@@ -2281,7 +2289,8 @@ export async function POST(req: NextRequest) {
         ytdOther +
         ytdTravel +
         ytdSick +
-        ytdMealPremium
+        ytdMealPremium +
+        ytdHoliday
       );
       let ytdGross = ytdGrossFromPrior;
       if (!hasRequestYtd(grossPayYtd) && hasRequestEarningsYtd) {
@@ -2446,6 +2455,10 @@ export async function POST(req: NextRequest) {
           : []),
         { label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
         { label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
+        // Only for employees with ADP Holiday pay in their YTD.
+        ...(holidayPayThisPeriod !== 0 || ytdHoliday !== 0
+          ? [{ label: "Holiday Pay", color: black, rate: 0, hours: 0, thisPeriod: holidayPayThisPeriod, ytd: ytdHoliday }]
+          : []),
       ]
         .filter((row) => {
           if (!showHourlyEarningsRows) return true;

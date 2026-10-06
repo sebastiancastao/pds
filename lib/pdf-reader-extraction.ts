@@ -227,6 +227,9 @@ export const EARNINGS_EXPORT_DEFS: Array<{ label: string; key: string }> = [
   { label: 'Bonus', key: 'bonus' },
   { label: 'Sick Pay', key: 'sickPay' },
   { label: 'Meal Premium', key: 'mealPremium' },
+  // Last so older exports keep their column order. Some employees have ADP
+  // Holiday pay in their YTD; /paystub-generator reads "Holiday Pay YTD".
+  { label: 'Holiday Pay', key: 'holidayPay' },
 ];
 
 export const NET_PAY_ADJ_EXPORT_DEFS: Array<{ label: string; key: string }> = [
@@ -1308,6 +1311,10 @@ export function extractPayrollData(text: string) {
   // Extract Meal Premium
   const mealResult = extractEarningsLine(/Meal\s+(?:Time\s+|Break\s+|Period\s+)?(?:Premium|Prem)(?:\s+Pay)?\b/i);
   if (mealResult) payrollData.earnings.mealPremium = mealResult;
+
+  // Extract Holiday Pay (ADP labels it just "Holiday"; "Holidays" in a message does not match)
+  const holidayResult = extractEarningsLine(/Holiday(?:\s+Pay)?\b/i);
+  if (holidayResult) payrollData.earnings.holidayPay = holidayResult;
 
   // Net pay adjustments (placed after extractEarningsLine definition)
   const miscReimbResult = extractEarningsLine(/Misc\s+(?:Non\s+Taxable\s+)?[Rr]eimb(?:ursement)?\b/i);

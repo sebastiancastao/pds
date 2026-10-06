@@ -138,9 +138,22 @@ function toCents(value: unknown): number | null {
   return Number.isFinite(amount) ? Math.round(amount * 100) : null;
 }
 
+// Pay date rule (shared with the review path below and every payroll reader):
+// an approved request with a pay date is paid on that date; one without a pay
+// date is paid with its event. Standalone requests (no event) must have one.
+// Event-linked requests may have one, which moves them off the event's payroll
+// onto that payday (e.g. an approval that arrives after the event was paid).
+function parsePayDate(value: unknown): { payDate: string | null; error: string | null } {
+  if (value == null) return { payDate: null, error: null };
+  const payDate = String(value).trim().slice(0, 10);
+  if (!payDate) return { payDate: null, error: null };
+  if (!ISO_DATE_RE.test(payDate)) return { payDate: null, error: 'Pay date must be a valid date' };
+  return { payDate, error: null };
+}
+
 // Exec-only edit of any non-cancelled request, before or after review: fixes the
 // vendor's details (description, purchase date, requested amount), changes the
-// approved amount / standalone pay date, or moves the request between
+// approved amount / pay date, or moves the request between
 // pending / approved / rejected. Event and receipt stay as the vendor set them.
 // Payroll readers (paystubs, final pay, HR exports) query approved rows live, so
 // an edit shows up in anything generated after it is saved.
@@ -196,23 +209,20 @@ async function handleReimbursementEdit(editorId: string, id: string, body: any) 
 
   if (status === 'approved') {
     const approvedAmount = parseCurrencyInput(body?.approved_amount);
-    const approvedPayDate =
-      body?.approved_pay_date == null ? null : String(body.approved_pay_date).trim().slice(0, 10) || null;
+    const { payDate: approvedPayDate, error: payDateError } = parsePayDate(body?.approved_pay_date);
 
     if (!Number.isFinite(approvedAmount) || approvedAmount < 0) {
       return NextResponse.json({ error: 'Approved amount must be a valid number' }, { status: 400 });
     }
-    if (!existing.event_id) {
-      if (!approvedPayDate) {
-        return NextResponse.json({ error: 'Pay date is required for standalone reimbursements' }, { status: 400 });
-      }
-      if (!ISO_DATE_RE.test(approvedPayDate)) {
-        return NextResponse.json({ error: 'Pay date must be a valid date' }, { status: 400 });
-      }
+    if (payDateError) {
+      return NextResponse.json({ error: payDateError }, { status: 400 });
+    }
+    if (!existing.event_id && !approvedPayDate) {
+      return NextResponse.json({ error: 'Pay date is required for standalone reimbursements' }, { status: 400 });
     }
 
     updatePayload.approved_amount = Number(approvedAmount.toFixed(2));
-    updatePayload.approved_pay_date = existing.event_id ? null : approvedPayDate;
+    updatePayload.approved_pay_date = approvedPayDate;
   } else {
     updatePayload.approved_amount = null;
     updatePayload.approved_pay_date = null;
@@ -274,7 +284,7 @@ export async function PATCH(req: NextRequest) {
     const id = String(body?.id || '').trim();
     const status = String(body?.status || '').trim();
     const reviewNotes = body?.review_notes == null ? null : String(body.review_notes).trim() || null;
-    const approvedPayDate = body?.approved_pay_date == null ? null : String(body.approved_pay_date).trim() || null;
+    const { payDate: approvedPayDate, error: payDateError } = parsePayDate(body?.approved_pay_date);
     const approvedAmount = parseCurrencyInput(body?.approved_amount);
 
     if (!id) {
@@ -320,12 +330,17 @@ export async function PATCH(req: NextRequest) {
       if (!Number.isFinite(approvedAmount) || approvedAmount < 0) {
         return NextResponse.json({ error: 'approved_amount must be a valid number' }, { status: 400 });
       }
+      if (payDateError) {
+        return NextResponse.json({ error: payDateError }, { status: 400 });
+      }
       if (!existing.event_id && !approvedPayDate) {
         return NextResponse.json({ error: 'approved_pay_date is required for standalone reimbursements' }, { status: 400 });
       }
 
+      // Optional for event-linked requests: set means "pay on this date instead
+      // of with the event" (see parsePayDate).
       updatePayload.approved_amount = Number(approvedAmount.toFixed(2));
-      updatePayload.approved_pay_date = existing.event_id ? null : approvedPayDate;
+      updatePayload.approved_pay_date = approvedPayDate;
     } else {
       updatePayload.approved_amount = null;
       updatePayload.approved_pay_date = null;

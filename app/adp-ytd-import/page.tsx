@@ -59,6 +59,7 @@ type FieldKey =
   | 'bonusYtd'
   | 'sickPayYtd'
   | 'mealPremiumYtd'
+  | 'holidayPayYtd'
   | 'grossPayYtd'
   | 'equipmentReimbYtd'
   | 'mileageReimbYtd'
@@ -115,6 +116,7 @@ const DB_COLUMN: Record<FieldKey, string> = {
   bonusYtd: 'bonus_ytd',
   sickPayYtd: 'sick_pay_ytd',
   mealPremiumYtd: 'meal_premium_ytd',
+  holidayPayYtd: 'holiday_pay_ytd',
   grossPayYtd: 'gross_pay_ytd',
   equipmentReimbYtd: 'equipment_reimb_ytd',
   mileageReimbYtd: 'mileage_reimb_ytd',
@@ -224,6 +226,7 @@ const FIELD_DEFS: { key: FieldKey; label: string; aliases: string[] }[] = [
       'ytd meal time prem',
     ],
   },
+  { key: 'holidayPayYtd', label: 'Holiday Pay', aliases: ['holiday pay ytd', 'holiday ytd', 'ytd holiday pay', 'ytd holiday'] },
   { key: 'grossPayYtd', label: 'Gross Pay', aliases: ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd'] },
   { key: 'equipmentReimbYtd', label: 'Equipment Reimb.', aliases: ['equipment reimbursement ytd', 'ytd equipment reimbursement'] },
   {
@@ -420,6 +423,7 @@ function rowFromPdfPage(
   row.bonusYtd = ytdOf(earnings, 'bonus');
   row.sickPayYtd = ytdOf(earnings, 'sickPay');
   row.mealPremiumYtd = ytdOf(earnings, 'mealPremium');
+  row.holidayPayYtd = ytdOf(earnings, 'holidayPay');
   row.grossPayYtd = ytdString(info.ytdGross);
 
   row.equipmentReimbYtd = ytdOf(adj, 'equipmentReimbursement');
@@ -1145,6 +1149,7 @@ export default function AdpYtdImportPage() {
       bonusYtd: 'Bonus YTD',
       sickPayYtd: 'Sick Pay YTD',
       mealPremiumYtd: 'Meal Premium YTD',
+      holidayPayYtd: 'Holiday Pay YTD',
       grossPayYtd: 'Gross Pay YTD',
       equipmentReimbYtd: 'Equipment Reimbursement YTD',
       mileageReimbYtd: 'Mileage Reimbursement YTD',
@@ -1774,7 +1779,7 @@ export default function AdpYtdImportPage() {
               : text PDFs are parsed directly and scanned PDFs go through OCR. Each paystub page becomes
               a row built from its year-to-date column. ADP earnings statements are read line by line, so
               every year-to-date line is picked up (gross pay, each earnings type, federal and state taxes,
-              reimbursements); lines with no column here, such as Holiday or Medical, are listed in the
+              reimbursements); lines with no column here, such as Medical or Child support, are listed in the
               row&apos;s notes. When one upload has several rows for the same
               employee, only the most recent is kept; rows from separate uploads that match the same
               employee are marked Duplicate and only the most recent is saved.

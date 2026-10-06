@@ -1032,6 +1032,10 @@ function extractPayrollData(text: string) {
   const mealResult = extractEarningsLine(/Meal\s+(?:Time\s+|Break\s+|Period\s+)?(?:Premium|Prem)(?:\s+Pay)?\b/i);
   if (mealResult) payrollData.earnings.mealPremium = mealResult;
 
+  // ADP labels it just "Holiday"; "Holidays" in a message does not match.
+  const holidayResult = extractEarningsLine(/Holiday(?:\s+Pay)?\b/i);
+  if (holidayResult) payrollData.earnings.holidayPay = holidayResult;
+
   // Extract hourly rate
   const hourlyRatePattern = /(?:Rate|Hourly Rate|Pay Rate)[:\s]+\$?([-\d,.]+)/i;
   const hourlyRateMatch = text.match(hourlyRatePattern);

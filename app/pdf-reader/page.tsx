@@ -79,6 +79,7 @@ function StructuredPayrollGrid({ payrollInfo }: { payrollInfo: PayrollData }) {
             { label: 'Bonus', thisPeriod: payrollInfo.earnings?.bonus?.thisPeriod, ytd: payrollInfo.earnings?.bonus?.yearToDate },
             { label: 'Sick Pay', thisPeriod: payrollInfo.earnings?.sickPay?.thisPeriod, ytd: payrollInfo.earnings?.sickPay?.yearToDate },
             { label: 'Meal Premium', thisPeriod: payrollInfo.earnings?.mealPremium?.thisPeriod, ytd: payrollInfo.earnings?.mealPremium?.yearToDate },
+            { label: 'Holiday Pay', thisPeriod: payrollInfo.earnings?.holidayPay?.thisPeriod, ytd: payrollInfo.earnings?.holidayPay?.yearToDate },
           ].filter(r => r.thisPeriod != null || r.ytd != null).map(({ label, thisPeriod, ytd }) => (
             <div key={label} className="grid grid-cols-3 gap-x-2 text-sm">
               <span className="text-slate-600">{label}</span>

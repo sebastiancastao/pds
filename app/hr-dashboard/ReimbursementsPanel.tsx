@@ -170,6 +170,9 @@ export default function ReimbursementsPanel({ startDate, endDate, payrollReimbur
             <>
               <div>{r.event.event_name}</div>
               <div className="text-xs text-gray-400">{formatDate(r.event.event_date)}{r.event.venue ? ` · ${r.event.venue}` : ""}</div>
+              {r.approved_pay_date && (
+                <div className="text-xs font-medium text-amber-700">Paid on {formatDate(r.approved_pay_date)}</div>
+              )}
             </>
           ) : (
             <>

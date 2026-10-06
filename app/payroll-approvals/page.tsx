@@ -63,6 +63,9 @@ type ReimbursementEditForm = {
   review_notes: string;
 };
 
+// Event-linked requests normally pay with the event; a pay date moves them to that payday.
+const EVENT_PAY_DATE_HINT = "Leave blank to pay with the event's payroll. Pick a date to pay it on that payday instead.";
+
 const EDIT_STATUS_OPTIONS: Array<{ value: EditableReimbursementStatus; label: string }> = [
   { value: 'submitted', label: 'Pending' },
   { value: 'approved', label: 'Approved' },
@@ -876,21 +879,20 @@ export default function PayrollApprovalsPage() {
                                     className="apple-select text-sm"
                                   />
                                 </div>
-                                {isStandalone ? (
-                                  <div>
-                                    <label className="apple-label text-xs mb-1 block">Pay Date (required)</label>
-                                    <input
-                                      type="date"
-                                      value={reimbursementEditForm.approved_pay_date}
-                                      onChange={(e) => updateReimbursementEditForm({ approved_pay_date: e.target.value })}
-                                      className="apple-select text-sm"
-                                    />
-                                  </div>
-                                ) : (
-                                  <p className="self-end text-xs text-gray-500">
-                                    Event reimbursements are paid with that event&apos;s payroll, so there is no pay date.
-                                  </p>
-                                )}
+                                <div>
+                                  <label className="apple-label text-xs mb-1 block">
+                                    {isStandalone ? 'Pay Date (required)' : 'Pay Date (optional)'}
+                                  </label>
+                                  <input
+                                    type="date"
+                                    value={reimbursementEditForm.approved_pay_date}
+                                    onChange={(e) => updateReimbursementEditForm({ approved_pay_date: e.target.value })}
+                                    className="apple-select text-sm"
+                                  />
+                                  {!isStandalone && (
+                                    <p className="mt-1 text-xs text-gray-500">{EVENT_PAY_DATE_HINT}</p>
+                                  )}
+                                </div>
                               </>
                             )}
                           </div>
@@ -959,15 +961,17 @@ export default function PayrollApprovalsPage() {
                               </div>
                               <div>
                                 <label className="apple-label text-xs mb-1 block">
-                                  {isStandalone ? 'Pay Date (required)' : 'Pay Date'}
+                                  {isStandalone ? 'Pay Date (required)' : 'Pay Date (optional)'}
                                 </label>
                                 <input
                                   type="date"
                                   value={reimbursementPayDate}
                                   onChange={(e) => setReimbursementPayDate(e.target.value)}
                                   className="apple-select text-sm"
-                                  disabled={!isStandalone}
                                 />
+                                {!isStandalone && (
+                                  <p className="mt-1 text-xs text-gray-500">{EVENT_PAY_DATE_HINT}</p>
+                                )}
                               </div>
                             </div>
                           )}
