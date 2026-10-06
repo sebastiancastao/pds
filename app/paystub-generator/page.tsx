@@ -271,6 +271,31 @@ const ytdOverridePayload = (source: YtdOverrideSource) =>
     return payload;
   }, {});
 
+// The employee fields of one paystub: the single form, or one imported Excel row.
+type PaystubFields = YtdOverrideSource & {
+  employeeName: string;
+  ssn: string;
+  address: string;
+  employeeId: string;
+  federalIncome: string;
+  socialSecurity: string;
+  medicare: string;
+  stateIncome: string;
+  stateDI: string;
+  state: string;
+  miscDeduction: string;
+  miscReimbursement: string;
+};
+
+// An imported row as paystub fields. The CalSavers Roth column is the misc deduction
+// when it has a value, the same rule the single form gets from row 1 on import.
+const paystubFieldsFromRow = (row: ImportedEmployeeRow): PaystubFields => ({
+  ...row,
+  miscDeduction: row.calSaversRothRet || row.miscDeduction,
+});
+
+type EmployeeSummary = { sickLeave: SickLeaveBalance | null; profileStateCode: string | null };
+
 const formatSickLeaveHHMM = (value: number) => {
   const hours = Number(value || 0);
   if (!Number.isFinite(hours)) return '00:00';
@@ -1283,10 +1308,6 @@ export default function PaystubGenerator() {
     };
   };
 
-  // Batch runs make a paystub for employees in the upload or with payable events (the rest are skipped).
-  const willGetPaystub = (userId: string) =>
-    !!getUploadedPayrollForUser(userId) || filterEventsForUserIdWithHours(userId).length > 0;
-
   // Paystubs wait for the uploaded payroll check, so none is made from the wrong data.
   const uploadedPayrollStillLoading = () => {
     if (!uploadedPayrollLoading) return false;
@@ -1294,24 +1315,52 @@ export default function PaystubGenerator() {
     return true;
   };
 
-  // Before making paystubs with an upload in use: ask when an employee's uploaded lines
-  // need a look (they disagree with the ADP Payroll Summary, carry "paid"/"short" notes,
-  // only hold reimbursements...) or when employees are not in the upload at all.
-  const confirmUploadedPayrollUse = (people: Array<{ userId: string | null; name: string }>, action: string): boolean => {
-    if (!activeUploadedPayroll) return true;
+  // Paystubs wait for the period's events too: they are the system earnings, and the
+  // name lookup falls back to the names on them.
+  const eventsStillLoading = () => {
+    if (!eventsLoading) return false;
+    alert('Events are still loading. Try again in a moment.');
+    return true;
+  };
+
+  // Batch Generate and Distribute skip an employee with neither uploaded payroll lines
+  // nor events in the pay period (their paystub would show no earnings). Returns why,
+  // or null when the employee gets a paystub. The single buttons do not skip.
+  const batchSkipReason = (userId: string): string | null => {
+    if (getUploadedPayrollForUser(userId)) return null;
+    if ((assignedEventsByUserId[userId] || 0) <= 0) return 'not in any event teams during selected period';
+    if (filterEventsForUserIdWithHours(userId).length === 0) return 'no payable data found in selected period';
+    return null;
+  };
+
+  // Asked before any paystub is made, single or batch, with the same rules: when an
+  // employee's uploaded lines need a look (they disagree with the ADP Payroll Summary,
+  // carry "paid"/"short" notes, only hold reimbursements...), when employees are not in
+  // the upload in use, and when an employee has neither events nor uploaded lines in the
+  // period (their paystub would show no earnings).
+  const confirmPaystubRun = (people: Array<{ userId: string | null; name: string }>, action: string): boolean => {
     const flagged: string[] = [];
     const notInUpload: string[] = [];
+    const noPayData: string[] = [];
     for (const person of people) {
       if (!person.userId) continue;
+      const label = person.name || person.userId;
       const info = getUploadedPayrollForUser(person.userId);
+      if (!info && filterEventsForUserIdWithHours(person.userId).length === 0) {
+        noPayData.push(label);
+        continue;
+      }
+      if (!activeUploadedPayroll) continue;
       if (!info) {
-        notInUpload.push(person.name || person.userId);
+        notInUpload.push(label);
         continue;
       }
       const serious = info.warnings.filter((w) => w.confirm);
       if (serious.length > 0) flagged.push(`- ${person.name}: ${serious.map((w) => w.message).join(' ')}`);
     }
-    if (flagged.length === 0 && notInUpload.length === 0) return true;
+    if (flagged.length === 0 && notInUpload.length === 0 && noPayData.length === 0) return true;
+    const listNames = (names: string[]) =>
+      `${names.slice(0, 8).join(', ')}${names.length > 8 ? `, and ${names.length - 8} more` : ''}`;
     const parts: string[] = [];
     if (flagged.length > 0) {
       parts.push(
@@ -1320,10 +1369,93 @@ export default function PaystubGenerator() {
     }
     if (notInUpload.length > 0) {
       parts.push(
-        `${notInUpload.length} employee${notInUpload.length === 1 ? ' is' : 's are'} not in the uploaded payroll, so ${notInUpload.length === 1 ? 'their paystub uses' : 'their paystubs use'} the system calculation: ${notInUpload.slice(0, 8).join(', ')}${notInUpload.length > 8 ? `, and ${notInUpload.length - 8} more` : ''}.`
+        `${notInUpload.length} employee${notInUpload.length === 1 ? ' is' : 's are'} not in the uploaded payroll, so ${notInUpload.length === 1 ? 'their paystub uses' : 'their paystubs use'} the system calculation: ${listNames(notInUpload)}.`
+      );
+    }
+    if (noPayData.length > 0) {
+      parts.push(
+        `${noPayData.length} employee${noPayData.length === 1 ? ' has' : 's have'} no events and no uploaded payroll lines in this pay period, so ${noPayData.length === 1 ? 'their paystub shows' : 'their paystubs show'} no earnings: ${listNames(noPayData)}.`
       );
     }
     return window.confirm(`${parts.join('\n\n')}\n\n${action} anyway?`);
+  };
+
+  // The /api/generate-paystub request for one employee. Every paystub button uses it
+  // (single generate, distribute and email, and every row of a batch), so a batch
+  // paystub is built exactly like the single paystub for the same person. A batch
+  // passes summaryCache so each employee's profile summary loads once.
+  const buildPaystubRequest = async (
+    fields: PaystubFields,
+    userId: string | null,
+    options: { debugMode: boolean; summaryCache?: Record<string, EmployeeSummary> }
+  ): Promise<{ payload: Record<string, unknown>; summary: EmployeeSummary | null }> => {
+    let summary: EmployeeSummary | null = null;
+    if (userId) {
+      const cache = options.summaryCache;
+      if (cache && Object.prototype.hasOwnProperty.call(cache, userId)) {
+        summary = cache[userId];
+      } else {
+        summary = await fetchEmployeeSummary(userId);
+        if (cache) cache[userId] = summary;
+      }
+    }
+    const override = userId ? getOverride(userId) : null;
+    const payload: Record<string, unknown> = {
+      // Employee info
+      employeeName: (fields.employeeName || '').trim(),
+      ssn: fields.ssn,
+      address: fields.address,
+      employeeId: fields.employeeId,
+
+      // Pay period: always the dates on screen
+      payPeriodStart: formData.payPeriodStart,
+      payPeriodEnd: formData.payPeriodEnd,
+      payDate: formData.payDate,
+
+      // Deductions
+      federalIncome: fields.federalIncome,
+      socialSecurity: fields.socialSecurity,
+      medicare: fields.medicare,
+      stateIncome: fields.stateIncome,
+      stateDI: fields.stateDI,
+      // The profile state first (the server checks it again), then the file's.
+      state: summary?.profileStateCode || fields.state || formData.state,
+      ...ytdOverridePayload(fields),
+
+      // Other
+      miscDeduction: fields.miscDeduction,
+      miscReimbursement: fields.miscReimbursement,
+      mealPremium: override ? parseFloat(override.mealPremium) || 0 : 0,
+      sick: override ? parseFloat(override.sick) || 0 : 0,
+
+      // Events this employee worked in the period, plus linked commission partners
+      events: filterEventsForUserIdWithHours(userId),
+      sickLeave: summary?.sickLeave ?? null,
+
+      // Used server-side to pick correct worker row per event (hours worked)
+      matchedUserId: userId,
+
+      // This employee's lines in the uploaded payroll in use, if any (replaces the system earnings)
+      ...uploadedPayrollPayloadFor(userId),
+
+      // Debug logging (opt-in via /paystub-generator?debug=1)
+      debug: options.debugMode,
+    };
+    return { payload, summary };
+  };
+
+  // Makes the PDF for a request from buildPaystubRequest.
+  const requestPaystubPdf = async (payload: Record<string, unknown>): Promise<ArrayBuffer> => {
+    const response = await fetch('/api/generate-paystub', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body?.error || 'Failed to generate paystub');
+    }
+    return response.arrayBuffer();
   };
 
   // Email candidates: matched batch employees or the single employee
@@ -1432,7 +1564,6 @@ export default function PaystubGenerator() {
   useEffect(() => {
     if (eventWorkerUserIdsByName.size === 0) return;
 
-    let firstResolvedUserId: string | null = null;
     let importedDidChange = false;
 
     const rematchedEmployees = importedEmployees.map((employee) => {
@@ -1446,7 +1577,6 @@ export default function PaystubGenerator() {
       }
 
       importedDidChange = true;
-      if (!firstResolvedUserId) firstResolvedUserId = fallbackUserId;
 
       return {
         ...employee,
@@ -1459,40 +1589,44 @@ export default function PaystubGenerator() {
       setImportedEmployees(rematchedEmployees);
     }
 
+    // The single form's own name only, never another row's person.
     if (!matchedUserId && formData.employeeName) {
       const fallbackUserId = resolveEmployeeUserIdFromLoadedEvents(formData.employeeName);
       if (fallbackUserId) {
         setMatchedUserId(fallbackUserId);
-        return;
       }
-    }
-
-    if (!matchedUserId && firstResolvedUserId) {
-      setMatchedUserId(firstResolvedUserId);
     }
   }, [eventWorkerUserIdsByName, formData.employeeName, importedEmployees, matchedUserId]);
 
-  // Imported rows are matched to profiles (official name) only when the Excel file is
-  // read. After a profile is fixed, this looks the unmatched rows up again.
-  const rematchUnmatchedImported = async () => {
-    const pending = importedEmployees.filter((emp) => !emp.matchedUserId && emp.employeeName);
-    if (pending.length === 0) return;
+  // Imported rows are first matched while the Excel file is read, before the events of
+  // the file's pay period have loaded. The single buttons look the name up when clicked
+  // instead (official name, then the names on the events loaded now), so the batch
+  // buttons do the same for every unmatched row before they run. Returns the rows with
+  // the new matches applied, for the caller to use right away.
+  const matchUnmatchedImportedNow = async (): Promise<ImportedEmployeeRow[]> => {
+    const rows = importedEmployees || [];
+    const pending = rows.filter((emp) => !emp.matchedUserId && emp.employeeName);
+    if (pending.length === 0) return rows;
     setRematchingImported(true);
     try {
       const found = new Map<number, string | null>();
       for (const emp of pending) {
         found.set(emp.rowIndex, await resolveEmployeeUserIdByOfficialName(emp.employeeName));
       }
-      setImportedEmployees((prev) =>
-        prev.map((emp) => {
-          if (emp.matchedUserId || !found.has(emp.rowIndex)) return emp;
-          const uid = found.get(emp.rowIndex) || null;
-          return { ...emp, matchedUserId: uid, matchError: uid ? undefined : 'No match found in database' };
-        })
-      );
+      const applyFound = (emp: ImportedEmployeeRow): ImportedEmployeeRow => {
+        if (emp.matchedUserId || !found.has(emp.rowIndex)) return emp;
+        const uid = found.get(emp.rowIndex) || null;
+        return { ...emp, matchedUserId: uid, matchError: uid ? undefined : 'No match found in database' };
+      };
+      setImportedEmployees((prev) => prev.map(applyFound));
+      return rows.map(applyFound);
     } finally {
       setRematchingImported(false);
     }
+  };
+
+  const rematchUnmatchedImported = async () => {
+    await matchUnmatchedImportedNow();
   };
 
   const sanitizeFilePart = (value: string) =>
@@ -1502,7 +1636,7 @@ export default function PaystubGenerator() {
       .replace(/[^a-zA-Z0-9._-]/g, '');
 
   const handleGenerate = async () => {
-    if (uploadedPayrollStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
     setGenerating(true);
     try {
       const debugMode =
@@ -1513,33 +1647,28 @@ export default function PaystubGenerator() {
         matchedUserId ||
         (formData.employeeName ? await resolveEmployeeUserIdByOfficialName(formData.employeeName, { debug: debugMode }) : null);
 
-      let sickLeaveForPayload = sickLeave;
-      let stateForPayload = formData.state;
+      if (resolvedUserId && resolvedUserId !== matchedUserId) {
+        setMatchedUserId(resolvedUserId);
+      }
 
-      if (resolvedUserId) {
-        const summaryData = await fetchEmployeeSummary(resolvedUserId);
-        sickLeaveForPayload = summaryData.sickLeave;
-        setSickLeave(summaryData.sickLeave);
+      if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
+        return;
+      }
+
+      const { payload, summary } = await buildPaystubRequest(formData, resolvedUserId, { debugMode });
+      if (summary) {
+        setSickLeave(summary.sickLeave);
         setSickLeaveError(null);
-        const profileStateCode = summaryData.profileStateCode;
+        const profileStateCode = summary.profileStateCode;
         if (profileStateCode) {
-          stateForPayload = profileStateCode;
           setFormData(prev => (
             prev.state === profileStateCode ? prev : { ...prev, state: profileStateCode }
           ));
         }
       }
 
-      if (resolvedUserId && resolvedUserId !== matchedUserId) {
-        setMatchedUserId(resolvedUserId);
-      }
-
-      if (!confirmUploadedPayrollUse([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
-        return;
-      }
-
-      const filteredEvents = filterEventsForUserIdWithHours(resolvedUserId);
       if (debugMode) {
+        const filteredEvents = (payload.events as Event[]) || [];
         console.log('[PAYSTUB-GEN][debug] generate clicked', {
           resolvedUserId,
           matchedUserId,
@@ -1560,71 +1689,11 @@ export default function PaystubGenerator() {
         );
       }
 
-      // Prepare payload for PDF generation
-      const payload = {
-        // Employee info
-        employeeName: formData.employeeName,
-        ssn: formData.ssn,
-        address: formData.address,
-        employeeId: formData.employeeId,
-
-        // Pay period
-        payPeriodStart: formData.payPeriodStart,
-        payPeriodEnd: formData.payPeriodEnd,
-        payDate: formData.payDate,
-
-        // Deductions
-        federalIncome: formData.federalIncome,
-        socialSecurity: formData.socialSecurity,
-        medicare: formData.medicare,
-        stateIncome: formData.stateIncome,
-        stateDI: formData.stateDI,
-        state: stateForPayload,
-        ...ytdOverridePayload(formData),
-
-        // Other
-        miscDeduction: formData.miscDeduction,
-        miscReimbursement: formData.miscReimbursement,
-        mealPremium: resolvedUserId ? (parseFloat(getOverride(resolvedUserId).mealPremium) || 0) : 0,
-        sick: resolvedUserId ? (parseFloat(getOverride(resolvedUserId).sick) || 0) : 0,
-
-        // Events data
-        events: filteredEvents,
-        sickLeave: sickLeaveForPayload,
-
-        // Used server-side to pick correct worker row per event (hours worked)
-        matchedUserId: resolvedUserId,
-
-        // This employee's lines in the uploaded payroll in use, if any (replaces the system earnings)
-        ...uploadedPayrollPayloadFor(resolvedUserId),
-
-        // Debug logging (opt-in via /paystub-generator?debug=1)
-        debug: debugMode,
-      };
-
-      const response = await fetch('/api/generate-paystub', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to generate paystub');
-      }
-
-      // Download the PDF
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `paystub-${formData.employeeName?.replace(/\s/g, '_')}-${formData.payDate}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      const bytes = await requestPaystubPdf(payload);
+      downloadBlob(
+        new Blob([bytes], { type: 'application/pdf' }),
+        `paystub-${formData.employeeName?.replace(/\s/g, '_')}-${formData.payDate}.pdf`
+      );
     } catch (error: any) {
       console.error('Error generating paystub:', error);
       alert(`Error: ${error.message}`);
@@ -1645,13 +1714,14 @@ export default function PaystubGenerator() {
     document.body.removeChild(a);
   };
 
+  // Each row is built exactly like the single paystub (buildPaystubRequest). Rows left
+  // out: no name, no matching profile, or no events and no uploaded lines in the period.
   const handleGenerateBatch = async (mode: 'merge' | 'separate') => {
-    if (uploadedPayrollStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
     setBatchMessage(null);
     setBatchErrors([]);
 
-    const rows = importedEmployees || [];
-    if (rows.length === 0) {
+    if ((importedEmployees || []).length === 0) {
       alert('No employees imported from Excel yet.');
       return;
     }
@@ -1659,26 +1729,26 @@ export default function PaystubGenerator() {
       alert('Missing pay period start/end.');
       return;
     }
-    if (eventsLoading) {
-      alert('Events are still loading. Try again in a moment.');
-      return;
-    }
     if ((!events || events.length === 0) && !activeUploadedPayroll) {
       alert('No events loaded for the selected pay period.');
       return;
     }
+
+    setBatchGenerating(true);
+    // Same name lookup as the single button, for every row still unmatched.
+    const rows = await matchUnmatchedImportedNow();
     if (
-      !confirmUploadedPayrollUse(
+      !confirmPaystubRun(
         rows
-          .filter((emp) => !!emp.matchedUserId && willGetPaystub(emp.matchedUserId))
+          .filter((emp) => !!emp.matchedUserId && !batchSkipReason(emp.matchedUserId))
           .map((emp) => ({ userId: emp.matchedUserId, name: emp.employeeName })),
         'Generate the paystubs'
       )
     ) {
+      setBatchGenerating(false);
       return;
     }
 
-    setBatchGenerating(true);
     try {
       const debugMode =
         typeof window !== 'undefined' &&
@@ -1691,8 +1761,7 @@ export default function PaystubGenerator() {
       const errors: string[] = [];
       const generatedNames: string[] = [];
       let mergedPagesAdded = 0;
-      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
-      const profileStateByUserId: Record<string, string | null> = {};
+      const summaryCache: Record<string, EmployeeSummary> = {};
 
       for (const emp of rows) {
         try {
@@ -1707,85 +1776,18 @@ export default function PaystubGenerator() {
             errors.push(`Row ${emp.rowIndex} (${employeeName}): not found in database`);
             continue;
           }
-
-          const assignedCount = assignedEventsByUserId[emp.matchedUserId] || 0;
-          const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
-          // Employees in the uploaded payroll get a paystub even with no events (salaried staff).
-          const uploadedForRow = getUploadedPayrollForUser(emp.matchedUserId);
-          if (!uploadedForRow && assignedCount <= 0) {
+          const skipReason = batchSkipReason(emp.matchedUserId);
+          if (skipReason) {
             skipped++;
-            errors.push(`Row ${emp.rowIndex} (${employeeName}): not in any event teams during selected period`);
-            continue;
-          }
-          if (!uploadedForRow && filteredEvents.length === 0) {
-            skipped++;
-            errors.push(`Row ${emp.rowIndex} (${employeeName}): no payable data found in selected period`);
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): ${skipReason}`);
             continue;
           }
 
-          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, emp.matchedUserId)) {
-            const summaryData = await fetchEmployeeSummary(emp.matchedUserId);
-            sickLeaveByUserId[emp.matchedUserId] = summaryData.sickLeave;
-            profileStateByUserId[emp.matchedUserId] = summaryData.profileStateCode;
-          }
-          const sickLeaveForRow = sickLeaveByUserId[emp.matchedUserId] ?? null;
-          const stateForRow =
-            profileStateByUserId[emp.matchedUserId] ||
-            emp.state ||
-            formData.state;
-
-          const payload = {
-            // Employee info
-            employeeName: employeeName,
-            ssn: emp.ssn,
-            address: emp.address,
-            employeeId: emp.employeeId,
-
-            // Pay period: always use form dates (same as single-generate)
-            payPeriodStart: formData.payPeriodStart,
-            payPeriodEnd: formData.payPeriodEnd,
-            payDate: formData.payDate,
-
-            // Deductions
-            federalIncome: emp.federalIncome,
-            socialSecurity: emp.socialSecurity,
-            medicare: emp.medicare,
-            stateIncome: emp.stateIncome,
-            stateDI: emp.stateDI,
-            state: stateForRow,
-
-            // YTD overrides from Excel
-            ...ytdOverridePayload(emp),
-
-            // Other
-            miscDeduction: emp.calSaversRothRet || emp.miscDeduction,
-            miscReimbursement: emp.miscReimbursement,
-            mealPremium: parseFloat(getOverride(emp.matchedUserId).mealPremium) || 0,
-            sick: parseFloat(getOverride(emp.matchedUserId).sick) || 0,
-
-            // Events data
-            events: filteredEvents,
-            sickLeave: sickLeaveForRow,
-
-            matchedUserId: emp.matchedUserId,
-            ...uploadedPayrollPayloadFor(emp.matchedUserId),
-            debug: debugMode,
-          };
-
-          const response = await fetch('/api/generate-paystub', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+          const { payload } = await buildPaystubRequest(paystubFieldsFromRow(emp), emp.matchedUserId, {
+            debugMode,
+            summaryCache,
           });
-
-          if (!response.ok) {
-            const body = await response.json().catch(() => ({}));
-            skipped++;
-            errors.push(`Row ${emp.rowIndex} (${employeeName}): ${body?.error || 'Failed to generate paystub'}`);
-            continue;
-          }
-
-          const bytes = await response.arrayBuffer();
+          const bytes = await requestPaystubPdf(payload);
 
           if (mode === 'separate') {
             const blob = new Blob([bytes], { type: 'application/pdf' });
@@ -1803,7 +1805,7 @@ export default function PaystubGenerator() {
           }
 
           generated++;
-          if (uploadedForRow) generatedFromUpload++;
+          if (getUploadedPayrollForUser(emp.matchedUserId)) generatedFromUpload++;
           generatedNames.push(employeeName);
         } catch (err: any) {
           skipped++;
@@ -1881,7 +1883,7 @@ export default function PaystubGenerator() {
   };
 
   const handleDistribute = async () => {
-    if (uploadedPayrollStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
     setDistributing(true);
     setDistributeMessage(null);
     setDistributeError(null);
@@ -1902,58 +1904,15 @@ export default function PaystubGenerator() {
         throw new Error('Could not match this employee to a user profile. Make sure the employee name matches exactly.');
       }
 
-      if (!confirmUploadedPayrollUse([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
+      if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
         setDistributeStep(null);
         return;
       }
 
       setDistributeUserId(resolvedUserId);
-      setDistributeStep('Loading employee profile...');
-      let sickLeaveForPayload = sickLeave;
-      let stateForPayload = formData.state;
-      const summaryData = await fetchEmployeeSummary(resolvedUserId);
-      sickLeaveForPayload = summaryData.sickLeave;
-      if (summaryData.profileStateCode) stateForPayload = summaryData.profileStateCode;
-
-      const filteredEvents = filterEventsForUserIdWithHours(resolvedUserId);
-
       setDistributeStep('Generating PDF...');
-      const payload = {
-        employeeName: formData.employeeName,
-        ssn: formData.ssn,
-        address: formData.address,
-        employeeId: formData.employeeId,
-        payPeriodStart: formData.payPeriodStart,
-        payPeriodEnd: formData.payPeriodEnd,
-        payDate: formData.payDate,
-        federalIncome: formData.federalIncome,
-        socialSecurity: formData.socialSecurity,
-        medicare: formData.medicare,
-        stateIncome: formData.stateIncome,
-        stateDI: formData.stateDI,
-        state: stateForPayload,
-        ...ytdOverridePayload(formData),
-        miscDeduction: formData.miscDeduction,
-        miscReimbursement: formData.miscReimbursement,
-        mealPremium: parseFloat(getOverride(resolvedUserId).mealPremium) || 0,
-        sick: parseFloat(getOverride(resolvedUserId).sick) || 0,
-        events: filteredEvents,
-        sickLeave: sickLeaveForPayload,
-        matchedUserId: resolvedUserId,
-        ...uploadedPayrollPayloadFor(resolvedUserId),
-        debug: debugMode,
-      };
-
-      const genRes = await fetch('/api/generate-paystub', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!genRes.ok) {
-        const err = await genRes.json().catch(() => ({}));
-        throw new Error(err?.error || 'Failed to generate paystub PDF');
-      }
-      const pdfBytes = await genRes.arrayBuffer();
+      const { payload } = await buildPaystubRequest(formData, resolvedUserId, { debugMode });
+      const pdfBytes = await requestPaystubPdf(payload);
 
       setDistributeStep('Saving to employee profile...');
       await storeDistributedPaystub(
@@ -1978,30 +1937,34 @@ export default function PaystubGenerator() {
     }
   };
 
+  // Each row is built exactly like the single paystub (buildPaystubRequest) and saved the
+  // same way. Rows left out: no name, no matching profile, or no events and no uploaded
+  // lines in the period.
   const handleDistributeBatch = async () => {
-    if (uploadedPayrollStillLoading()) return;
-    if (
-      !confirmUploadedPayrollUse(
-        (importedEmployees || [])
-          .filter((emp) => !!emp.matchedUserId && willGetPaystub(emp.matchedUserId))
-          .map((emp) => ({ userId: emp.matchedUserId, name: emp.employeeName })),
-        'Distribute the paystubs to employee profiles'
-      )
-    ) {
-      return;
-    }
-    setBatchDistributing(true);
-    setBatchDistributeMessage(null);
-    setBatchDistributeErrors([]);
-
-    const rows = importedEmployees || [];
-    if (rows.length === 0) {
+    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if ((importedEmployees || []).length === 0) {
       alert('No employees imported from Excel yet.');
-      setBatchDistributing(false);
       return;
     }
     if (!formData.payPeriodStart || !formData.payPeriodEnd) {
       alert('Missing pay period start/end.');
+      return;
+    }
+
+    setBatchDistributing(true);
+    setBatchDistributeMessage(null);
+    setBatchDistributeErrors([]);
+
+    // Same name lookup as the single button, for every row still unmatched.
+    const rows = await matchUnmatchedImportedNow();
+    if (
+      !confirmPaystubRun(
+        rows
+          .filter((emp) => !!emp.matchedUserId && !batchSkipReason(emp.matchedUserId))
+          .map((emp) => ({ userId: emp.matchedUserId, name: emp.employeeName })),
+        'Distribute the paystubs to employee profiles'
+      )
+    ) {
       setBatchDistributing(false);
       return;
     }
@@ -2014,8 +1977,7 @@ export default function PaystubGenerator() {
       let sent = 0;
       let skipped = 0;
       const errors: string[] = [];
-      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
-      const profileStateByUserId: Record<string, string | null> = {};
+      const summaryCache: Record<string, EmployeeSummary> = {};
 
       for (const emp of rows) {
         try {
@@ -2025,60 +1987,18 @@ export default function PaystubGenerator() {
             errors.push(`Row ${emp.rowIndex} (${employeeName || 'unknown'}): no matched user`);
             continue;
           }
-
-          const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
-          // Employees in the uploaded payroll get a paystub even with no events (salaried staff).
-          if (filteredEvents.length === 0 && !getUploadedPayrollForUser(emp.matchedUserId)) {
+          const skipReason = batchSkipReason(emp.matchedUserId);
+          if (skipReason) {
             skipped++;
-            errors.push(`Row ${emp.rowIndex} (${employeeName}): no payable events in period`);
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): ${skipReason}`);
             continue;
           }
 
-          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, emp.matchedUserId)) {
-            const summaryData = await fetchEmployeeSummary(emp.matchedUserId);
-            sickLeaveByUserId[emp.matchedUserId] = summaryData.sickLeave;
-            profileStateByUserId[emp.matchedUserId] = summaryData.profileStateCode;
-          }
-
-          const payload = {
-            employeeName,
-            ssn: emp.ssn,
-            address: emp.address,
-            employeeId: emp.employeeId,
-            payPeriodStart: formData.payPeriodStart,
-            payPeriodEnd: formData.payPeriodEnd,
-            payDate: formData.payDate,
-            federalIncome: emp.federalIncome,
-            socialSecurity: emp.socialSecurity,
-            medicare: emp.medicare,
-            stateIncome: emp.stateIncome,
-            stateDI: emp.stateDI,
-            state: profileStateByUserId[emp.matchedUserId] || emp.state || formData.state,
-            ...ytdOverridePayload(emp),
-            miscDeduction: emp.calSaversRothRet || emp.miscDeduction,
-            miscReimbursement: emp.miscReimbursement,
-            mealPremium: parseFloat(getOverride(emp.matchedUserId).mealPremium) || 0,
-            sick: parseFloat(getOverride(emp.matchedUserId).sick) || 0,
-            events: filteredEvents,
-            sickLeave: sickLeaveByUserId[emp.matchedUserId] ?? null,
-            matchedUserId: emp.matchedUserId,
-            ...uploadedPayrollPayloadFor(emp.matchedUserId),
-            debug: debugMode,
-          };
-
-          const genRes = await fetch('/api/generate-paystub', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+          const { payload } = await buildPaystubRequest(paystubFieldsFromRow(emp), emp.matchedUserId, {
+            debugMode,
+            summaryCache,
           });
-          if (!genRes.ok) {
-            const body = await genRes.json().catch(() => ({}));
-            skipped++;
-            errors.push(`Row ${emp.rowIndex} (${employeeName}): ${body?.error || 'generation failed'}`);
-            continue;
-          }
-
-          const pdfBytes = await genRes.arrayBuffer();
+          const pdfBytes = await requestPaystubPdf(payload);
           await storeDistributedPaystub(pdfBytes, emp.matchedUserId, employeeName, formData.payDate, {
             payPeriodStart: formData.payPeriodStart,
             payPeriodEnd: formData.payPeriodEnd,
@@ -2100,10 +2020,12 @@ export default function PaystubGenerator() {
     }
   };
 
+  // Each selected employee's paystub is built exactly like the single one
+  // (buildPaystubRequest), from their Excel row or from the single form.
   const handleSendEmails = async () => {
-    if (uploadedPayrollStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
     if (
-      !confirmUploadedPayrollUse(
+      !confirmPaystubRun(
         emailCandidates.filter((c) => emailSelectedIds.has(c.key)).map((c) => ({ userId: c.userId, name: c.name })),
         'Email the paystubs'
       )
@@ -2120,89 +2042,22 @@ export default function PaystubGenerator() {
 
       const { data: { session } } = await supabase.auth.getSession();
       const selected = emailCandidates.filter(c => emailSelectedIds.has(c.key));
-
-      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
-      const profileStateByUserId: Record<string, string | null> = {};
+      const summaryCache: Record<string, EmployeeSummary> = {};
 
       for (let i = 0; i < selected.length; i++) {
         const candidate = selected[i];
         try {
-          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, candidate.userId)) {
-            const summaryData = await fetchEmployeeSummary(candidate.userId);
-            sickLeaveByUserId[candidate.userId] = summaryData.sickLeave;
-            profileStateByUserId[candidate.userId] = summaryData.profileStateCode;
-          }
+          const fields = candidate.empRow ? paystubFieldsFromRow(candidate.empRow) : formData;
+          const { payload } = await buildPaystubRequest(fields, candidate.userId, { debugMode, summaryCache });
 
-          let payload: Record<string, unknown>;
-          if (candidate.empRow) {
-            const emp = candidate.empRow;
-            payload = {
-              employeeName: emp.employeeName,
-              ssn: emp.ssn,
-              address: emp.address,
-              employeeId: emp.employeeId,
-              payPeriodStart: formData.payPeriodStart,
-              payPeriodEnd: formData.payPeriodEnd,
-              payDate: formData.payDate,
-              federalIncome: emp.federalIncome,
-              socialSecurity: emp.socialSecurity,
-              medicare: emp.medicare,
-              stateIncome: emp.stateIncome,
-              stateDI: emp.stateDI,
-              state: profileStateByUserId[emp.matchedUserId!] || emp.state || formData.state,
-              ...ytdOverridePayload(emp),
-              miscDeduction: emp.calSaversRothRet || emp.miscDeduction,
-              miscReimbursement: emp.miscReimbursement,
-              mealPremium: parseFloat(getOverride(emp.matchedUserId!).mealPremium) || 0,
-              sick: parseFloat(getOverride(emp.matchedUserId!).sick) || 0,
-              events: filterEventsForUserIdWithHours(emp.matchedUserId!),
-              sickLeave: sickLeaveByUserId[emp.matchedUserId!] ?? null,
-              matchedUserId: emp.matchedUserId,
-              ...uploadedPayrollPayloadFor(emp.matchedUserId),
-              debug: debugMode,
-            };
-          } else {
-            payload = {
-              employeeName: formData.employeeName,
-              ssn: formData.ssn,
-              address: formData.address,
-              employeeId: formData.employeeId,
-              payPeriodStart: formData.payPeriodStart,
-              payPeriodEnd: formData.payPeriodEnd,
-              payDate: formData.payDate,
-              federalIncome: formData.federalIncome,
-              socialSecurity: formData.socialSecurity,
-              medicare: formData.medicare,
-              stateIncome: formData.stateIncome,
-              stateDI: formData.stateDI,
-              state: profileStateByUserId[candidate.userId] || formData.state,
-              ...ytdOverridePayload(formData),
-              miscDeduction: formData.miscDeduction,
-              miscReimbursement: formData.miscReimbursement,
-              mealPremium: parseFloat(getOverride(candidate.userId).mealPremium) || 0,
-              sick: parseFloat(getOverride(candidate.userId).sick) || 0,
-              events: filterEventsForUserIdWithHours(candidate.userId),
-              sickLeave: sickLeaveByUserId[candidate.userId] ?? null,
-              matchedUserId: candidate.userId,
-              ...uploadedPayrollPayloadFor(candidate.userId),
-              debug: debugMode,
-            };
-          }
-
-          const genRes = await fetch('/api/generate-paystub', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-
-          if (!genRes.ok) {
-            const body = await genRes.json().catch(() => ({}));
-            results.push({ name: candidate.name, success: false, error: body?.error || 'PDF generation failed' });
+          let pdfBytes: ArrayBuffer;
+          try {
+            pdfBytes = await requestPaystubPdf(payload);
+          } catch (genErr: any) {
+            results.push({ name: candidate.name, success: false, error: genErr?.message || 'PDF generation failed' });
             if (i < selected.length - 1) await new Promise(r => setTimeout(r, 800));
             continue;
           }
-
-          const pdfBytes = await genRes.arrayBuffer();
 
           const emailFormData = new FormData();
           emailFormData.append(
@@ -3073,47 +2928,50 @@ export default function PaystubGenerator() {
         };
       });
 
-      // Set the single-form view from the first row (for manual/single generation)
+      // Set the single-form view from the first row (for manual/single generation).
+      // Row 1's own values, blanks included, so the single paystub for row 1 is built
+      // from the same data as batch row 1 and nothing carries over from a previously
+      // imported file. Only the dates and state fall back to what is on screen.
       const first = parsedEmployees[0];
       if (first) {
         setFormData(prev => ({
           ...prev,
-          employeeName: first.employeeName || prev.employeeName,
-          ssn: first.ssn || prev.ssn,
-          address: first.address || prev.address,
-          employeeId: first.employeeId || prev.employeeId,
+          employeeName: first.employeeName,
+          ssn: first.ssn,
+          address: first.address,
+          employeeId: first.employeeId,
           payPeriodStart: first.payPeriodStart || prev.payPeriodStart,
           payPeriodEnd: first.payPeriodEnd || prev.payPeriodEnd,
           payDate: first.payDate || prev.payDate,
-          federalIncome: first.federalIncome || prev.federalIncome,
-          socialSecurity: first.socialSecurity || prev.socialSecurity,
-          medicare: first.medicare || prev.medicare,
-          stateIncome: first.stateIncome || prev.stateIncome,
-          stateDI: first.stateDI || prev.stateDI,
+          federalIncome: first.federalIncome,
+          socialSecurity: first.socialSecurity,
+          medicare: first.medicare,
+          stateIncome: first.stateIncome,
+          stateDI: first.stateDI,
           state: first.state || prev.state,
-          miscDeduction: first.calSaversRothRet || first.miscDeduction || prev.miscDeduction,
-          miscReimbursement: first.miscReimbursement || prev.miscReimbursement,
-          federalIncomeYtd: first.federalIncomeYtd || prev.federalIncomeYtd,
-          socialSecurityYtd: first.socialSecurityYtd || prev.socialSecurityYtd,
-          medicareYtd: first.medicareYtd || prev.medicareYtd,
-          calSaversRothRetYtd: first.calSaversRothRetYtd || prev.calSaversRothRetYtd,
-          stateIncomeYtd: first.stateIncomeYtd || prev.stateIncomeYtd,
-          stateDIYtd: first.stateDIYtd || prev.stateDIYtd,
-          regularYtd: first.regularYtd || prev.regularYtd,
-          overtimeYtd: first.overtimeYtd || prev.overtimeYtd,
-          doubleTimeYtd: first.doubleTimeYtd || prev.doubleTimeYtd,
-          commissionYtd: first.commissionYtd || prev.commissionYtd,
-          variableIncentiveYtd: first.variableIncentiveYtd || prev.variableIncentiveYtd,
-          creditCardTipsYtd: first.creditCardTipsYtd || prev.creditCardTipsYtd,
-          restBreakPayYtd: first.restBreakPayYtd || prev.restBreakPayYtd,
-          travelPayYtd: first.travelPayYtd || prev.travelPayYtd,
-          bonusYtd: first.bonusYtd || prev.bonusYtd,
-          sickPayYtd: first.sickPayYtd || prev.sickPayYtd,
-          mealPremiumYtd: first.mealPremiumYtd || prev.mealPremiumYtd,
-          grossPayYtd: first.grossPayYtd || prev.grossPayYtd,
-          equipmentReimbYtd: first.equipmentReimbYtd || prev.equipmentReimbYtd,
-          mileageReimbYtd: first.mileageReimbYtd || prev.mileageReimbYtd,
-          miscReimbursementYtd: first.miscReimbursementYtd || prev.miscReimbursementYtd,
+          miscDeduction: first.calSaversRothRet || first.miscDeduction,
+          miscReimbursement: first.miscReimbursement,
+          federalIncomeYtd: first.federalIncomeYtd,
+          socialSecurityYtd: first.socialSecurityYtd,
+          medicareYtd: first.medicareYtd,
+          calSaversRothRetYtd: first.calSaversRothRetYtd,
+          stateIncomeYtd: first.stateIncomeYtd,
+          stateDIYtd: first.stateDIYtd,
+          regularYtd: first.regularYtd,
+          overtimeYtd: first.overtimeYtd,
+          doubleTimeYtd: first.doubleTimeYtd,
+          commissionYtd: first.commissionYtd,
+          variableIncentiveYtd: first.variableIncentiveYtd,
+          creditCardTipsYtd: first.creditCardTipsYtd,
+          restBreakPayYtd: first.restBreakPayYtd,
+          travelPayYtd: first.travelPayYtd,
+          bonusYtd: first.bonusYtd,
+          sickPayYtd: first.sickPayYtd,
+          mealPremiumYtd: first.mealPremiumYtd,
+          grossPayYtd: first.grossPayYtd,
+          equipmentReimbYtd: first.equipmentReimbYtd,
+          mileageReimbYtd: first.mileageReimbYtd,
+          miscReimbursementYtd: first.miscReimbursementYtd,
         }));
       }
 
@@ -3134,8 +2992,9 @@ export default function PaystubGenerator() {
 
       setImportedEmployees(matched);
 
-      const firstMatched = matched.find((e) => !!e.matchedUserId);
-      if (firstMatched?.matchedUserId) setMatchedUserId(firstMatched.matchedUserId);
+      // The single form shows row 1, so the single buttons use row 1's account (none when
+      // row 1 did not match: they then look the name up on click, never another row's).
+      setMatchedUserId(matched[0]?.matchedUserId ?? null);
 
       const matchedCount = matched.filter((e) => !!e.matchedUserId).length;
       setUploadSuccess(`Excel imported: ${matched.length} row(s), matched ${matchedCount}.`);
@@ -4017,7 +3876,7 @@ export default function PaystubGenerator() {
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <button
                       onClick={() => handleGenerateBatch('merge')}
-                      disabled={batchGenerating}
+                      disabled={batchGenerating || batchDistributing || rematchingImported}
                       className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                       title="Downloads one combined PDF containing all generated paystubs"
                     >
@@ -4037,7 +3896,7 @@ export default function PaystubGenerator() {
                     </button>
                     <button
                       onClick={() => handleGenerateBatch('separate')}
-                      disabled={batchGenerating}
+                      disabled={batchGenerating || batchDistributing || rematchingImported}
                       className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                       title="Downloads one PDF per employee (your browser may prompt or block multiple downloads)"
                     >
@@ -4079,7 +3938,7 @@ export default function PaystubGenerator() {
                   <div className="pt-2 border-t border-slate-100">
                     <button
                       onClick={handleDistributeBatch}
-                      disabled={batchDistributing || batchGenerating}
+                      disabled={batchDistributing || batchGenerating || rematchingImported}
                       className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                       title="Generate each paystub and add it to the employee profile"
                     >
@@ -4118,21 +3977,29 @@ export default function PaystubGenerator() {
                   </div>
 
                   {/* Send Batch Paystubs by Email */}
-                  {emailCandidates.length > 0 && (
+                  {importedEmployees.some((e) => !!e.matchedUserId || !!e.employeeName) && (
                     <div className="pt-2 border-t border-slate-100">
                       <button
-                        onClick={() => {
-                          setEmailSelectedIds(new Set(emailCandidates.map(c => c.key)));
+                        onClick={async () => {
+                          // Same name lookup as the single button, for every row still
+                          // unmatched, so the picker lists everyone single would find.
+                          const rows = await matchUnmatchedImportedNow();
+                          const keys = rows.filter((e) => !!e.matchedUserId).map((e) => e.matchedUserId as string);
+                          if (keys.length === 0) {
+                            alert('No imported employee matches a profile.');
+                            return;
+                          }
+                          setEmailSelectedIds(new Set(keys));
                           setShowEmailModal(true);
                         }}
-                        disabled={emailSending || batchDistributing || batchGenerating}
+                        disabled={emailSending || batchDistributing || batchGenerating || rematchingImported}
                         className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-violet-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                         title="Send paystubs by email to selected employees"
                       >
-                        {emailSending ? (
+                        {emailSending || rematchingImported ? (
                           <>
                             <div className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                            Sending Emails...
+                            {emailSending ? 'Sending Emails...' : 'Matching names...'}
                           </>
                         ) : (
                           <>

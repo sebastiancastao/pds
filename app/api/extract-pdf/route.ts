@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument, PDFArray } from 'pdf-lib';
 import { extractPayrollDataWithLLM } from '@/app/lib/llm-extraction';
+import { collapseRepeatedText } from '@/lib/adp-statement-ytd';
 
 export const dynamic = 'force-dynamic';
 
@@ -602,6 +603,12 @@ function extractPayrollData(text: string) {
     }
   }
 
+  // ADP's text layer repeats the bold name line ("Hannah K Silva Hannah K Silva ..."),
+  // and /paystub-generator cannot match that to a profile. Keep one copy.
+  if (payrollData.employeeInfo.name) {
+    payrollData.employeeInfo.name = collapseRepeatedText(payrollData.employeeInfo.name);
+  }
+
   // Extract SSN - multiple patterns for better coverage
   const ssnPatterns = [
     // With labels - comprehensive label matching
@@ -840,6 +847,23 @@ function extractPayrollData(text: string) {
     };
   }
 
+  // Extract Arizona and Wisconsin State Income. Text PDFs come through this parser, which
+  // only knew California, so an AZ statement's "Arizona State Income -3.02 56.07" never
+  // reached the export and /paystub-generator did not subtract it from net pay. The
+  // client parser in lib/pdf-reader-extraction.ts uses the same label pattern.
+  const otherStateIncomePatterns: Array<{ key: string; pattern: RegExp }> = [
+    { key: 'arizonaStateIncome', pattern: /Arizona State Income\s*([-\d,.]+)\s+([-\d,.]+)/i },
+    { key: 'wisconsinStateIncome', pattern: /Wisconsin State Income\s*([-\d,.]+)\s+([-\d,.]+)/i },
+  ];
+  for (const { key, pattern } of otherStateIncomePatterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const thisPeriod = parseFloat(match[1].replace(/,/g, ''));
+    const yearToDate = parseFloat(match[2].replace(/,/g, ''));
+    if (!Number.isFinite(thisPeriod) || !Number.isFinite(yearToDate)) continue;
+    payrollData.statutoryDeductions[key] = { thisPeriod, yearToDate };
+  }
+
   // Extract Misc Non Taxable Deduction
   const miscNonTaxPattern = /Misc Non Taxable Deduction\s*([-\d,.]+)\s*([-\d,.]+)/i;
   const miscNonTaxMatch = text.match(miscNonTaxPattern);
@@ -882,6 +906,18 @@ function extractPayrollData(text: string) {
       start: periodMatch[1],
       end: periodMatch[2] || periodMatch[1],
     };
+  }
+
+  // ADP prints "Period Starting: MM/DD/YYYY" and "Period Ending: MM/DD/YYYY" on two
+  // lines, which the pattern above never matches. Same patterns as the client parser in
+  // lib/pdf-reader-extraction.ts. Without them a text PDF's export had no Period Start
+  // or End, so /paystub-generator kept whatever pay period was on screen.
+  const periodStartMatch = text.match(/(?:Period Starting|Starting|Period Start|Start Date)[:\s]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  const periodEndMatch = text.match(/(?:Period Ending|Ending|Period End|End Date)[:\s]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  if (periodStartMatch || periodEndMatch) {
+    const start = periodStartMatch?.[1] || payrollData.employeeInfo.payPeriod?.start || '';
+    const end = periodEndMatch?.[1] || payrollData.employeeInfo.payPeriod?.end || start;
+    payrollData.employeeInfo.payPeriod = { start, end };
   }
 
   // Extract pay date
@@ -1019,6 +1055,15 @@ function extractPayrollData(text: string) {
     } else if (grossAmounts.length === 1 && typeof payrollData.employeeInfo.grossPay !== 'number') {
       payrollData.employeeInfo.grossPay = grossAmounts[0];
     }
+  }
+
+  // ADP's text layer prints "Net Pay Net Pay Net Pay Net Pay $689.39 $689.39 ...", so the
+  // "Net Pay <amount>" pattern above finds nothing and the export showed 0. Net Pay has
+  // no YTD column on these statements, so the first amount on the line is this period.
+  if (typeof payrollData.employeeInfo.netPay !== 'number' || !Number.isFinite(payrollData.employeeInfo.netPay)) {
+    const netPayLine = lines.find((line) => /\bNet\s+Pay\b/i.test(line) && !/adjust/i.test(line));
+    const netAmounts = netPayLine ? numbersFromAmountRun(netPayLine) : [];
+    if (netAmounts.length > 0) payrollData.employeeInfo.netPay = netAmounts[0];
   }
 
   // Extract YTD net

@@ -90,6 +90,9 @@ export async function POST(req: NextRequest) {
       payPeriodStart && payPeriodEnd
         ? `${payPeriodStart} – ${payPeriodEnd}`
         : payDate || "this pay period";
+    const hasPeriodRange = Boolean(payPeriodStart && payPeriodEnd);
+    const paymentDayLabel = hasPeriodRange && payDate ? payDate : "";
+    const adminEmail = "portal@1pds.net";
 
     const subject = `Your Paystub – ${payPeriodLabel}`;
     const html = `
@@ -107,7 +110,12 @@ export async function POST(req: NextRequest) {
           <tr>
             <td style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:36px 30px;text-align:center;">
               <h1 style="color:#ffffff;margin:0;font-size:26px;">Your Paystub is Ready</h1>
-              <p style="color:#d1fae5;margin:8px 0 0 0;font-size:15px;">Pay period: ${payPeriodLabel}</p>
+              <p style="color:#d1fae5;margin:8px 0 0 0;font-size:15px;">Pay period: ${payPeriodLabel}</p>${
+                paymentDayLabel
+                  ? `
+              <p style="color:#d1fae5;margin:4px 0 0 0;font-size:15px;">Payment day: ${paymentDayLabel}</p>`
+                  : ""
+              }
             </td>
           </tr>
           <tr>
@@ -116,12 +124,14 @@ export async function POST(req: NextRequest) {
                 Hello <strong>${employeeName}</strong>,
               </p>
               <p style="color:#333333;font-size:16px;line-height:1.6;margin:0 0 20px 0;">
-                Please find your paystub attached for the pay period <strong>${payPeriodLabel}</strong>.
+                Please find your paystub attached for the pay period <strong>${payPeriodLabel}</strong>${
+                  paymentDayLabel ? `, payment day <strong>${paymentDayLabel}</strong>` : ""
+                }.
                 Keep this document for your records.
               </p>
               <p style="color:#6b7280;font-size:13px;margin-top:32px;padding-top:20px;border-top:1px solid #e5e7eb;">
                 This is an automated notification from PDS. If you have any questions about your paystub,
-                please contact HR.
+                please contact the admin at <a href="mailto:${adminEmail}" style="color:#059669;">${adminEmail}</a>.
               </p>
             </td>
           </tr>

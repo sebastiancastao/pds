@@ -74,6 +74,24 @@ export function collapseRepeatedText(text: string): string {
   return clean.replace(/^(.+?)(?: \1){2,}$/, '$1');
 }
 
+// The general parser cuts some names short, e.g. "Colleen M O'Reilly" comes
+// back as "Colleen M O" because it stops at the apostrophe. The statement
+// prints the name line several times over, so look for a repeated line that
+// starts with the parsed name and is longer, and use it instead.
+export function fullNameFromStatement(text: string, parsedName: string): string {
+  const parsed = String(parsedName || '').replace(/\s+/g, ' ').trim();
+  if (!parsed) return parsed;
+  const want = parsed.toLowerCase();
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+/g, ' ').trim();
+    const single = collapseRepeatedText(line);
+    if (single === line) continue; // not a repeated (bold) line
+    if (/\d/.test(single) || single.length > 80) continue; // address, account, date
+    if (single.length > parsed.length && single.toLowerCase().startsWith(want)) return single;
+  }
+  return parsed;
+}
+
 function normalizeLabel(raw: string): string {
   const label = raw
     .toLowerCase()

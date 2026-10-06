@@ -39,7 +39,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import type { OcrHooks, OcrProgress, PayrollData } from '@/lib/pdf-reader-extraction';
 import type { MatchMethod, NameCandidate, NameMatchResult } from '@/lib/employee-name-match';
-import { collapseRepeatedText, readAdpStatementYtd } from '@/lib/adp-statement-ytd';
+import { collapseRepeatedText, fullNameFromStatement, readAdpStatementYtd } from '@/lib/adp-statement-ytd';
 
 type FieldKey =
   | 'federalIncomeYtd'
@@ -393,7 +393,9 @@ function rowFromPdfPage(
   // overly long name after that is garbled text from a PDF whose content
   // could not be decoded: leave it blank so the reviewer types it instead.
   const collapsedName = typeof info.name === 'string' ? collapseRepeatedText(info.name) : '';
-  const rawName = collapsedName.length <= 80 ? collapsedName : '';
+  // Restore names the parser cut short (it stops at an apostrophe).
+  const fullName = fullNameFromStatement(pageText, collapsedName);
+  const rawName = fullName.length <= 80 ? fullName : '';
   const row = newRow(toDisplayName(rawName));
   row.asOfDate = pdfDateToIso(info.payDate) || pdfDateToIso(info.payPeriod?.end) || row.asOfDate;
   row.stateCode = pdfStateCode(payrollData, lib);
@@ -728,6 +730,25 @@ function unmatchedStatus(row: Row): string {
     return `Pick from ${row.suggestions.length} suggestion${row.suggestions.length === 1 ? '' : 's'}`;
   }
   return 'No match';
+}
+
+// Plain-language reason a pending row has no user, for the "Not matched"
+// report. Three causes cover what the ADP imports produce: the same name on
+// two accounts (usually a personal worker login plus a company-email login),
+// a differently spelled or nicknamed name in the system, or no similar name.
+function unmatchedReason(row: Row): string {
+  if (!row.employeeName.trim()) return 'No name was read from the document';
+  if (row.matchStatus === 'checking' || row.matchStatus === 'unchecked') return 'Not checked yet';
+  const [top, second] = row.suggestions;
+  if (!top) {
+    return 'No similar name in the system: the person may have no account, or is listed under a nickname';
+  }
+  if (second && second.score >= 0.9 && top.score - second.score < 0.05) {
+    const same = row.suggestions.filter((c) => top.score - c.score < 0.05);
+    const who = same.map((c) => `${c.email || c.name}${c.active ? '' : ' (inactive)'}`).join(', ');
+    return `Same name on ${same.length} accounts (${who}): pick the right one`;
+  }
+  return `Spelled differently in the system: ${top.name} (${Math.round(top.score * 100)}%${top.email ? `, ${top.email}` : ''}). Confirm it is the same person`;
 }
 
 function moneyCell(value: string): string {
@@ -1339,6 +1360,7 @@ export default function AdpYtdImportPage() {
           'Imported name': r.employeeName.trim() || '(no name)',
           'Source document': r.sourceName || (r.matchMethod === 'onfile' ? 'On file' : 'Typed in'),
           Status: unmatchedStatus(r),
+          'Why it did not match': unmatchedReason(r),
           'As of': r.asOfDate,
           State: r.stateCode,
           'Gross Pay YTD': r.grossPayYtd,
@@ -1586,7 +1608,7 @@ export default function AdpYtdImportPage() {
                           <th className="px-3 py-2 text-left font-medium">Status</th>
                           <th className="px-3 py-2 text-left font-medium">As of</th>
                           <th className="px-3 py-2 text-right font-medium">Gross YTD</th>
-                          <th className="px-3 py-2 text-left font-medium">Best suggestion</th>
+                          <th className="px-3 py-2 text-left font-medium">Why it did not match</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
@@ -1600,7 +1622,6 @@ export default function AdpYtdImportPage() {
                           </tr>
                         )}
                         {unmatchedRows.map((r) => {
-                          const top = r.suggestions[0];
                           return (
                             <tr key={r.key}>
                               <td className="px-3 py-2 text-gray-900">{r.employeeName.trim() || '(no name)'}</td>
@@ -1618,9 +1639,7 @@ export default function AdpYtdImportPage() {
                               </td>
                               <td className="px-3 py-2 text-gray-700">{r.asOfDate || '—'}</td>
                               <td className="px-3 py-2 text-right text-gray-900">{moneyCell(r.grossPayYtd)}</td>
-                              <td className="px-3 py-2 text-xs text-gray-600">
-                                {top ? `${top.name} · ${Math.round(top.score * 100)}%${top.active ? '' : ' (inactive)'}` : '—'}
-                              </td>
+                              <td className="px-3 py-2 text-xs text-gray-600 max-w-[28rem]">{unmatchedReason(r)}</td>
                             </tr>
                           );
                         })}
