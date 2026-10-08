@@ -1858,6 +1858,7 @@ export async function POST(req: NextRequest) {
       // Uploaded payroll in use for this period: the earnings come from this employee's
       // uploaded lines instead of the system calculation above. YTD, deductions, sick leave
       // and the manual meal premium / sick inputs still work as usual (see below).
+      let uploadedMiscReimbursement = 0;
       if (uploadedPaystub) {
         const u = uploadedPaystub.totals;
         totalRegHours = u.regularHours;
@@ -1871,8 +1872,10 @@ export async function POST(req: NextRequest) {
         totalOther = u.bonus;
         // Meal premium adjustments are part of the uploaded Other column (Bonus row).
         totalAdjustmentMealPremium = 0;
-        // Reimbursement and mileage are added to Net Pay, never to Gross Pay.
-        totalAdjustmentReimbursement = u.reimbursement;
+        // Reimbursement and mileage are added to Net Pay, never to Gross Pay. Uploaded
+        // reimbursements are shown as Misc Reimbursement (see below), not Equipment.
+        totalAdjustmentReimbursement = 0;
+        uploadedMiscReimbursement = u.reimbursement;
         totalMileageReimbursement = u.mileage;
         totalRegularPayAmount = u.regularPay;
         totalOvertimePayAmount = u.overtimePay;
@@ -1970,7 +1973,11 @@ export async function POST(req: NextRequest) {
       const stateIncomeAmt = round2(parseAmount(stateIncome));
       const stateDIAmt = round2(parseAmount(stateDI));
       const miscDeductionAmt = round2(parseAmount(miscDeduction));
-      const reimbursement = round2(parseAmount(miscReimbursement, false));
+      // Misc Reimbursement: the figure the page sends (from the ADP data) wins, else the
+      // uploaded lines' reimbursements. Never both, which paid the reimbursement twice.
+      const pageMiscReimbursement = round2(parseAmount(miscReimbursement, false));
+      const reimbursement =
+        pageMiscReimbursement !== 0 ? pageMiscReimbursement : round2(uploadedMiscReimbursement);
       const rawTotalDeductions = round2(
         federalIncomeAmt +
         socialSecurityAmt +
@@ -3092,9 +3099,11 @@ export async function POST(req: NextRequest) {
     // Uploaded payroll in use for this period: one row per uploaded line, with the
     // uploaded figures. Reimbursement-only lines are not earnings (added to Net Pay below).
     let uploadedMileageNonCA = 0;
+    // Uploaded reimbursements are shown as Misc Reimbursement, not Equipment (see below).
+    let uploadedReimbursementNonCA = 0;
     if (uploadedPaystub) {
       for (const line of uploadedPaystub.lines) {
-        totalAdjustmentReimbursementNonCA += line.reimbursement;
+        uploadedReimbursementNonCA += line.reimbursement;
         uploadedMileageNonCA += line.mileage;
         if (line.taxableGross === 0 && line.hours === 0) continue;
 
@@ -3251,7 +3260,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Reimbursement
-    const reimbursement = parseFloat(miscReimbursement || '0');
+    // Misc Reimbursement: the page's figure (from the ADP data) wins, else the uploaded
+    // lines' reimbursements. Never both, which paid the reimbursement twice.
+    const pageMiscReimbursementNonCA = parseFloat(miscReimbursement || '0') || 0;
+    const reimbursement =
+      pageMiscReimbursementNonCA !== 0 ? pageMiscReimbursementNonCA : round2(uploadedReimbursementNonCA);
     const totalReimbursementNonCA = round2(reimbursement + totalAdjustmentReimbursementNonCA);
     if (totalAdjustmentReimbursementNonCA > 0) {
       drawText("Equipment Reimbursement", 50, yPosition, { size: 9 });
