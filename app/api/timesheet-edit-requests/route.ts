@@ -36,7 +36,6 @@ const supabaseAnon = createClient(
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const TIMESHEET_EDIT_REQUEST_NOTIFICATION_RECIPIENTS = [
-  "portal@1pds.net",
   "sebastiancastao379@gmail.com",
   "jenvillar@1pds.net",
 ] as const;
@@ -90,16 +89,6 @@ type ProfileLookupRow = {
   first_name: string | null;
   last_name: string | null;
 };
-
-function dedupeEmails(values: Array<string | null | undefined>) {
-  return Array.from(
-    new Set(
-      values
-        .map((value) => String(value || "").trim().toLowerCase())
-        .filter(Boolean)
-    )
-  );
-}
 
 // Table of the times a requester wants, for the notification email. Every value
 // was validated as HH:MM or a real date, so nothing here needs HTML escaping.
@@ -198,97 +187,6 @@ async function loadUserSummary(userId: string): Promise<UserSummary> {
     email: userRow.email ? String(userRow.email) : null,
     name,
   };
-}
-
-async function loadUserEmails(userIds: string[]) {
-  const uniqueUserIds = Array.from(
-    new Set(
-      userIds
-        .map((value) => String(value || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  if (uniqueUserIds.length === 0) {
-    return [] as string[];
-  }
-
-  const { data: users, error } = await supabaseAdmin
-    .from("users")
-    .select("id, email")
-    .in("id", uniqueUserIds);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return dedupeEmails((users || []).map((user) => user.email));
-}
-
-async function loadRoomManagerEmails(userId: string) {
-  const { data: teamLinks, error: teamLinksError } = await supabaseAdmin
-    .from("manager_team_members")
-    .select("manager_id")
-    .eq("member_id", userId)
-    .eq("is_active", true);
-
-  if (teamLinksError) {
-    throw new Error(teamLinksError.message);
-  }
-
-  const directManagerIds = Array.from(
-    new Set(
-      (teamLinks || [])
-        .map((row: { manager_id?: string | null }) => String(row.manager_id || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  const directManagerEmails = await loadUserEmails(directManagerIds);
-  if (directManagerEmails.length > 0) {
-    return directManagerEmails;
-  }
-
-  const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
-    .from("vendor_venue_assignments")
-    .select("venue_id")
-    .eq("vendor_id", userId);
-
-  if (venueAssignmentsError) {
-    throw new Error(venueAssignmentsError.message);
-  }
-
-  const venueIds = Array.from(
-    new Set(
-      (venueAssignments || [])
-        .map((row: { venue_id?: string | null }) => String(row.venue_id || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  if (venueIds.length === 0) {
-    return [] as string[];
-  }
-
-  const { data: venueManagers, error: venueManagersError } = await supabaseAdmin
-    .from("venue_managers")
-    .select("manager_id")
-    .in("venue_id", venueIds)
-    .eq("is_active", true);
-
-  if (venueManagersError) {
-    throw new Error(venueManagersError.message);
-  }
-
-  const venueManagerIds = Array.from(
-    new Set(
-      (venueManagers || [])
-        .map((row: { manager_id?: string | null }) => String(row.manager_id || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  return loadUserEmails(venueManagerIds);
 }
 
 async function loadTimesheetStatus(userId: string, eventId: string) {
@@ -706,23 +604,8 @@ export async function POST(req: NextRequest) {
 </html>
 `.trim();
 
-    let roomManagerEmails: string[] = [];
-    try {
-      roomManagerEmails = await loadRoomManagerEmails(targetUser.id);
-    } catch (managerLookupError: any) {
-      console.error(
-        "[timesheet-edit-requests] failed to load room manager recipients:",
-        managerLookupError?.message || managerLookupError
-      );
-    }
-
-    const notificationRecipients = dedupeEmails([
-      ...TIMESHEET_EDIT_REQUEST_NOTIFICATION_RECIPIENTS,
-      ...roomManagerEmails,
-    ]);
-
     const emailResult = await sendEmail({
-      to: notificationRecipients,
+      to: [...TIMESHEET_EDIT_REQUEST_NOTIFICATION_RECIPIENTS],
       subject,
       html,
     });
