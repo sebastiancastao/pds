@@ -185,6 +185,10 @@ function SalesContent() {
 
     const payload = {
       ...event,
+      // Commission sharing is edited on the event-dashboard Sales tab only; a stale copy
+      // of the stored link must not regroup events from here.
+      linked_commission_event_id: undefined,
+      linked_commission_group_event_ids: undefined,
       ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
       commission_pool: commissionPool !== "" ? Number(commissionPool) : null,
       // send tax if your API supports it; safe if ignored

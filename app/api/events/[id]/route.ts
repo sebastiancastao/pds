@@ -5,6 +5,24 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { deleteEventAssociations } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { canUserAccessEventById, canUserAccessLoadedEvent } from "@/lib/event-access";
+import {
+  MAX_LINKED_COMMISSION_GROUP_SIZE,
+  buildLinkedCommissionRing,
+  fetchLinkedCommissionGroups,
+  normalizeLinkedCommissionIds,
+} from "@/lib/linked-commission-groups";
+
+// The other events sharing this event's commission pool (whole group, not just the
+// stored next-in-ring partner). Never fails the request it decorates.
+async function getLinkedCommissionGroupEventIds(eventId: string): Promise<string[] | undefined> {
+  try {
+    const groups = await fetchLinkedCommissionGroups(supabaseAdmin, [eventId]);
+    return (groups.groupIdsByEventId[eventId] || []).filter((id) => id !== eventId);
+  } catch (err) {
+    console.error("Failed to load linked commission group:", err);
+    return undefined;
+  }
+}
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -112,7 +130,13 @@ export async function GET(
       console.error("Load merchandise error:", merchErr);
     }
 
-    return NextResponse.json({ event: data, merchandise: merch || null }, { status: 200 });
+    const linkedCommissionGroupEventIds = await getLinkedCommissionGroupEventIds(eventId);
+    const eventWithGroup =
+      linkedCommissionGroupEventIds !== undefined
+        ? { ...data, linked_commission_group_event_ids: linkedCommissionGroupEventIds }
+        : data;
+
+    return NextResponse.json({ event: eventWithGroup, merchandise: merch || null }, { status: 200 });
   } catch (err: any) {
     console.error("SERVER ERROR in event get:", err);
     return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });
@@ -276,10 +300,14 @@ export async function PUT(
     const hasTipsInPayload = Object.prototype.hasOwnProperty.call(body, "tips");
     const hasFeesInPayload = Object.prototype.hasOwnProperty.call(body, "fees");
     const hasOtherIncomeInPayload = Object.prototype.hasOwnProperty.call(body, "other_income");
-    const hasLinkedCommissionEventInPayload = Object.prototype.hasOwnProperty.call(
-      body,
-      "linked_commission_event_id"
-    );
+    // linked_commission_event_ids (array) is the full list of OTHER events that share this
+    // event's commission pool, sent by the event-dashboard Sales tab. The single
+    // linked_commission_event_id is the legacy pair field; screens that resend the whole
+    // event object still include it, so it only changes links when it really differs.
+    const hasLinkedCommissionGroupInPayload = Array.isArray(body.linked_commission_event_ids);
+    const hasLinkedCommissionEventInPayload =
+      !hasLinkedCommissionGroupInPayload &&
+      Object.prototype.hasOwnProperty.call(body, "linked_commission_event_id");
 
     // Core fields
     const event_name = body.event_name?.trim() || "";
@@ -450,14 +478,13 @@ export async function PUT(
     if (hasOtherIncomeInPayload) {
       updatePayload.other_income = other_income !== null && !Number.isNaN(other_income) ? other_income : null;
     }
-    if (hasLinkedCommissionEventInPayload) {
-      updatePayload.linked_commission_event_id = linked_commission_event_id;
-    }
-
-    let existingEventForLinking: any = null;
-    let targetLinkedEvent: any = null;
-    if (hasLinkedCommissionEventInPayload) {
-      existingEventForLinking = await getAccessibleEvent(
+    // Shared commission group plan: which events end up in this event's group (stored as
+    // a ring, see lib/linked-commission-groups.ts) and which current members leave it.
+    // Stays null when the payload does not change the group.
+    let linkPlan: { ring: Record<string, string | null>; removed: string[]; others: string[] } | null = null;
+    let currentLinkedGroupOthers: string[] | null = null;
+    if (hasLinkedCommissionGroupInPayload || hasLinkedCommissionEventInPayload) {
+      const existingEventForLinking: any = await getAccessibleEvent(
         eventId,
         "id, linked_commission_event_id"
       );
@@ -468,25 +495,81 @@ export async function PUT(
         );
       }
 
-      if (linked_commission_event_id) {
-        targetLinkedEvent = await getAccessibleEvent(
-          linked_commission_event_id,
-          "id, linked_commission_event_id"
-        );
-        if (!targetLinkedEvent) {
-          return NextResponse.json(
-            { error: "Linked event not found or you do not have permission to use it." },
-            { status: 404 }
-          );
-        }
+      const currentGroups = await fetchLinkedCommissionGroups(supabaseAdmin, [eventId]);
+      const currentGroupIds = currentGroups.groupIdsByEventId[eventId] || [eventId];
+      const currentOthers = currentGroupIds.filter((id) => id !== eventId);
+      currentLinkedGroupOthers = currentOthers;
 
-        const targetExistingLink = (targetLinkedEvent.linked_commission_event_id || "").toString().trim();
-        if (targetExistingLink && targetExistingLink !== eventId) {
+      let desiredOthers: string[] | null = null;
+      if (hasLinkedCommissionGroupInPayload) {
+        desiredOthers = normalizeLinkedCommissionIds(body.linked_commission_event_ids).filter(
+          (id) => id !== eventId
+        );
+      } else {
+        const legacyTarget = (linked_commission_event_id || "").toString().trim();
+        const savedLink = (existingEventForLinking.linked_commission_event_id || "").toString().trim();
+        // Resending the stored link, or naming an event already in the group, keeps the
+        // group as it is. Only a real change acts like the old pair link.
+        if (legacyTarget === savedLink || (legacyTarget && currentOthers.includes(legacyTarget))) {
+          desiredOthers = null;
+        } else {
+          desiredOthers = legacyTarget ? [legacyTarget] : [];
+        }
+      }
+
+      if (desiredOthers) {
+        if (desiredOthers.length + 1 > MAX_LINKED_COMMISSION_GROUP_SIZE) {
           return NextResponse.json(
-            { error: "The selected linked event already shares commission with another event." },
+            { error: `A shared commission group can include at most ${MAX_LINKED_COMMISSION_GROUP_SIZE} events.` },
             { status: 400 }
           );
         }
+
+        const desiredGroupSet = new Set([eventId, ...desiredOthers]);
+        const addedIds = desiredOthers.filter((id) => !currentOthers.includes(id));
+        const addedEventsById: Record<string, any> = {};
+        for (const addedId of addedIds) {
+          const addedEvent = await getAccessibleEvent(addedId, "id, event_name, event_date");
+          if (!addedEvent) {
+            return NextResponse.json(
+              { error: "Linked event not found or you do not have permission to use it." },
+              { status: 404 }
+            );
+          }
+          addedEventsById[addedId] = addedEvent;
+        }
+
+        if (addedIds.length > 0) {
+          // An added event that already shares commission elsewhere can only come in
+          // together with every member of its group (merging the two groups).
+          const addedGroups = await fetchLinkedCommissionGroups(supabaseAdmin, addedIds);
+          for (const addedId of addedIds) {
+            const addedGroupIds = addedGroups.groupIdsByEventId[addedId] || [addedId];
+            if (addedGroupIds.some((id) => !desiredGroupSet.has(id))) {
+              const addedEvent = addedEventsById[addedId] || {};
+              const label = [
+                (addedEvent.event_date || "").toString().split("T")[0],
+                addedEvent.event_name || "The selected event",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              return NextResponse.json(
+                {
+                  error: `${label} already shares commission with another event. Remove it from that group first.`,
+                },
+                { status: 400 }
+              );
+            }
+          }
+        }
+
+        const ring = buildLinkedCommissionRing([eventId, ...desiredOthers]);
+        linkPlan = {
+          ring,
+          removed: currentOthers.filter((id) => !desiredGroupSet.has(id)),
+          others: desiredOthers,
+        };
+        updatePayload.linked_commission_event_id = ring[eventId] ?? null;
       }
     }
 
@@ -540,34 +623,30 @@ export async function PUT(
       );
     }
 
-    if (hasLinkedCommissionEventInPayload) {
-      const previousLinkedEventId = (existingEventForLinking?.linked_commission_event_id || "").toString().trim();
-      const nextLinkedEventId = (linked_commission_event_id || "").toString().trim();
+    if (linkPlan) {
+      const linkedAt = new Date().toISOString();
 
-      if (previousLinkedEventId && previousLinkedEventId !== nextLinkedEventId) {
-        const { error: clearPreviousLinkedEventError } = await supabaseAdmin
+      // Events taken out of the group stop sharing commission entirely.
+      for (const removedId of linkPlan.removed) {
+        const { error: clearRemovedLinkError } = await supabaseAdmin
           .from("events")
-          .update({
-            linked_commission_event_id: null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", previousLinkedEventId)
-          .eq("linked_commission_event_id", eventId);
+          .update({ linked_commission_event_id: null, updated_at: linkedAt })
+          .eq("id", removedId);
 
-        if (clearPreviousLinkedEventError) {
-          console.error("Failed to clear previous linked commission event:", clearPreviousLinkedEventError);
-          return NextResponse.json({ error: clearPreviousLinkedEventError.message }, { status: 500 });
+        if (clearRemovedLinkError) {
+          console.error("Failed to clear removed linked commission event:", clearRemovedLinkError);
+          return NextResponse.json({ error: clearRemovedLinkError.message }, { status: 500 });
         }
       }
 
-      if (nextLinkedEventId) {
+      // Every other member points at the next one so the group stays one ring. This
+      // event's own link was written by the main update above.
+      for (const [memberId, nextMemberId] of Object.entries(linkPlan.ring)) {
+        if (memberId === eventId) continue;
         const { error: syncLinkedEventError } = await supabaseAdmin
           .from("events")
-          .update({
-            linked_commission_event_id: eventId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", nextLinkedEventId);
+          .update({ linked_commission_event_id: nextMemberId, updated_at: linkedAt })
+          .eq("id", memberId);
 
         if (syncLinkedEventError) {
           console.error("Failed to sync linked commission event:", syncLinkedEventError);
@@ -575,6 +654,10 @@ export async function PUT(
         }
       }
     }
+
+    const linkedCommissionGroupEventIds = linkPlan
+      ? linkPlan.others
+      : currentLinkedGroupOthers ?? (await getLinkedCommissionGroupEventIds(eventId));
 
     // Keep event_payments.net_sales aligned with Sales tab values so payroll can consume it directly.
     if (hasSalesFieldsInPayload) {
@@ -649,7 +732,11 @@ export async function PUT(
     }
 
     console.log("SUPABASE UPDATE RESULT:", data);
-    return NextResponse.json({ event: data[0] }, { status: 200 });
+    const updatedEventWithGroup =
+      linkedCommissionGroupEventIds !== undefined
+        ? { ...data[0], linked_commission_group_event_ids: linkedCommissionGroupEventIds }
+        : data[0];
+    return NextResponse.json({ event: updatedEventWithGroup }, { status: 200 });
   } catch (err: any) {
     console.error("SERVER ERROR in event update:", err);
     return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });

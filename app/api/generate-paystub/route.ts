@@ -486,9 +486,9 @@ export async function POST(req: NextRequest) {
     // Shared/linked commission: buildLinkedCommissionDistribution only changes behavior for
     // an event whose linked partner (events.linked_commission_event_id) is ALSO present in
     // this request's `events` array. paystub-generator/page.tsx's filterEventsForUserIdWithHours
-    // ensures the partner is included even when the target employee didn't personally work
-    // it, specifically so this merge (pure even split across every vendor of both events)
-    // can happen here. An event with no linked partner in the request is left untouched.
+    // ensures every group member (2+ events) is included even when the target employee didn't work
+    // it, specifically so this merge (pure even split across every vendor of the group)
+    // can happen here. An event with no linked group member in the request is left untouched.
     const linkedCommissionDistributionForPaystub = buildLinkedCommissionDistribution({
       events: (Array.isArray(events) ? events : []).map((event: any) => {
         const baselineInputs = getPayrollInputsForEvent(event);

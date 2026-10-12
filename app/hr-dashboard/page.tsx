@@ -1053,15 +1053,46 @@ function HRDashboardContent() {
         }
       });
 
-      // Shared/linked commission: an event's linked partner (events.linked_commission_event_id)
-      // may fall outside this payroll view's date range, so its own commission pool + vendor
-      // roster wouldn't otherwise be loaded. Fetch any such partner separately so the combined
-      // pool can be split evenly across every vendor of both events (see buildLinkedCommissionDistribution).
+      // Shared/linked commission: other events in a shared group (events.linked_commission_event_id,
+      // which can chain 3+ events) may fall outside this payroll view's date range, so their own
+      // commission pool + vendor roster wouldn't otherwise be loaded. Look up every member of
+      // each group and fetch the missing ones separately so the combined pool can be split
+      // evenly across every vendor of every event in the group (see buildLinkedCommissionDistribution).
       const filteredEventIdSet = new Set(filteredEventIds);
+      const linkedGroupSeedIds = filtered
+        .filter((e: any) => (e.linked_commission_event_id || '').toString().trim())
+        .map((e: any) => (e.id || '').toString())
+        .filter(Boolean);
+      let linkedGroupEventIds: string[] = filtered
+        .map((e: any) => (e.linked_commission_event_id || '').toString().trim())
+        .filter(Boolean);
+      if (linkedGroupSeedIds.length > 0) {
+        try {
+          const groupsRes = await fetch(
+            `/api/linked-commission-groups?event_ids=${encodeURIComponent(linkedGroupSeedIds.join(','))}&ts=${Date.now()}`,
+            {
+              method: 'GET',
+              cache: 'no-store',
+              headers: {
+                'Cache-Control': 'no-cache',
+                ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+              },
+            }
+          );
+          if (groupsRes.ok) {
+            const groupsJson = await groupsRes.json();
+            if (Array.isArray(groupsJson?.eventIds)) {
+              linkedGroupEventIds = groupsJson.eventIds.map((id: any) => (id || '').toString()).filter(Boolean);
+            }
+          } else {
+            console.warn('[HR PAYMENTS] Failed to load linked commission groups, using direct partners only.');
+          }
+        } catch (err) {
+          console.warn('[HR PAYMENTS] Error loading linked commission groups, using direct partners only.', err);
+        }
+      }
       const linkedPartnerIdsToFetch = Array.from(new Set(
-        filtered
-          .map((e: any) => (e.linked_commission_event_id || '').toString().trim())
-          .filter((id: string) => id && !filteredEventIdSet.has(id) && !paymentsByEventId[id])
+        linkedGroupEventIds.filter((id: string) => id && !filteredEventIdSet.has(id) && !paymentsByEventId[id])
       ));
       if (linkedPartnerIdsToFetch.length > 0) {
         try {
@@ -1508,8 +1539,8 @@ function HRDashboardContent() {
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
         // Shared/linked commission: when this event's pool is genuinely combined with a
-        // linked partner event, use the merged distribution (pure even split across every
-        // vendor of both events) computed above instead of this event's own isolated pool.
+        // linked event or group of events, use the merged distribution (pure even split across every
+        // vendor of every event in the group) computed above instead of this event's own isolated pool.
         // Standalone events fall through to the original per-event hours-threshold calc
         // unchanged.
         const linkedGroupEventIds = linkedCommissionDistribution.groupEventIdsByEventId[eventId] || [eventId];

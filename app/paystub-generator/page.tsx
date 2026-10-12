@@ -583,9 +583,9 @@ export default function PaystubGenerator() {
     }).length;
   };
   // Shared/linked commission: merge every loaded event (visible + out-of-period linked
-  // partners fetched into linkedPartnerEvents) into one combined distribution so a pair of
-  // linked events splits its combined pool purely evenly across every eligible vendor of
-  // both, instead of each event's own hours-threshold split ignoring the other. Standalone
+  // group members fetched into linkedPartnerEvents) into one combined distribution so a
+  // group of linked events (2 or more) splits its combined pool purely evenly across every
+  // eligible vendor of all of them, instead of each event's own hours-threshold split. Standalone
   // (unlinked) events pass through this unchanged — buildLinkedCommissionDistribution only
   // changes behavior for groups spanning 2+ events.
   const linkedCommissionDistribution = useMemo(() => {
@@ -820,17 +820,49 @@ export default function PaystubGenerator() {
       const loadedEvents: Event[] = data.events || [];
       setEvents(loadedEvents);
 
-      // Shared/linked commission: a linked partner event may fall outside this pay
-      // period's date range, so it wouldn't otherwise be loaded above. Fetch any such
-      // partner into a SEPARATE state (not the visible "Events During Pay Period" list —
-      // it isn't actually during this period) so its commission pool + vendor roster is
-      // still available to merge into the split (see getDistributedSharesForEvent /
+      // Shared/linked commission: other events in a shared group (which can chain 3+
+      // events) may fall outside this pay period's date range, so they wouldn't otherwise
+      // be loaded above. Look up every member of each group and fetch the missing ones into
+      // a SEPARATE state (not the visible "Events During Pay Period" list — they aren't
+      // actually during this period) so their commission pools + vendor rosters are still
+      // available to merge into the split (see getDistributedSharesForEvent /
       // buildLinkedCommissionDistribution and the /api/generate-paystub request body).
       const loadedEventIds = new Set(loadedEvents.map((e) => e.id));
+      let linkedGroupEventIds: string[] = loadedEvents
+        .map((e) => (e.linked_commission_event_id || '').toString().trim())
+        .filter(Boolean);
+      const linkedGroupSeedIds = loadedEvents
+        .filter((e) => (e.linked_commission_event_id || '').toString().trim())
+        .map((e) => e.id);
+      if (linkedGroupSeedIds.length > 0) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const groupsResponse = await fetch(
+            `/api/linked-commission-groups?event_ids=${encodeURIComponent(linkedGroupSeedIds.join(','))}&ts=${Date.now()}`,
+            {
+              cache: 'no-store',
+              headers: {
+                'Cache-Control': 'no-cache',
+                ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+              },
+            }
+          );
+          if (requestId !== eventsRequestIdRef.current) return false;
+          if (groupsResponse.ok) {
+            const groupsData = await groupsResponse.json();
+            if (Array.isArray(groupsData?.eventIds)) {
+              linkedGroupEventIds = groupsData.eventIds.map((id: any) => (id || '').toString()).filter(Boolean);
+            }
+          } else {
+            console.warn('Failed to load linked commission groups, using direct partners only.');
+          }
+        } catch (groupsError) {
+          console.warn('Error loading linked commission groups, using direct partners only.', groupsError);
+        }
+      }
+      if (requestId !== eventsRequestIdRef.current) return false;
       const missingLinkedPartnerIds = Array.from(new Set(
-        loadedEvents
-          .map((e) => (e.linked_commission_event_id || '').toString().trim())
-          .filter((id) => id && !loadedEventIds.has(id))
+        linkedGroupEventIds.filter((id) => id && !loadedEventIds.has(id))
       ));
       if (missingLinkedPartnerIds.length === 0) {
         setLinkedPartnerEvents([]);
@@ -1520,20 +1552,24 @@ export default function PaystubGenerator() {
     if (!userId) return [];
     const userEvents = events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
     // Shared/linked commission: the actual paystub PDF is generated server-side by
-    // /api/generate-paystub from exactly this "events" payload, so a linked partner event
-    // must be included even when this employee didn't personally work it — otherwise the
-    // server has no way to know the pool is shared and falls back to splitting only this
-    // event's own pool among its own vendors. Pull the partner in from whichever of the
+    // /api/generate-paystub from exactly this "events" payload, so every other event in a
+    // shared group must be included even when this employee didn't personally work it —
+    // otherwise the server has no way to know the pool is shared and falls back to
+    // splitting only part of the pool. Pull each group member in from whichever of the
     // visible list or the out-of-period linkedPartnerEvents state has it.
     const includedIds = new Set(userEvents.map((event) => event.id));
     const linkedExtras: Event[] = [];
     for (const event of userEvents) {
-      const partnerId = (event.linked_commission_event_id || '').toString().trim();
-      if (!partnerId || includedIds.has(partnerId)) continue;
-      const partner = events.find((e) => e.id === partnerId) || linkedPartnerEvents.find((e) => e.id === partnerId);
-      if (partner) {
-        linkedExtras.push(partner);
-        includedIds.add(partnerId);
+      const groupIds = linkedCommissionDistribution.groupEventIdsByEventId[event.id] || [];
+      const directPartnerId = (event.linked_commission_event_id || '').toString().trim();
+      const partnerIds = groupIds.length > 1 ? groupIds : directPartnerId ? [directPartnerId] : [];
+      for (const partnerId of partnerIds) {
+        if (!partnerId || includedIds.has(partnerId)) continue;
+        const partner = events.find((e) => e.id === partnerId) || linkedPartnerEvents.find((e) => e.id === partnerId);
+        if (partner) {
+          linkedExtras.push(partner);
+          includedIds.add(partnerId);
+        }
       }
     }
     return linkedExtras.length > 0 ? [...userEvents, ...linkedExtras] : userEvents;

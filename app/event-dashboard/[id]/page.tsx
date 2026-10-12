@@ -39,6 +39,8 @@ type EventItem = {
   pds_share_percent: number;
   commission_pool: number | null; // expects fraction like 0.04 for 4%
   linked_commission_event_id?: string | null;
+  // Every other event sharing this event's commission pool (returned by /api/events/[id]).
+  linked_commission_group_event_ids?: string[] | null;
   required_staff: number | null;
   confirmed_staff: number | null;
   is_active: boolean;
@@ -187,6 +189,7 @@ type CommissionLinkCandidate = {
 };
 
 type LinkedCommissionEventContext = {
+  eventId: string;
   event: CommissionLinkCandidate;
   eventPayment: any | null;
   vendorPayments: any[];
@@ -199,10 +202,19 @@ const EMPTY_COMMISSION_LINK_CANDIDATE: CommissionLinkCandidate = {
   event_date: "",
 };
 
-const EMPTY_LINKED_COMMISSION_EVENT_CONTEXT: LinkedCommissionEventContext = {
-  event: EMPTY_COMMISSION_LINK_CANDIDATE,
-  eventPayment: null,
-  vendorPayments: [],
+// The other events in this event's shared commission group, from the event record.
+// Older responses without the group list fall back to the single stored partner.
+const getLinkedCommissionGroupIdsFromEvent = (eventRecord: any, currentEventId: string): string[] => {
+  const groupIds = Array.isArray(eventRecord?.linked_commission_group_event_ids)
+    ? eventRecord.linked_commission_group_event_ids
+    : [eventRecord?.linked_commission_event_id];
+  return Array.from(
+    new Set(
+      groupIds
+        .map((id: any) => (id || "").toString().trim())
+        .filter((id: string) => id && id !== currentEventId)
+    )
+  );
 };
 
 type UninvitedTeamMemberRecord = {
@@ -487,7 +499,7 @@ export default function EventDashboardPage() {
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
   const [savedEventPaymentSummary, setSavedEventPaymentSummary] = useState<any | null>(null);
   const [commissionLinkCandidates, setCommissionLinkCandidates] = useState<CommissionLinkCandidate[]>([]);
-  // Mirrors commissionLinkCandidates so loadLinkedCommissionEventContext can read the latest
+  // Mirrors commissionLinkCandidates so loadLinkedCommissionEventContexts can read the latest
   // list without depending on it — that dependency used to change the callback's identity
   // whenever candidates finished loading, re-triggering the fetch effect a few seconds after
   // the initial (correct) load and swapping in the /api/events list's possibly-stale
@@ -499,10 +511,14 @@ export default function EventDashboardPage() {
   }, [commissionLinkCandidates]);
   const [commissionLinkCandidatesLoaded, setCommissionLinkCandidatesLoaded] = useState(false);
   const [loadingCommissionLinkCandidates, setLoadingCommissionLinkCandidates] = useState(false);
-  const [selectedLinkedCommissionEventId, setSelectedLinkedCommissionEventId] = useState<string>("");
-  const [linkedCommissionEventContext, setLinkedCommissionEventContext] =
-    useState<LinkedCommissionEventContext>(EMPTY_LINKED_COMMISSION_EVENT_CONTEXT);
+  // Other events in this event's shared commission group: the live Sales tab selection,
+  // and the saved group (so saved links the selection has since dropped are ignored).
+  const [selectedLinkedCommissionEventIds, setSelectedLinkedCommissionEventIds] = useState<string[]>([]);
+  const [savedLinkedCommissionEventIds, setSavedLinkedCommissionEventIds] = useState<string[]>([]);
+  const [linkedCommissionEventContexts, setLinkedCommissionEventContexts] =
+    useState<LinkedCommissionEventContext[]>([]);
   const [loadingLinkedCommissionEventContext, setLoadingLinkedCommissionEventContext] = useState(false);
+  const linkedCommissionContextsRequestIdRef = useRef(0);
   const [periodEvents, setPeriodEvents] = useState<any[]>([]);
   const [loadingPeriodEvents, setLoadingPeriodEvents] = useState(false);
   const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
@@ -1382,9 +1398,9 @@ export default function EventDashboardPage() {
         setTicketSales(eventData.ticket_sales?.toString() || "");
         setTicketCount(eventData.ticket_count?.toString() || "");
         setCommissionPool(eventData.commission_pool?.toString() || "");
-        setSelectedLinkedCommissionEventId(
-          (eventData.linked_commission_event_id || "").toString()
-        );
+        const initialLinkedCommissionGroupIds = getLinkedCommissionGroupIdsFromEvent(eventData, eventId);
+        setSelectedLinkedCommissionEventIds(initialLinkedCommissionGroupIds);
+        setSavedLinkedCommissionEventIds(initialLinkedCommissionGroupIds);
         setTaxRate((eventData.tax_rate_percent ?? 0).toString());
         setTips((eventData as any).tips?.toString() || "");
         setFees((eventData as any).fees?.toString() || "");
@@ -1674,10 +1690,14 @@ export default function EventDashboardPage() {
     }
   }, [eventId, getSessionToken]);
 
-  const loadLinkedCommissionEventContext = useCallback(async (linkedEventId: string) => {
-    const normalizedLinkedEventId = (linkedEventId || "").toString().trim();
-    if (!normalizedLinkedEventId) {
-      setLinkedCommissionEventContext(EMPTY_LINKED_COMMISSION_EVENT_CONTEXT);
+  const loadLinkedCommissionEventContexts = useCallback(async (linkedEventIds: string[]) => {
+    const normalizedLinkedEventIds = Array.from(
+      new Set((linkedEventIds || []).map((id) => (id || "").toString().trim()).filter(Boolean))
+    );
+    const requestId = ++linkedCommissionContextsRequestIdRef.current;
+    if (normalizedLinkedEventIds.length === 0) {
+      setLinkedCommissionEventContexts([]);
+      setLoadingLinkedCommissionEventContext(false);
       return;
     }
 
@@ -1685,7 +1705,7 @@ export default function EventDashboardPage() {
     try {
       const token = await getSessionToken();
       const res = await fetch(
-        `/api/vendor-payments?event_ids=${encodeURIComponent(normalizedLinkedEventId)}&ts=${Date.now()}`,
+        `/api/vendor-payments?event_ids=${encodeURIComponent(normalizedLinkedEventIds.join(","))}&ts=${Date.now()}`,
         {
           method: "GET",
           cache: "no-store",
@@ -1695,34 +1715,44 @@ export default function EventDashboardPage() {
           },
         }
       );
+      if (requestId !== linkedCommissionContextsRequestIdRef.current) return;
 
       if (!res.ok) {
-        setLinkedCommissionEventContext(EMPTY_LINKED_COMMISSION_EVENT_CONTEXT);
+        setLinkedCommissionEventContexts([]);
         return;
       }
 
       const data = await res.json();
-      const linkedEventData = data?.paymentsByEvent?.[normalizedLinkedEventId] || null;
-      // eventInfo comes from this same no-store request, so it's always current. The
-      // /api/events list (commissionLinkCandidatesRef) is only a fallback for the brief
-      // window before that list has loaded — it must not take priority, since that route
-      // can serve a stale commission_pool via Next's fetch Data Cache.
-      const linkedEventMeta =
-        linkedEventData?.eventInfo ||
-        commissionLinkCandidatesRef.current.find((candidate) => candidate.id === normalizedLinkedEventId) ||
-        null;
-
-      setLinkedCommissionEventContext({
-        event: linkedEventMeta || EMPTY_COMMISSION_LINK_CANDIDATE,
-        eventPayment: linkedEventData?.eventPayment || null,
-        vendorPayments: Array.isArray(linkedEventData?.vendorPayments)
-          ? linkedEventData.vendorPayments
-          : [],
-      });
+      if (requestId !== linkedCommissionContextsRequestIdRef.current) return;
+      setLinkedCommissionEventContexts(
+        normalizedLinkedEventIds.map((linkedEventId) => {
+          const linkedEventData = data?.paymentsByEvent?.[linkedEventId] || null;
+          // eventInfo comes from this same no-store request, so it's always current. The
+          // /api/events list (commissionLinkCandidatesRef) is only a fallback for the brief
+          // window before that list has loaded — it must not take priority, since that route
+          // can serve a stale commission_pool via Next's fetch Data Cache.
+          const linkedEventMeta =
+            linkedEventData?.eventInfo ||
+            commissionLinkCandidatesRef.current.find((candidate) => candidate.id === linkedEventId) ||
+            null;
+          return {
+            eventId: linkedEventId,
+            event: linkedEventMeta || { ...EMPTY_COMMISSION_LINK_CANDIDATE, id: linkedEventId },
+            eventPayment: linkedEventData?.eventPayment || null,
+            vendorPayments: Array.isArray(linkedEventData?.vendorPayments)
+              ? linkedEventData.vendorPayments
+              : [],
+          };
+        })
+      );
     } catch {
-      setLinkedCommissionEventContext(EMPTY_LINKED_COMMISSION_EVENT_CONTEXT);
+      if (requestId === linkedCommissionContextsRequestIdRef.current) {
+        setLinkedCommissionEventContexts([]);
+      }
     } finally {
-      setLoadingLinkedCommissionEventContext(false);
+      if (requestId === linkedCommissionContextsRequestIdRef.current) {
+        setLoadingLinkedCommissionEventContext(false);
+      }
     }
   }, [getSessionToken]);
 
@@ -1739,15 +1769,17 @@ export default function EventDashboardPage() {
     loadingCommissionLinkCandidates,
   ]);
 
+  const selectedLinkedCommissionEventKey = selectedLinkedCommissionEventIds.join(",");
   useEffect(() => {
-    const linkedEventId = selectedLinkedCommissionEventId.trim();
-    if (!linkedEventId) {
-      setLinkedCommissionEventContext(EMPTY_LINKED_COMMISSION_EVENT_CONTEXT);
+    if (!selectedLinkedCommissionEventKey) {
+      linkedCommissionContextsRequestIdRef.current += 1;
+      setLinkedCommissionEventContexts([]);
+      setLoadingLinkedCommissionEventContext(false);
       return;
     }
     if (activeTab !== "sales" && activeTab !== "hr") return;
-    loadLinkedCommissionEventContext(linkedEventId);
-  }, [activeTab, loadLinkedCommissionEventContext, selectedLinkedCommissionEventId]);
+    loadLinkedCommissionEventContexts(selectedLinkedCommissionEventKey.split(","));
+  }, [activeTab, loadLinkedCommissionEventContexts, selectedLinkedCommissionEventKey]);
 
   useEffect(() => {
     if (activeTab !== "hr" || !hasPeriodWindow) {
@@ -4091,7 +4123,9 @@ export default function EventDashboardPage() {
         ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
         ticket_count: ticketCount !== "" ? Number(ticketCount) : null,
         commission_pool: commissionPool !== "" ? Number(commissionPool) : null, // fraction (0.04)
-        linked_commission_event_id: selectedLinkedCommissionEventId || null,
+        // Full list of other events sharing this commission pool; the server stores it
+        // as a ring and returns the saved group in linked_commission_group_event_ids.
+        linked_commission_event_ids: selectedLinkedCommissionEventIds,
         tax_rate_percent: normalizedTaxRatePercent,
         tips: tips !== "" ? Number(tips) : null,
         fees: fees !== "" ? Number(fees) : null,
@@ -4114,8 +4148,22 @@ export default function EventDashboardPage() {
       if (res.ok) {
         setMessage("Sales data updated successfully");
         setEvent(data.event);
-        setSelectedLinkedCommissionEventId(
-          (data?.event?.linked_commission_event_id || "").toString()
+        const savedLinkedCommissionGroupIds = getLinkedCommissionGroupIdsFromEvent(data?.event, eventId);
+        const previouslySavedLinkedIds = savedLinkedCommissionEventIds;
+        setSelectedLinkedCommissionEventIds(savedLinkedCommissionGroupIds);
+        setSavedLinkedCommissionEventIds(savedLinkedCommissionGroupIds);
+        // Keep the picker's "(already linked)" flags in step with what was just saved
+        // (the /api/events list may be cached).
+        setCommissionLinkCandidates((prev) =>
+          prev.map((candidate) => {
+            if (savedLinkedCommissionGroupIds.includes(candidate.id)) {
+              return { ...candidate, linked_commission_event_id: candidate.linked_commission_event_id || eventId };
+            }
+            if (previouslySavedLinkedIds.includes(candidate.id)) {
+              return { ...candidate, linked_commission_event_id: null };
+            }
+            return candidate;
+          })
         );
         setStateTaxRate(normalizedTaxRatePercent);
         setTaxRate(normalizedTaxRatePercent.toString());
@@ -4148,6 +4196,10 @@ export default function EventDashboardPage() {
         },
         body: JSON.stringify({
           ...event,
+          // Commission sharing is edited only on the Sales tab; a stale copy of the
+          // stored link must not regroup events from here.
+          linked_commission_event_id: undefined,
+          linked_commission_group_event_ids: undefined,
           merchandise_units: merchandiseUnits !== "" ? Number(merchandiseUnits) : null,
           merchandise_value: merchandiseValue !== "" ? Number(merchandiseValue) : null,
           merchandise: {
@@ -4296,35 +4348,58 @@ export default function EventDashboardPage() {
     savedEventPaymentSummary?.commission_pool_percent,
   ]);
 
-  const linkedEventCommissionPoolDollars = useMemo(() => {
-    const linkedSummary = linkedCommissionEventContext?.eventPayment || null;
-    const linkedEvent = linkedCommissionEventContext?.event || null;
-    const savedPoolPercent = Number(
-      linkedSummary?.commission_pool_percent ?? linkedEvent?.commission_pool ?? 0
-    );
+  // Each linked event's own commission pool, keyed by event id.
+  const linkedEventCommissionPoolDollarsById = useMemo(() => {
+    const poolById: Record<string, number> = {};
+    for (const context of linkedCommissionEventContexts) {
+      const linkedSummary = context?.eventPayment || null;
+      const linkedEvent = context?.event || null;
+      const savedPoolPercent = Number(
+        linkedSummary?.commission_pool_percent ?? linkedEvent?.commission_pool ?? 0
+      );
 
-    // Prefer recomputing Net Sales × Commission % (saved, or freshly derived from the
-    // linked event's sales fields) before trusting a cached flat dollar figure — see
-    // matching note in currentEventCommissionPoolDollars above.
-    const savedNetSales = Number(linkedSummary?.net_sales || 0);
-    if (savedNetSales > 0 && savedPoolPercent > 0) {
-      return savedNetSales * savedPoolPercent;
+      // Prefer recomputing Net Sales × Commission % (saved, or freshly derived from the
+      // linked event's sales fields) before trusting a cached flat dollar figure — see
+      // matching note in currentEventCommissionPoolDollars above.
+      const savedNetSales = Number(linkedSummary?.net_sales || 0);
+      if (savedNetSales > 0 && savedPoolPercent > 0) {
+        poolById[context.eventId] = savedNetSales * savedPoolPercent;
+        continue;
+      }
+
+      if (savedPoolPercent > 0) {
+        const grossCollected = Number((linkedEvent as any)?.ticket_sales || 0);
+        const tipsAmount = Number((linkedEvent as any)?.tips || 0);
+        const feesAmount = Number((linkedEvent as any)?.fees || 0);
+        const otherIncomeAmount = Number((linkedEvent as any)?.other_income || 0);
+        const totalSales = Math.max(grossCollected - tipsAmount, 0);
+        const taxAmount = totalSales * (Number((linkedEvent as any)?.tax_rate_percent || 0) / 100);
+        const netSales = Math.max(totalSales - taxAmount - feesAmount + otherIncomeAmount, 0);
+        poolById[context.eventId] = netSales * savedPoolPercent;
+        continue;
+      }
+
+      // Last resort: only reached when we have no usable percent to recompute from.
+      poolById[context.eventId] = Number(linkedSummary?.commission_pool_dollars || 0);
     }
+    return poolById;
+  }, [linkedCommissionEventContexts]);
 
-    if (savedPoolPercent > 0) {
-      const grossCollected = Number((linkedEvent as any)?.ticket_sales || 0);
-      const tipsAmount = Number((linkedEvent as any)?.tips || 0);
-      const feesAmount = Number((linkedEvent as any)?.fees || 0);
-      const otherIncomeAmount = Number((linkedEvent as any)?.other_income || 0);
-      const totalSales = Math.max(grossCollected - tipsAmount, 0);
-      const taxAmount = totalSales * (Number((linkedEvent as any)?.tax_rate_percent || 0) / 100);
-      const netSales = Math.max(totalSales - taxAmount - feesAmount + otherIncomeAmount, 0);
-      return netSales * savedPoolPercent;
-    }
+  const linkedCommissionEventContextById = useMemo(() => {
+    const byId: Record<string, LinkedCommissionEventContext> = {};
+    for (const context of linkedCommissionEventContexts) byId[context.eventId] = context;
+    return byId;
+  }, [linkedCommissionEventContexts]);
 
-    // Last resort: only reached when we have no usable percent to recompute from.
-    return Number(linkedSummary?.commission_pool_dollars || 0);
-  }, [linkedCommissionEventContext]);
+  // Sum of the selected linked events' own pools (this event's pool not included).
+  const linkedEventsCommissionPoolDollarsTotal = useMemo(
+    () =>
+      selectedLinkedCommissionEventIds.reduce(
+        (sum, linkedId) => sum + Number(linkedEventCommissionPoolDollarsById[linkedId] || 0),
+        0
+      ),
+    [linkedEventCommissionPoolDollarsById, selectedLinkedCommissionEventIds]
+  );
 
   const commissionPerVendor = useMemo(() => {
     return vendorCount > 0 ? (currentEventCommissionPoolDollars / vendorCount) : 0;
@@ -5203,7 +5278,7 @@ export default function EventDashboardPage() {
     if (!eventId) return null;
     return {
       eventId,
-      linkedCommissionEventId: selectedLinkedCommissionEventId || null,
+      linkedCommissionEventId: selectedLinkedCommissionEventIds[0] || null,
       eventDate: event?.event_date || null,
       commissionPoolDollars: currentEventCommissionPoolDollars,
       workers: teamMembers.map((member: any) => {
@@ -5223,42 +5298,45 @@ export default function EventDashboardPage() {
     currentEventCommissionPoolDollars,
     event?.event_date,
     eventId,
-    selectedLinkedCommissionEventId,
+    selectedLinkedCommissionEventIds,
     teamMembers,
     timesheetTotals,
   ]);
 
-  const linkedEventLinkedCommissionInput = useMemo<LinkedCommissionEventInput | null>(() => {
-    const linkedEventId = selectedLinkedCommissionEventId.trim();
-    if (!linkedEventId) return null;
-    return {
-      eventId: linkedEventId,
-      linkedCommissionEventId:
-        linkedCommissionEventContext?.event?.linked_commission_event_id || eventId,
-      eventDate: linkedCommissionEventContext?.event?.event_date || null,
-      commissionPoolDollars: linkedEventCommissionPoolDollars,
-      workers: (linkedCommissionEventContext?.vendorPayments || []).map((payment: any) => ({
-        userId: (payment?.user_id || payment?.userId || payment?.users?.id || "").toString(),
-        division: payment?.users?.division,
-        hours: getPersistedWorkerHoursForCommission(payment),
-        commissionDeleted: payment?.commission_deleted === true,
-        forceEvenSplit: payment?.commission_even_split ?? undefined,
-      })),
-    };
+  // One input per selected linked event. Each points at this event, so together they
+  // form one group with it no matter how the saved ring is ordered, and the preview
+  // follows the Sales tab selection before it is saved.
+  const linkedEventsLinkedCommissionInputs = useMemo<LinkedCommissionEventInput[]>(() => {
+    return selectedLinkedCommissionEventIds.map((linkedEventId) => {
+      const context = linkedCommissionEventContextById[linkedEventId];
+      return {
+        eventId: linkedEventId,
+        linkedCommissionEventId: eventId,
+        eventDate: context?.event?.event_date || null,
+        commissionPoolDollars: Number(linkedEventCommissionPoolDollarsById[linkedEventId] || 0),
+        workers: (context?.vendorPayments || []).map((payment: any) => ({
+          userId: (payment?.user_id || payment?.userId || payment?.users?.id || "").toString(),
+          division: payment?.users?.division,
+          hours: getPersistedWorkerHoursForCommission(payment),
+          commissionDeleted: payment?.commission_deleted === true,
+          forceEvenSplit: payment?.commission_even_split ?? undefined,
+        })),
+      };
+    });
   }, [
     eventId,
-    linkedCommissionEventContext,
-    linkedEventCommissionPoolDollars,
-    selectedLinkedCommissionEventId,
+    linkedCommissionEventContextById,
+    linkedEventCommissionPoolDollarsById,
+    selectedLinkedCommissionEventIds,
   ]);
 
   const linkedCommissionDistribution = useMemo(() => {
     const inputs = [
       currentEventLinkedCommissionInput,
-      linkedEventLinkedCommissionInput,
+      ...linkedEventsLinkedCommissionInputs,
     ].filter((value): value is LinkedCommissionEventInput => Boolean(value));
     return buildLinkedCommissionDistribution({ events: inputs });
-  }, [currentEventLinkedCommissionInput, linkedEventLinkedCommissionInput]);
+  }, [currentEventLinkedCommissionInput, linkedEventsLinkedCommissionInputs]);
 
   const resolvedCommissionPoolDollars = useMemo(() => {
     const sharedPool = Number(linkedCommissionDistribution.groupPoolByEventId[eventId] || 0);
@@ -5271,14 +5349,13 @@ export default function EventDashboardPage() {
   }, [eventId, linkedCommissionDistribution.commissionShareByEventId]);
 
   const isCommissionSharedWithLinkedEvent = useMemo(() => {
-    const linkedEventId = selectedLinkedCommissionEventId.trim();
-    if (!linkedEventId) return false;
+    if (selectedLinkedCommissionEventIds.length === 0) return false;
     const linkedGroup = linkedCommissionDistribution.groupEventIdsByEventId[eventId] || [];
-    return linkedGroup.includes(linkedEventId);
+    return selectedLinkedCommissionEventIds.some((linkedEventId) => linkedGroup.includes(linkedEventId));
   }, [
     eventId,
     linkedCommissionDistribution.groupEventIdsByEventId,
-    selectedLinkedCommissionEventId,
+    selectedLinkedCommissionEventIds,
   ]);
 
   const calculatedCommission = useMemo(() => {
@@ -5356,7 +5433,7 @@ export default function EventDashboardPage() {
     if (event && eventId) {
       eventsForPeriod.push({
         eventId,
-        linkedCommissionEventId: selectedLinkedCommissionEventId || null,
+        linkedCommissionEventId: selectedLinkedCommissionEventIds[0] || null,
         state: event.state,
         date: event.event_date,
         commissionPoolDollars: currentEventCommissionPoolDollars,
@@ -5377,24 +5454,25 @@ export default function EventDashboardPage() {
       });
     }
 
-    // Shared/linked commission: the specific linked partner event must be a node in this
-    // graph regardless of whether it falls inside any AZ/NY-style "period window" — otherwise
-    // buildLinkedCommissionDistribution below never sees a group of size 2+ (since it only
-    // connects an event to a linkedCommissionEventId that is ALSO present in this array) and
-    // silently falls back to the old hours-threshold split instead of the even split, even
-    // though the Sales tab's "Shared Commission" total (computed separately, always including
-    // this partner via linkedCommissionEventContext) correctly shows the combined pool. This
-    // mirrors linkedEventLinkedCommissionInput above.
-    const linkedPartnerEventId = selectedLinkedCommissionEventId.trim();
-    if (linkedPartnerEventId && linkedCommissionEventContext?.event) {
+    // Shared/linked commission: every selected linked event must be a node in this graph
+    // regardless of whether it falls inside any AZ/NY-style "period window" — otherwise
+    // buildLinkedCommissionDistribution below never sees the whole group (it only connects
+    // an event to a linkedCommissionEventId that is ALSO present in this array) and
+    // silently falls back to the hours-threshold split instead of the even split, even
+    // though the Sales tab's "Shared Commission" total (computed separately, always
+    // including these events via linkedCommissionEventContexts) shows the combined pool.
+    // Each points at this event, mirroring linkedEventsLinkedCommissionInputs above.
+    const selectedLinkedIdSet = new Set(selectedLinkedCommissionEventIds);
+    const savedLinkedIdSet = new Set(savedLinkedCommissionEventIds);
+    for (const linkedEventId of selectedLinkedCommissionEventIds) {
+      const context = linkedCommissionEventContextById[linkedEventId];
       eventsForPeriod.push({
-        eventId: linkedPartnerEventId,
-        linkedCommissionEventId:
-          linkedCommissionEventContext.event?.linked_commission_event_id || eventId,
-        state: linkedCommissionEventContext.event?.state,
-        date: linkedCommissionEventContext.event?.event_date,
-        commissionPoolDollars: linkedEventCommissionPoolDollars,
-        workers: (linkedCommissionEventContext.vendorPayments || []).map((payment: any) => ({
+        eventId: linkedEventId,
+        linkedCommissionEventId: eventId,
+        state: context?.event?.state,
+        date: context?.event?.event_date,
+        commissionPoolDollars: Number(linkedEventCommissionPoolDollarsById[linkedEventId] || 0),
+        workers: (context?.vendorPayments || []).map((payment: any) => ({
           userId: (payment?.user_id || payment?.userId || payment?.users?.id || "").toString(),
           division: payment?.users?.division,
           hours: getPersistedWorkerHoursForCommission(payment),
@@ -5410,12 +5488,16 @@ export default function EventDashboardPage() {
       for (const periodEvent of periodEvents) {
         const periodEventId = (periodEvent?.id || "").toString();
         if (!periodEventId || periodEventId === eventId) continue;
-        // Already added above (fresher, no-store fetch dedicated to this specific partner).
-        if (periodEventId === linkedPartnerEventId) continue;
+        // Already added above (fresher, no-store fetch dedicated to the linked events).
+        if (selectedLinkedIdSet.has(periodEventId)) continue;
 
         eventsForPeriod.push({
           eventId: periodEventId,
-          linkedCommissionEventId: periodEvent?.linked_commission_event_id || null,
+          // A saved group member the Sales tab selection has dropped no longer shares
+          // this pool, so its stored ring link is ignored here.
+          linkedCommissionEventId: savedLinkedIdSet.has(periodEventId)
+            ? null
+            : periodEvent?.linked_commission_event_id || null,
           state: periodEvent?.state,
           date: periodEvent?.event_date,
           commissionPoolDollars: getResolvedPoolDollarsForPeriodEvent(periodEvent),
@@ -5472,9 +5554,10 @@ export default function EventDashboardPage() {
     hasPeriodWindow,
     commissionsOverrides,
     commissionEvenSplitOverrides,
-    selectedLinkedCommissionEventId,
-    linkedCommissionEventContext,
-    linkedEventCommissionPoolDollars,
+    selectedLinkedCommissionEventIds,
+    savedLinkedCommissionEventIds,
+    linkedCommissionEventContextById,
+    linkedEventCommissionPoolDollarsById,
     timesheetTotals,
   ]);
 
@@ -6079,55 +6162,6 @@ export default function EventDashboardPage() {
           <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-slate-50">
             <nav className="flex overflow-x-auto">
               {dashboardTabs.map(([key, label, icon]) => (<React.Fragment key={key}>
-                {false && (selectedLinkedCommissionEventId || loadingLinkedCommissionEventContext) && (
-                  <div className="mt-6 rounded-xl border border-sky-200 bg-sky-50 p-4">
-                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <div className="text-sm font-semibold text-sky-900">
-                          {loadingLinkedCommissionEventContext
-                            ? "Loading linked event commission..."
-                            : linkedCommissionEventContext?.event?.event_name || "Linked event commission"}
-                        </div>
-                        {!loadingLinkedCommissionEventContext && linkedCommissionEventContext?.event && (
-                          <div className="text-xs text-sky-700">
-                            {`${(linkedCommissionEventContext.event.event_date || "").toString().split("T")[0]} • ${
-                              linkedCommissionEventContext.event.venue || "Unknown Venue"
-                            }`}
-                          </div>
-                        )}
-                      </div>
-                      {!loadingLinkedCommissionEventContext && (
-                        <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
-                          <div className="rounded-lg bg-white px-4 py-3 shadow-sm">
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                              Current Event
-                            </div>
-                            <div className="text-lg font-bold text-gray-900">
-                              ${currentEventCommissionPoolDollars.toFixed(2)}
-                            </div>
-                          </div>
-                          <div className="rounded-lg bg-white px-4 py-3 shadow-sm">
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                              Linked Event
-                            </div>
-                            <div className="text-lg font-bold text-gray-900">
-                              ${linkedEventCommissionPoolDollars.toFixed(2)}
-                            </div>
-                          </div>
-                          <div className="rounded-lg bg-sky-600 px-4 py-3 text-white shadow-sm">
-                            <div className="text-[11px] font-semibold uppercase tracking-wide text-sky-100">
-                              Shared Total
-                            </div>
-                            <div className="text-lg font-bold">
-                              ${resolvedCommissionPoolDollars.toFixed(2)}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 <button
                   onClick={() => setActiveTab(key as TabType)}
                   className={`group relative px-6 py-4 font-semibold transition-all duration-200 flex items-center gap-2 whitespace-nowrap ${
@@ -6679,23 +6713,25 @@ export default function EventDashboardPage() {
 
                   <div className="md:col-span-2">
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Share Commission With Another Event
+                      Share Commission With Other Events
                     </label>
-                    <select
-                      value={selectedLinkedCommissionEventId}
-                      onChange={(e) => setSelectedLinkedCommissionEventId(e.target.value)}
-                      disabled={salesReadOnly || loadingCommissionLinkCandidates}
-                      className={`w-full px-4 py-3 text-base border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
-                        salesReadOnly || loadingCommissionLinkCandidates
-                          ? "bg-gray-100 cursor-not-allowed hover:border-gray-300"
-                          : "bg-white hover:border-gray-400"
-                      }`}
-                    >
-                      <option value="">
-                        {loadingCommissionLinkCandidates ? "Loading events..." : "Do not share commission"}
-                      </option>
-                      {commissionLinkCandidates
-                        .filter((candidate) => candidate.is_active !== false || candidate.id === selectedLinkedCommissionEventId)
+                    {(() => {
+                      const selectedLinkedIdSet = new Set(selectedLinkedCommissionEventIds);
+                      const savedLinkedIdSet = new Set(savedLinkedCommissionEventIds);
+                      const getLinkedEventLabel = (linkedEventId: string): string => {
+                        const contextEvent = linkedCommissionEventContextById[linkedEventId]?.event;
+                        const meta = contextEvent?.event_name
+                          ? contextEvent
+                          : commissionLinkCandidates.find((candidate) => candidate.id === linkedEventId);
+                        if (!meta?.event_name) {
+                          return loadingLinkedCommissionEventContext ? "Loading event..." : "Linked event";
+                        }
+                        const eventDateLabel = (meta.event_date || "").toString().split("T")[0];
+                        return `${eventDateLabel} • ${meta.event_name} • ${meta.venue || "Unknown Venue"}`;
+                      };
+                      const addableCandidates = commissionLinkCandidates
+                        .filter((candidate) => !selectedLinkedIdSet.has(candidate.id))
+                        .filter((candidate) => candidate.is_active !== false)
                         .slice()
                         .sort((a, b) => {
                           // Same-venue events float to the top; stable sort preserves the
@@ -6704,28 +6740,97 @@ export default function EventDashboardPage() {
                           const aSameVenue = currentVenue && (a.venue || "").trim().toLowerCase() === currentVenue ? 0 : 1;
                           const bSameVenue = currentVenue && (b.venue || "").trim().toLowerCase() === currentVenue ? 0 : 1;
                           return aSameVenue - bSameVenue;
-                        })
-                        .map((candidate) => {
-                          const eventDateLabel = (candidate.event_date || "").toString().split("T")[0];
-                          const linkedElsewhere =
-                            candidate.linked_commission_event_id &&
-                            candidate.linked_commission_event_id !== eventId;
-                          return (
-                            <option
-                              key={candidate.id}
-                              value={candidate.id}
-                              disabled={Boolean(linkedElsewhere)}
-                            >
-                              {`${eventDateLabel} • ${candidate.event_name || "Untitled Event"} • ${candidate.venue || "Unknown Venue"}${
-                                linkedElsewhere ? " (already linked)" : ""
-                              }`}
+                        });
+                      return (
+                        <>
+                          {selectedLinkedCommissionEventIds.length > 0 && (
+                            <ul className="mb-3 space-y-2">
+                              {selectedLinkedCommissionEventIds.map((linkedEventId) => {
+                                const label = getLinkedEventLabel(linkedEventId);
+                                const linkedPool = linkedEventCommissionPoolDollarsById[linkedEventId];
+                                return (
+                                  <li
+                                    key={linkedEventId}
+                                    className="flex items-center justify-between gap-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm text-sky-900"
+                                  >
+                                    <span className="min-w-0 break-words">
+                                      {label}
+                                      {!savedLinkedIdSet.has(linkedEventId) && (
+                                        <span className="ml-2 text-xs font-semibold text-amber-700">(not saved yet)</span>
+                                      )}
+                                    </span>
+                                    <span className="flex shrink-0 items-center gap-3">
+                                      {linkedPool !== undefined && (
+                                        <span className="font-semibold">${Number(linkedPool).toFixed(2)}</span>
+                                      )}
+                                      {!salesReadOnly && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setSelectedLinkedCommissionEventIds((prev) =>
+                                              prev.filter((id) => id !== linkedEventId)
+                                            )
+                                          }
+                                          className="rounded-md px-2 py-1 text-xs font-semibold text-sky-800 hover:bg-sky-100"
+                                          aria-label={`Stop sharing commission with ${label}`}
+                                        >
+                                          Remove
+                                        </button>
+                                      )}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                          <select
+                            value=""
+                            onChange={(e) => {
+                              const linkedEventId = e.target.value;
+                              if (!linkedEventId) return;
+                              setSelectedLinkedCommissionEventIds((prev) =>
+                                prev.includes(linkedEventId) ? prev : [...prev, linkedEventId]
+                              );
+                            }}
+                            disabled={salesReadOnly || loadingCommissionLinkCandidates}
+                            className={`w-full px-4 py-3 text-base border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                              salesReadOnly || loadingCommissionLinkCandidates
+                                ? "bg-gray-100 cursor-not-allowed hover:border-gray-300"
+                                : "bg-white hover:border-gray-400"
+                            }`}
+                          >
+                            <option value="">
+                              {loadingCommissionLinkCandidates
+                                ? "Loading events..."
+                                : selectedLinkedCommissionEventIds.length > 0
+                                  ? "Add another event to the shared pool..."
+                                  : "Not shared. Pick an event to share commission with..."}
                             </option>
-                          );
-                        })}
-                    </select>
-                    <p className="text-xs text-gray-500 mt-2">
-                      When linked, payroll splits one combined commission pool across both events.
-                    </p>
+                            {addableCandidates.map((candidate) => {
+                              const eventDateLabel = (candidate.event_date || "").toString().split("T")[0];
+                              // Already in a different shared group (this event's own saved
+                              // group members are listed above, not here).
+                              const linkedElsewhere =
+                                Boolean(candidate.linked_commission_event_id) && !savedLinkedIdSet.has(candidate.id);
+                              return (
+                                <option
+                                  key={candidate.id}
+                                  value={candidate.id}
+                                  disabled={linkedElsewhere}
+                                >
+                                  {`${eventDateLabel} • ${candidate.event_name || "Untitled Event"} • ${candidate.venue || "Unknown Venue"}${
+                                    linkedElsewhere ? " (already linked)" : ""
+                                  }`}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <p className="text-xs text-gray-500 mt-2">
+                            Every event listed shares one combined commission pool with this event, split across all of their vendors. Removing an event takes it out of the group. Click Save to apply.
+                          </p>
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <div>
@@ -6741,7 +6846,13 @@ export default function EventDashboardPage() {
                         className="w-full pl-10 pr-4 py-3 text-lg border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600"
                       />
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">Auto: Net Sales × Commission Pool (fraction)</p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      {isCommissionSharedWithLinkedEvent
+                        ? `This event $${currentEventCommissionPoolDollars.toFixed(2)} + ${selectedLinkedCommissionEventIds.length} linked event${
+                            selectedLinkedCommissionEventIds.length === 1 ? "" : "s"
+                          } $${linkedEventsCommissionPoolDollarsTotal.toFixed(2)}`
+                        : "Auto: Net Sales × Commission Pool (fraction)"}
+                    </p>
                   </div>
                 </div>
 
