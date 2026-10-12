@@ -503,6 +503,47 @@ export async function GET(
       }
     }
 
+    // The "edited by" badge shows the most recent signed edit of each worker's timesheet.
+    // Every event-dashboard save stores a timesheet_edit signature (is_valid=false when the
+    // save failed before writing anything). A save that changes no time entry, such as one
+    // that only deletes entries or changes nothing, leaves no "Manual edit" note behind, so
+    // the signatures, not the notes, are the record of who edited last. Notes still supply
+    // the badge when a worker has no signed edit (approved edit requests carry no signature).
+    {
+      const formIdPrefix = `timesheet_edit_${eventId}_`;
+      const { data: editSigRows, error: editSigError } = await supabaseAdmin
+        .from("form_signatures")
+        .select("id, form_id, signed_at, edit_reason")
+        .eq("form_type", "timesheet_edit")
+        .like("form_id", `${formIdPrefix}%`)
+        .not("is_valid", "is", false)
+        .order("signed_at", { ascending: false });
+      if (editSigError) {
+        console.error("[timesheet-GET] edit signature lookup failed:", editSigError.message);
+      }
+      const latestSigByUser: Record<string, { id: string; editReason: string | null }> = {};
+      for (const row of editSigRows || []) {
+        const formId = String(row.form_id || "");
+        if (!formId.startsWith(formIdPrefix)) continue;
+        const targetUid = formId.slice(formIdPrefix.length).split("_")[0];
+        if (!targetUid || !spans[targetUid] || latestSigByUser[targetUid]) continue;
+        latestSigByUser[targetUid] = { id: row.id, editReason: row.edit_reason ?? null };
+      }
+      for (const [uid, sig] of Object.entries(latestSigByUser)) {
+        const span = spans[uid];
+        const noteWithSig = (entriesByUser[uid] || []).find((e) =>
+          String(e.notes || "").includes(`Signature: ${sig.id}`)
+        );
+        const parsedNote = noteWithSig ? parseEditNotes(String(noteWithSig.notes || "")) : null;
+        span.managerEdited = true;
+        span.managerEditSignatureId = sig.id;
+        span.managerEditNote = sig.editReason ?? parsedNote?.editNote ?? null;
+        // Role at the time of the edit when a note recorded it; otherwise the signer's
+        // current role is filled in below.
+        span.managerEditedByRole = parsedNote?.editRole ?? null;
+      }
+    }
+
     // For exec: resolve signature data + editor name for manager-edited entries
     const sigIds = Object.values(spans)
       .map(s => s.managerEditSignatureId)
@@ -516,6 +557,7 @@ export async function GET(
 
       const editorUserIds = [...new Set((sigRows || []).map(r => r.user_id).filter(Boolean))];
       let editorNames: Record<string, string> = {};
+      const editorRoles: Record<string, string> = {};
       if (editorUserIds.length > 0) {
         // Name is in profiles table (first_name + last_name); fall back to email from users
         const [{ data: profiles }, { data: editorUsers }] = await Promise.all([
@@ -525,11 +567,14 @@ export async function GET(
             .in("user_id", editorUserIds),
           supabaseAdmin
             .from("users")
-            .select("id, email")
+            .select("id, email, role")
             .in("id", editorUserIds),
         ]);
         const emailMap: Record<string, string> = {};
-        for (const u of editorUsers || []) emailMap[u.id] = u.email;
+        for (const u of editorUsers || []) {
+          emailMap[u.id] = u.email;
+          if (u.role) editorRoles[u.id] = String(u.role);
+        }
         for (const p of profiles || []) {
           const first = p.first_name ? safeDecrypt(p.first_name) : "";
           const last = p.last_name ? safeDecrypt(p.last_name) : "";
@@ -542,11 +587,12 @@ export async function GET(
         }
       }
 
-      const sigMap: Record<string, { sigData: string; editorName: string }> = {};
+      const sigMap: Record<string, { sigData: string; editorName: string; editorRole: string | null }> = {};
       for (const row of sigRows || []) {
         sigMap[row.id] = {
           sigData: row.signature_data,
           editorName: editorNames[row.user_id] ?? "Unknown",
+          editorRole: editorRoles[row.user_id] ?? null,
         };
       }
 
@@ -554,6 +600,9 @@ export async function GET(
         if (span.managerEditSignatureId && sigMap[span.managerEditSignatureId]) {
           span.managerEditSignatureData = sigMap[span.managerEditSignatureId].sigData;
           span.managerEditedByName = sigMap[span.managerEditSignatureId].editorName;
+          if (!span.managerEditedByRole) {
+            span.managerEditedByRole = sigMap[span.managerEditSignatureId].editorRole;
+          }
         }
       }
     }
@@ -681,6 +730,8 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  // Signature stored for this save that no time entry write has used yet (see below).
+  let unwrittenEditSignatureId: string | null = null;
   try {
     const user = await getAuthedUser(req);
     if (!user?.id) {
@@ -751,6 +802,7 @@ export async function PUT(
         ip_address: ipAddress,
         user_agent: userAgent,
         signed_at: now,
+        edit_reason: editNote,
       })
       .select("id")
       .single();
@@ -759,6 +811,10 @@ export async function PUT(
       return NextResponse.json({ error: "Failed to store signature: " + sigError.message }, { status: 500 });
     }
     const editSignature = sigRow.id;
+    // Until the save starts writing, any early return means this signature belongs to
+    // a save that never happened; the finally block below marks it invalid so it can't
+    // show up as the timesheet's latest editor.
+    unwrittenEditSignatureId = editSignature;
 
     const { data: teamMember, error: teamError } = await supabaseAdmin
       .from("event_teams")
@@ -1042,15 +1098,19 @@ export async function PUT(
       }
     }
 
+    // Clearing an existing time deletes its entry. Admin and exec can do it, matching
+    // canDeleteTimesheetEntries on the event dashboard.
+    if (toDelete.length > 0 && requesterRole !== "admin" && requesterRole !== "exec") {
+      return NextResponse.json(
+        { error: "Only admin and exec can delete time entries." },
+        { status: 403 }
+      );
+    }
+
+    // Every check has passed; from here on the save writes, so the signature stays valid.
+    unwrittenEditSignatureId = null;
+
     if (toDelete.length > 0) {
-      // Clearing an existing time deletes its entry. Admin and exec can do it, matching
-      // canDeleteTimesheetEntries on the event dashboard.
-      if (requesterRole !== "admin" && requesterRole !== "exec") {
-        return NextResponse.json(
-          { error: "Only admin and exec can delete time entries." },
-          { status: 403 }
-        );
-      }
       const { error: deleteError } = await supabaseAdmin
         .from("time_entries")
         .delete()
@@ -1146,5 +1206,17 @@ export async function PUT(
     });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unhandled error" }, { status: 500 });
+  } finally {
+    // The save stopped before writing anything: mark its signature invalid so the
+    // "edited by" badge never credits an edit that didn't happen.
+    if (unwrittenEditSignatureId) {
+      const { error: invalidateError } = await supabaseAdmin
+        .from("form_signatures")
+        .update({ is_valid: false })
+        .eq("id", unwrittenEditSignatureId);
+      if (invalidateError) {
+        console.error("[timesheet-PUT] could not invalidate unused signature:", invalidateError.message);
+      }
+    }
   }
 }
