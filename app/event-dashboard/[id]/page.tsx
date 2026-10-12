@@ -334,6 +334,9 @@ export default function EventDashboardPage() {
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   // Admin and exec can edit timesheet times on the Timesheet tab; managers and supervisors view only.
   const canEditTimesheetTimes = userRole === "admin" || userRole === "exec";
+  // Clearing a time that already exists deletes that time entry. Admin and exec can do it;
+  // the timesheet PUT route enforces the same rule.
+  const canDeleteTimesheetEntries = userRole === "admin" || userRole === "exec";
   // Managers, exec, supervisor3 and supervisor6 can sign off the timesheet; the signature unlocks Sales for everyone.
   const canSignTimesheet =
     userRole === "exec" || userRole === "manager" || userRole === "supervisor3" || userRole === "supervisor6";
@@ -4761,8 +4764,8 @@ export default function EventDashboardPage() {
     const draft = timesheetDrafts[uid];
     if (!draft) return;
 
-    // Only admins may delete time entries (clear a field that had a value)
-    if (userRole !== "admin") {
+    // Only admin and exec may delete time entries (clear a field that had a value)
+    if (!canDeleteTimesheetEntries) {
       const original = timesheetSpans[uid];
       if (original) {
         const wouldDelete =
@@ -4775,7 +4778,8 @@ export default function EventDashboardPage() {
           (original.thirdMealStart && !draft.thirdMealStart) ||
           (original.thirdMealEnd && !draft.thirdMealEnd);
         if (wouldDelete) {
-          setMessage("Only admins can delete time entries. You may update times but not clear existing entries.");
+          setShowTimesheetEditModal(false);
+          setMessage("Only admin and exec can delete time entries. You may update times but not clear existing entries.");
           return;
         }
       }
@@ -4901,8 +4905,8 @@ export default function EventDashboardPage() {
     const draft = timesheetDayDrafts[key];
     if (!draft) return;
 
-    // Only admins may delete time entries (clear a field that had a value)
-    if (userRole !== "admin") {
+    // Only admin and exec may delete time entries (clear a field that had a value)
+    if (!canDeleteTimesheetEntries) {
       const originalDay = (timesheetDays[uid] || []).find((d) => d.date === date);
       if (originalDay) {
         const wouldDelete =
@@ -4915,7 +4919,8 @@ export default function EventDashboardPage() {
           (originalDay.meals[2]?.startDisplay && !draft.thirdMealStart) ||
           (originalDay.meals[2]?.endDisplay && !draft.thirdMealEnd);
         if (wouldDelete) {
-          setMessage("Only admins can delete time entries. You may update times but not clear existing entries.");
+          setShowTimesheetEditModal(false);
+          setMessage("Only admin and exec can delete time entries. You may update times but not clear existing entries.");
           return;
         }
       }
@@ -4983,8 +4988,8 @@ export default function EventDashboardPage() {
       return { date: day.date, draft, original: day };
     });
 
-    // Only admins may delete time entries (clear a field that had a value)
-    if (userRole !== "admin") {
+    // Only admin and exec may delete time entries (clear a field that had a value)
+    if (!canDeleteTimesheetEntries) {
       const wouldDeleteAny = dayPayloads.some(
         ({ draft, original }) =>
           (original.firstInDisplay && !draft.firstIn) ||
@@ -4997,7 +5002,8 @@ export default function EventDashboardPage() {
           (original.meals[2]?.endDisplay && !draft.thirdMealEnd)
       );
       if (wouldDeleteAny) {
-        setMessage("Only admins can delete time entries. You may update times but not clear existing entries.");
+        setShowTimesheetEditModal(false);
+        setMessage("Only admin and exec can delete time entries. You may update times but not clear existing entries.");
         return;
       }
     }

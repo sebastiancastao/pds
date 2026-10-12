@@ -1043,9 +1043,11 @@ export async function PUT(
     }
 
     if (toDelete.length > 0) {
-      if (requesterRole !== "admin") {
+      // Clearing an existing time deletes its entry. Admin and exec can do it, matching
+      // canDeleteTimesheetEntries on the event dashboard.
+      if (requesterRole !== "admin" && requesterRole !== "exec") {
         return NextResponse.json(
-          { error: "Only admins can delete time entries." },
+          { error: "Only admin and exec can delete time entries." },
           { status: 403 }
         );
       }
