@@ -563,6 +563,18 @@ export default function PaystubGenerator() {
       ? grossCommission / adjustedGross
       : 0;
   };
+  // This event's own commission pool. The cached commission_pool_dollars wins while the event
+  // has sales (it keeps the unrounded percent), but a known percent on $0 adjusted gross is a
+  // $0 pool: older Payment tab saves wrote a whole shared group's pool into that cache, which
+  // counted the group pool once more for every no-sales day of the group.
+  const getGrossCommissionForEvent = (event: Event): number => {
+    if (isSanDiegoRegion(event)) return 0;
+    const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
+    const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
+    const percent = getCommissionPoolPercentForEvent(event, adjustedGross, persistedGrossCommission);
+    if (adjustedGross <= 0 && percent > 0) return 0;
+    return persistedGrossCommission || adjustedGross * percent;
+  };
   const getCommissionVendorCountForEvent = (event: Event) => {
     if (isSanDiegoRegion(event)) {
       return 0;
@@ -591,11 +603,7 @@ export default function PaystubGenerator() {
   const linkedCommissionDistribution = useMemo(() => {
     const allEventsForLinking = [...events, ...linkedPartnerEvents];
     const inputs: LinkedCommissionEventInput[] = allEventsForLinking.map((event) => {
-      const isEventSD = isSanDiegoRegion(event);
-      const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
-      const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
-      const adjustedGrossPercent = getCommissionPoolPercentForEvent(event, adjustedGross, persistedGrossCommission);
-      const rawGrossCommission = isEventSD ? 0 : (persistedGrossCommission || adjustedGross * adjustedGrossPercent);
+      const rawGrossCommission = getGrossCommissionForEvent(event);
       return {
         eventId: event.id,
         linkedCommissionEventId: event.linked_commission_event_id || null,
@@ -622,8 +630,7 @@ export default function PaystubGenerator() {
       adjustedGross,
       persistedGrossCommission
     );
-    const rawGrossCommission =
-      isEventSD ? 0 : (persistedGrossCommission || adjustedGross * adjustedGrossPercent);
+    const rawGrossCommission = getGrossCommissionForEvent(event);
     const linkedGroupEventIds = linkedCommissionDistribution.groupEventIdsByEventId[event.id] || [event.id];
     const isCommissionShared = linkedGroupEventIds.length > 1;
     const commissionEligibleMembers = isEventSD ? [] : (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
@@ -2469,8 +2476,10 @@ export default function PaystubGenerator() {
             event_net_sales: event?.event_payment?.net_sales ?? adjustedGross,
             event_commission_pool_percent: commissionPoolPercent,
             event_commission_pool_dollars:
-              event?.event_payment?.commission_pool_dollars ??
-              roundMoney(adjustedGross * commissionPoolPercent),
+              adjustedGross <= 0 && commissionPoolPercent > 0
+                ? 0
+                : event?.event_payment?.commission_pool_dollars ??
+                  roundMoney(adjustedGross * commissionPoolPercent),
           }));
         }) ?? [];
 

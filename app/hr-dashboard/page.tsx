@@ -1517,10 +1517,13 @@ function HRDashboardContent() {
         // Total team members on this event
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
-        // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
+        // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions.
+        // A known percent on $0 adjusted gross is a $0 pool (e.g. a shared-commission day whose
+        // sales were entered on another day of the group). The cached figure is only for events
+        // with no percent: older Payment tab saves wrote a whole shared group's pool into it.
         const commissionPoolDollars = !hasCommissionPool
           ? 0
-          : eventCommissionDollars > 0
+          : (eventCommissionDollars > 0 || commissionPoolPercent > 0)
           ? eventCommissionDollars
           : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
         const isAZorNY = eventState === "AZ" || eventState === "NY";

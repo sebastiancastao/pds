@@ -4341,6 +4341,12 @@ export default function EventDashboardPage() {
       return savedNetSales * savedPoolPercent;
     }
 
+    // A known percent with no sales means this event's own pool really is $0, e.g. one
+    // day of a shared-commission group whose sales were all entered on another day. The
+    // cached dollar figure must not stand in here: older Payment tab saves wrote the whole
+    // group's pool into it, which counted that pool once more for every such day.
+    if (resolvedCommissionPoolPercent > 0 || savedPoolPercent > 0) return 0;
+
     // Last resort: only reached when we have no usable percent to recompute from.
     return Number(savedEventPaymentSummary?.commission_pool_dollars || 0);
   }, [
@@ -5841,7 +5847,11 @@ export default function EventDashboardPage() {
 
       const netSales = resolvedCommissionNetSales;
       const poolPercent = resolvedCommissionPoolPercent;
-      const totalCommissionPool = resolvedCommissionPoolDollars;
+      // Stored next to this event's own net sales and percent, so it must be this event's
+      // own pool too. For a shared-commission group resolvedCommissionPoolDollars is the
+      // whole group's pool; saving that made every reader of the cached figure count the
+      // group pool once per event of the group.
+      const ownCommissionPoolDollars = currentEventCommissionPoolDollars;
       // totalTips stays the raw entered/collected amount — save-payment's
       // total_tips_distributed column (computed server-side from each
       // vendorPayment's own tips figure) is what tracks the pool actually
@@ -5919,7 +5929,7 @@ export default function EventDashboardPage() {
         },
         body: JSON.stringify({
           commissionPoolPercent: poolPercent,
-          commissionPoolDollars: totalCommissionPool,
+          commissionPoolDollars: ownCommissionPoolDollars,
           totalTips,
           baseRate,
           netSales,

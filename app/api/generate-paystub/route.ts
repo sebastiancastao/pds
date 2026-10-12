@@ -335,23 +335,27 @@ export async function POST(req: NextRequest) {
       });
       const memberCount = workersWithHours.length > 0 ? workersWithHours.length : workers.length;
 
+      // This event's own net sales: the saved Sales tab figure, else the events table.
+      const poolTotalSales = Math.max(Number(event?.ticket_sales || 0) - Number(event?.tips || 0), 0);
+      const poolTax = poolTotalSales * (Number(event?.tax_rate_percent || 0) / 100);
+      const netSalesForPool =
+        Number(eventPaymentSummary?.net_sales || 0) ||
+        Math.max(poolTotalSales - poolTax - Number(event?.fees || 0) + Number(event?.other_income || 0), 0);
+
       // Commission pool in dollars: event_payments first, then compute from events table.
+      // A known percent on $0 sales is a $0 pool, though: older Payment tab saves wrote a
+      // whole shared group's pool into commission_pool_dollars, so trusting it on a day of
+      // the group with no sales of its own counted that pool once more for each such day.
       let commissionPoolDollars = isEventSD
         ? 0
-        : Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
-          (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
-          0;
+        : resolvedCommissionPoolPercent > 0 && netSalesForPool <= 0
+          ? 0
+          : Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
+            (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
+            0;
 
       if (!isEventSD && commissionPoolDollars === 0 && resolvedCommissionPoolPercent > 0) {
-        const ticketSales = Number(event?.ticket_sales || 0);
-        const eventTips = Number(event?.tips || 0);
-        const eventFees = Number(event?.fees || 0);
-        const eventOtherIncome = Number(event?.other_income || 0);
-        const taxRate = Number(event?.tax_rate_percent || 0);
-        const totalSales = Math.max(ticketSales - eventTips, 0);
-        const tax = totalSales * (taxRate / 100);
-        const netSales = Number(eventPaymentSummary?.net_sales || 0) || Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
-        commissionPoolDollars = netSales * resolvedCommissionPoolPercent;
+        commissionPoolDollars = netSalesForPool * resolvedCommissionPoolPercent;
       }
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
