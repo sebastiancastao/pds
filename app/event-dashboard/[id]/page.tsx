@@ -4457,6 +4457,8 @@ export default function EventDashboardPage() {
   // while the worker is still clocked in, so a missed meal turns the (empty) cell orange/red.
   // Worked time of 12h or more (admin time to clock-out/now, minus recorded meals: the same
   // figure as the Hrs column) also turns Meal 2 red, whether or not Meal 2 was entered.
+  // Colors stay after the worker clocks out (and after the event ends), so a finished shift
+  // still shows a late or missed meal.
   type MealAlert = { level: "orange" | "red"; reason: string } | null;
   // A recorded meal start more than 16h after admin time is treated as bad data.
   const MEAL_ALERT_MAX_GAP_MINUTES = 16 * 60;
@@ -4575,9 +4577,7 @@ export default function EventDashboardPage() {
     meal3Start: string;
     meal3End: string;
     shiftEnd: string; // clock-out, or "now" while still clocked in, or "" when unknown
-    clockedOut?: boolean; // once the worker has clocked out, meal colors are no longer shown
   }): { meal1: MealAlert; meal2: MealAlert } => {
-    if (t.clockedOut) return { meal1: null, meal2: null };
     const workedMinutes = getWorkedMinutes(t.adminTime, t.shiftEnd, [
       [t.meal1Start, t.meal1End],
       [t.meal2Start, t.meal2End],
@@ -8976,7 +8976,6 @@ export default function EventDashboardPage() {
                         shiftEnd:
                           (isDayEditing ? dayDraft.lastOut : day.lastOutDisplay) ||
                           (day.date === getEventTodayYMD() ? getEventNowHHMM() : ""),
-                        clockedOut: !!(isDayEditing ? dayDraft.lastOut : day.lastOutDisplay),
                       });
 
                       return (
@@ -9106,7 +9105,6 @@ export default function EventDashboardPage() {
                 shiftEnd:
                   (isEditing ? draft.lastOut : lastClockOut) ||
                   (isWithinLiveShiftWindow(span.firstIn) ? getEventNowHHMM() : ""),
-                clockedOut: !!(isEditing ? draft.lastOut : lastClockOut),
               });
 
               return (
