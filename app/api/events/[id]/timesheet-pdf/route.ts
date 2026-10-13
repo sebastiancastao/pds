@@ -195,6 +195,7 @@ function hasTimesheetTabData(span?: TimesheetSpan | null, apiTotalMsValue = 0): 
 
 async function buildTimesheetPdf(
   eventName: string,
+  venueLocation: string,
   eventDate: string,
   eventState: string,
   startTime: string | null,
@@ -244,18 +245,31 @@ async function buildTimesheetPdf(
       timeZone: tzName,
       timeZoneName: "short",
     }).split(" ").pop() || "";
-  const headerLine2 = [eventName, eventDate, startTime && endTime ? `${startTime} - ${endTime} ${tzAbbr}` : ""]
-    .filter(Boolean)
-    .join("  |  ");
+  const timeRange = startTime && endTime ? `${startTime} - ${endTime} ${tzAbbr}` : "";
+  const headerParts = [eventName, venueLocation, eventDate, timeRange].filter(Boolean);
+  const headerSize = 10;
+  const separator = "  |  ";
+  const singleLine = headerParts.join(separator);
+  // Long venue names can push the header past the page edge; when that happens,
+  // keep event + venue on the first line and move date/time to a second line.
+  const headerLines =
+    font.widthOfTextAtSize(singleLine, headerSize) <= contentWidth
+      ? [singleLine]
+      : [
+          [eventName, venueLocation].filter(Boolean).join(separator),
+          [eventDate, timeRange].filter(Boolean).join(separator),
+        ].filter(Boolean);
 
-  page.drawText(headerLine2, {
-    x: leftMargin,
-    y,
-    size: 10,
-    font,
-    color: rgb(0.25, 0.25, 0.25),
-  });
-  y -= 14;
+  for (const line of headerLines) {
+    page.drawText(line, {
+      x: leftMargin,
+      y,
+      size: headerSize,
+      font,
+      color: rgb(0.25, 0.25, 0.25),
+    });
+    y -= 14;
+  }
 
   page.drawText(`Generated: ${new Date().toLocaleString("en-US")}`, {
     x: leftMargin,
@@ -484,7 +498,7 @@ export async function GET(
     const [eventResult, teamResult] = await Promise.all([
       supabaseAdmin
         .from("events")
-        .select("id, event_name, event_date, end_date, state, start_time, end_time, ends_next_day, event_type")
+        .select("id, event_name, venue, city, event_date, end_date, state, start_time, end_time, ends_next_day, event_type")
         .eq("id", eventId)
         .maybeSingle(),
       supabaseAdmin
@@ -519,6 +533,14 @@ export async function GET(
     // the 30-minute gate/admin-response allowance only applies to real ticketed events.
     const applyGateOffset = event.event_type !== "special";
     const eventState = String(event.state || "CA").toUpperCase();
+    // Same "Venue (City, State)" format as the event-dashboard header.
+    const venueName = String((event as any).venue || "").trim();
+    const venueCityState = [String((event as any).city || "").trim(), String(event.state || "").trim().toUpperCase()]
+      .filter(Boolean)
+      .join(", ");
+    const venueLocation = venueName
+      ? venueCityState ? `${venueName} (${venueCityState})` : venueName
+      : venueCityState;
     const tz = getTimezoneForState(eventState) || "America/Los_Angeles";
     const teamMembers = teamResult.data || [];
     const allUserIds = Array.from(
@@ -528,6 +550,7 @@ export async function GET(
     if (allUserIds.length === 0) {
       const pdfBytes = await buildTimesheetPdf(
         event.event_name || "Event",
+        venueLocation,
         displayDate,
         eventState,
         event.start_time ? String(event.start_time).slice(0, 5) : null,
@@ -1110,6 +1133,7 @@ export async function GET(
 
     const pdfBytes = await buildTimesheetPdf(
       event.event_name || "Event",
+      venueLocation,
       displayDate,
       eventState,
       event.start_time ? String(event.start_time).slice(0, 5) : null,
