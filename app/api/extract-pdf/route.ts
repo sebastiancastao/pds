@@ -343,6 +343,25 @@ function sanitizeCandidateLine(rawLine: string): string | null {
   return cleaned;
 }
 
+// Name on a /paystub-generator paystub: the first line after "THIS IS NOT A CHECK" that
+// reads as a person's name (letters, spaces, periods, apostrophes, hyphens; 2+ words).
+function generatedPaystubName(lines: string[]): string | undefined {
+  const markerIndex = lines.findIndex((line) => /^THIS IS NOT A CHECK$/i.test(line.replace(/\s+/g, ' ').trim()));
+  if (markerIndex < 0) return undefined;
+  const candidate = (lines[markerIndex + 1] || '').replace(/\s+/g, ' ').trim();
+  if (!candidate || candidate.length > 80) return undefined;
+  if (!/^[A-Za-z][A-Za-z.'’-]*(?:\s+[A-Za-z.'’-]+)+$/.test(candidate)) return undefined;
+  if (NAME_BLACKLIST_PATTERN.test(candidate)) return undefined;
+  return candidate;
+}
+
+// The Commission Report page /paystub-generator adds after each paystub is not a paystub:
+// as its own row in the export it only added a junk name and zeros. (The paystub page
+// itself also says "Commission Report", in its notes, so it is told apart by its title.)
+function isGeneratedCommissionReportPage(pageText: string): boolean {
+  return /\bCommission Report\b/i.test(pageText) && !/Earnings Statement/i.test(pageText);
+}
+
 function chooseCandidate(chunk: string[], requireNoDigits: boolean): string | undefined {
   for (const rawLine of chunk) {
     const cleaned = sanitizeCandidateLine(rawLine);
@@ -546,8 +565,17 @@ function extractPayrollData(text: string) {
   // Split text into lines and filter out empty lines
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
+  // Paystubs made by /paystub-generator end with "THIS IS NOT A CHECK" and then the
+  // employee's mailing block (name, then address). ADP statements never print that line.
+  // The name is kept as printed (apostrophes included) so it still matches the profile.
+  const generatedName = generatedPaystubName(lines);
+  if (generatedName) {
+    payrollData.employeeInfo.name = generatedName;
+    nameFound = true;
+  }
+
   // PRIMARY METHOD: Try third-to-last line first (most reliable for paystubs)
-  if (lines.length >= 3) {
+  if (!nameFound && lines.length >= 3) {
     const thirdLastLine = lines[lines.length - 3];
     if (thirdLastLine && /[A-Za-z]/.test(thirdLastLine) && thirdLastLine.length > 2 && thirdLastLine.length < 100) {
       const cleanedName = thirdLastLine.replace(/[^\w\s.-]/g, '').trim();
@@ -1227,7 +1255,7 @@ export async function POST(req: NextRequest) {
             Object.keys(pagePayrollData.earnings || {}).length > 0 ||
             Object.keys(pagePayrollData.hours || {}).length > 0;
 
-          if (hasData) {
+          if (hasData && !isGeneratedCommissionReportPage(page.text)) {
             pageDataArray.push({
               pageNumber: page.pageNumber,
               text: page.text,
@@ -1344,8 +1372,7 @@ export async function POST(req: NextRequest) {
           pagePayrollData.employeeInfo?.ssn ||
           Object.keys(pagePayrollData.statutoryDeductions || {}).length > 0 ||
           Object.keys(pagePayrollData.voluntaryDeductions || {}).length > 0;
-
-        if (hasData) {
+        if (hasData && !isGeneratedCommissionReportPage(pageText)) {
           pageDataArray.push({
             pageNumber: i + 1,
             text: pageText,

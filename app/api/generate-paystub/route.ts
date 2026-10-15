@@ -1026,6 +1026,53 @@ export async function POST(req: NextRequest) {
       return `${sign}${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
     };
 
+    // Pay period shown on the paystub: the form's dates, else the first/last event date.
+    const eventDatesArr = (Array.isArray(events) ? events : [])
+      .map((e: any) => (e?.event_date || "").toString().split("T")[0])
+      .filter(Boolean)
+      .sort();
+    const effectivePeriodStart = (payPeriodStart || "").trim() || (eventDatesArr[0] ?? "");
+    const effectivePeriodEnd = (payPeriodEnd || "").trim() || (eventDatesArr[eventDatesArr.length - 1] ?? "");
+
+    // Sick leave rows of the "Other Benefits and Information" table (CA and AZ paystubs).
+    // This period: 1 hour accrues per 30 hours worked, and taken = approved sick leave dated
+    // inside the pay period. Year to date comes from the employee's sick leave summary.
+    const buildSickLeaveTable = (hoursWorked: number) => {
+      const SICK_ACCRUAL_RATE = 30;
+      const toIsoDay = (value: unknown): string | null => {
+        const str = (value || "").toString().trim();
+        if (!str) return null;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+        const d = new Date(str);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString().slice(0, 10);
+      };
+      const summaryValue = (value: unknown) => toFiniteNumber(value) ?? 0;
+      const carryOverYtd = summaryValue(sickLeaveSummary?.carry_over_hours);
+      const periodStartIso = toIsoDay(effectivePeriodStart);
+      const periodEndIso = toIsoDay(effectivePeriodEnd);
+      return {
+        accruedThisPeriod: hoursWorked > 0 ? hoursWorked / SICK_ACCRUAL_RATE : 0,
+        takenThisPeriod: round2(
+          (Array.isArray(sickLeaveSummary?.entries) ? sickLeaveSummary.entries : []).reduce((sum, entry) => {
+            if (String(entry?.status || "").toLowerCase() !== "approved") return sum;
+            const entryDate =
+              toIsoDay(entry?.start_date) || toIsoDay(entry?.approved_at) || toIsoDay(entry?.created_at);
+            if (!entryDate) return sum;
+            if (periodStartIso && entryDate < periodStartIso) return sum;
+            if (periodEndIso && entryDate > periodEndIso) return sum;
+            return sum + Math.max(0, Number(entry?.duration_hours || 0));
+          }, 0)
+        ),
+        carryOverYtd,
+        accruedYtd:
+          toFiniteNumber(sickLeaveSummary?.year_to_date_hours) ??
+          Math.max(0, summaryValue(sickLeaveSummary?.accrued_hours) - carryOverYtd),
+        takenYtd: summaryValue(sickLeaveSummary?.total_hours),
+        balanceYtd: summaryValue(sickLeaveSummary?.balance_hours),
+      };
+    };
+
     // AZ/NY/SD weekly OT needs prior weekly hours per worker per event (Mon..day before event)
     const sdEventIds = new Set<string>(
       (Array.isArray(events) ? events : [])
@@ -1438,7 +1485,15 @@ export async function POST(req: NextRequest) {
           };
         });
 
-    if (paystubState === "CA") {
+    // California and Arizona paystubs use the ADP-style statement below (ADP prints both
+    // states the same way). It is also the layout /pdf-reader reads: the simpler statement
+    // further down has no YTD and its text cannot be read back into the payroll Excel.
+    // Arizona differs only in its state tax lines (see adpStateName).
+    const useAdpStatement = paystubState === "CA" || paystubState === "AZ";
+    if (useAdpStatement) {
+      // State tax lines as ADP prints them: "California State Income" + "California State DI",
+      // "Arizona State Income" only (Arizona has no state disability insurance).
+      const adpStateName = isCalifornia ? "California" : "Arizona";
       const parseAmount = (value: any, absolute = true) => {
         const raw = (value ?? "").toString().replace(/,/g, "").trim();
         const parsed = Number.parseFloat(raw);
@@ -1492,15 +1547,7 @@ export async function POST(req: NextRequest) {
       const routingMask = "XXXXXXXXX";
       const [addressLine1, addressLine2, addressLine3] = splitAddressLines(displayAddress);
 
-      // Derive pay period from actual event dates so it always coincides
-      // with the events loaded in the paystub generator.
-      // Form values take priority; fall back to earliest/latest event date.
-      const eventDatesArr = (events || [])
-        .map((e: any) => (e?.event_date || "").toString().split("T")[0])
-        .filter(Boolean)
-        .sort();
-      const effectivePeriodStart = (payPeriodStart || "").trim() || (eventDatesArr[0] ?? "");
-      const effectivePeriodEnd = (payPeriodEnd || "").trim() || (eventDatesArr[eventDatesArr.length - 1] ?? "");
+      // Pay period (effectivePeriodStart/End) is set above: form dates, else event dates.
       // payDate falls back to the period end date when not provided (batch mode)
       const effectivePayDate = (payDate || "").trim() || effectivePeriodEnd;
 
@@ -2011,9 +2058,13 @@ export async function POST(req: NextRequest) {
       const commissionTotalForEarnings = roundPayrollAmount(rawCommissionTotalForEarnings);
 
       // Uploaded payroll: Variable Incentive as uploaded, not recomputed from the period rate.
+      // Arizona is paid per shift, not per pay period: each shift row carries its own
+      // incentive (the $150 shift minimum / weekly OT top-up), the same amount the
+      // Commission Report totals. California paystubs keep period-rate incentive only.
       const rawVariableIncentiveTotalForEarnings = uploadedPaystub
         ? uploadedPaystub.totals.variableIncentive
         : normalizedCaCommissionRows.rows.reduce((sum, row) => {
+            if (!row.usesPeriodRate && !isCalifornia) return sum + row.variableIncentive;
             if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
             const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
             return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
@@ -2039,7 +2090,7 @@ export async function POST(req: NextRequest) {
       const socialSecurityAmt = round2(parseAmount(socialSecurity));
       const medicareAmt = round2(parseAmount(medicare));
       const stateIncomeAmt = round2(parseAmount(stateIncome));
-      const stateDIAmt = round2(parseAmount(stateDI));
+      const stateDIAmt = isCalifornia ? round2(parseAmount(stateDI)) : 0;
       const miscDeductionAmt = round2(parseAmount(miscDeduction));
       // Misc Reimbursement: the figure the page sends (from the ADP data) wins, else the
       // uploaded lines' reimbursements. Never both, which paid the reimbursement twice.
@@ -2381,40 +2432,24 @@ export async function POST(req: NextRequest) {
       const ytdFederalIncome = round2(runningYtd(priorYtd(federalIncomeYtd, ytdSnapshot?.federal_income_ytd, 'federal_income_ytd'), federalIncomeAmt));
       const ytdSocialSecurity = round2(runningYtd(priorYtd(socialSecurityYtd, ytdSnapshot?.social_security_ytd, 'social_security_ytd'), socialSecurityAmt));
       const ytdMedicare = round2(runningYtd(priorYtd(medicareYtd, ytdSnapshot?.medicare_ytd, 'medicare_ytd'), medicareAmt));
-      const ytdStateIncome = round2(runningYtd(priorYtd(stateIncomeYtd, ytdSnapshot?.ca_state_income_ytd, 'state_income_ytd'), stateIncomeAmt));
-      const ytdStateDI = round2(runningYtd(priorYtd(stateDIYtd, ytdSnapshot?.ca_state_di_ytd, 'state_di_ytd'), stateDIAmt));
+      // The saved paystub snapshot only holds California state tax, so Arizona never reads it.
+      const ytdStateIncome = round2(runningYtd(priorYtd(stateIncomeYtd, isCalifornia ? ytdSnapshot?.ca_state_income_ytd : null, 'state_income_ytd'), stateIncomeAmt));
+      const ytdStateDI = isCalifornia
+        ? round2(runningYtd(priorYtd(stateDIYtd, ytdSnapshot?.ca_state_di_ytd, 'state_di_ytd'), stateDIAmt))
+        : 0;
       const ytdVoluntaryDeduction = round2(runningYtd(priorYtd(calSaversRothRetYtd, ytdSnapshot?.misc_non_taxable_ytd, 'calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
       const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd', adjustmentReimbursementRounded), adjustmentReimbursementRounded));
       const ytdMileageReimb = round2(runningYtd(carryoverPriorYtd(effectiveMileageReimbYtd, 'mileage_reimb_ytd', totalMileageReimbursementRounded), totalMileageReimbursementRounded));
       const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), reimbursement));
-      // Period-specific: hours accrued this pay period = hours worked / 30
-      const SICK_ACCRUAL_RATE = 30;
-      const sickAccruedThisPeriod =
-        totalHoursWorked > 0 ? totalHoursWorked / SICK_ACCRUAL_RATE : 0;
-
-      const sickSummaryValue = (value: unknown, fallback = 0) => toFiniteNumber(value) ?? fallback;
-      const sickCarryOverYtd = sickSummaryValue(sickLeaveSummary?.carry_over_hours);
-      const sickAccruedYtd =
-        toFiniteNumber(sickLeaveSummary?.year_to_date_hours) ??
-        Math.max(0, sickSummaryValue(sickLeaveSummary?.accrued_hours) - sickCarryOverYtd);
-      const sickTakenYtdFromJan = sickSummaryValue(sickLeaveSummary?.total_hours);
-      const sickBalanceYtd = sickSummaryValue(sickLeaveSummary?.balance_hours);
-      const periodStartIso = toIsoDate(effectivePeriodStart);
-      const periodEndIso = toIsoDate(effectivePeriodEnd);
-      const sickTakenThisPeriod = round2(
-        (Array.isArray(sickLeaveSummary?.entries) ? sickLeaveSummary.entries : []).reduce((sum, entry) => {
-          if (String(entry?.status || "").toLowerCase() !== "approved") return sum;
-          const entryDate =
-            toIsoDate(entry?.start_date) ||
-            toIsoDate(entry?.approved_at) ||
-            toIsoDate(entry?.created_at);
-          if (!entryDate) return sum;
-          if (periodStartIso && entryDate < periodStartIso) return sum;
-          if (periodEndIso && entryDate > periodEndIso) return sum;
-          return sum + Math.max(0, Number(entry?.duration_hours || 0));
-        }, 0)
-      );
+      const {
+        accruedThisPeriod: sickAccruedThisPeriod,
+        takenThisPeriod: sickTakenThisPeriod,
+        carryOverYtd: sickCarryOverYtd,
+        accruedYtd: sickAccruedYtd,
+        takenYtd: sickTakenYtdFromJan,
+        balanceYtd: sickBalanceYtd,
+      } = buildSickLeaveTable(totalHoursWorked);
 
       const black = rgb(0, 0, 0);
       const gray = rgb(0.45, 0.45, 0.45);
@@ -2551,7 +2586,13 @@ export async function POST(req: NextRequest) {
         if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
         if (row.hours > 0) drawTopText(Number(row.hours).toFixed((row as any).hoursAsCount ? 0 : 2), earningsHoursValueX, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
-        if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
+        // A row that shows a rate or hours also shows its YTD, 0.00 included, like ADP.
+        // /pdf-reader reads the last two numbers of a line as this period and YTD, so a blank
+        // YTD made it read the hours as this period (10.09 hours became $10.09 incentive).
+        const showsRateOrHours = row.rate > 0 || row.hours > 0;
+        if (row.ytd > 0 || (showsRateOrHours && !(row as any).hideThisPeriod)) {
+          drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
+        }
       }
 
       const earningsBottomLineY = earningsRows[earningsRows.length - 1].y + 3;
@@ -2575,12 +2616,18 @@ export async function POST(req: NextRequest) {
         { label: "Federal Income", thisPeriod: federalIncomeAmt, ytd: ytdFederalIncome },
         { label: "Social Security", thisPeriod: socialSecurityAmt, ytd: ytdSocialSecurity },
         { label: "Medicare", thisPeriod: medicareAmt, ytd: ytdMedicare },
-        { label: "California State Income", thisPeriod: stateIncomeAmt, ytd: ytdStateIncome },
-        { label: "California State DI", thisPeriod: stateDIAmt, ytd: ytdStateDI },
+        { label: `${adpStateName} State Income`, thisPeriod: stateIncomeAmt, ytd: ytdStateIncome },
+        ...(isCalifornia ? [{ label: "California State DI", thisPeriod: stateDIAmt, ytd: ytdStateDI }] : []),
       ];
 
+      // CalSavers is California's retirement program; elsewhere the line is ADP's
+      // "Misc Non Taxable", which /pdf-reader reads back into the same misc deduction.
       const voluntaryDeductionRows = [
-        { label: "CalSavers Roth Ret %", thisPeriod: miscDeductionAmt, ytd: ytdVoluntaryDeduction },
+        {
+          label: isCalifornia ? "CalSavers Roth Ret %" : "Misc Non Taxable",
+          thisPeriod: miscDeductionAmt,
+          ytd: ytdVoluntaryDeduction,
+        },
       ];
 
       const positionedStatutoryDeductionRows = statutoryDeductionRows.map((row, index) => ({
