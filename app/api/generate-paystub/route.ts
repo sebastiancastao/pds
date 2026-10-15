@@ -1136,6 +1136,16 @@ export async function POST(req: NextRequest) {
         return { rawPayPeriodRateInEffect: raw, payPeriodRateInEffect: roundPayrollAmount(raw) };
       })();
       const displayRows = rows.map((row) => {
+        // Every row's Final Gross Pay is the sum of its visible columns (commission, tips,
+        // rest, bonus); variable incentive is shown only in the period totals. States paid
+        // per shift instead of per period (AZ/NY) keep their own computed incentive, which
+        // their row used to fold into Final Gross while the totals left it out.
+        if (!row.usesPeriodRate && !row.fromUpload) {
+          return {
+            ...row,
+            finalPay: roundPayrollAmount(row.commissionPerEmployee + row.tips + row.restBreak + row.bonus),
+          };
+        }
         if (!row.usesPeriodRate || row.hoursWorked <= 0) return row;
         const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || paystubState);
         const rawVariableRate = Math.max(0, minimumRateInEffect - rawPayPeriodRateInEffect);
@@ -1272,8 +1282,10 @@ export async function POST(req: NextRequest) {
       drawRL(20, y + 9, 592);
       const averageRateInEffect = payPeriodRateInEffect;
       const grandRawVariableIncentive = displayRows.reduce((sum, row) => {
-        if (row.fromUpload) return sum + row.variableIncentive;
-        if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
+        // Uploaded and per-shift (AZ/NY) rows carry their own incentive; period-rate rows
+        // are recomputed from the pay period's rate in effect.
+        if (row.fromUpload || !row.usesPeriodRate) return sum + row.variableIncentive;
+        if (row.hoursWorked <= 0) return sum;
         const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
         return sum + Math.max(0, (minRate - rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
       }, 0);
@@ -2949,9 +2961,14 @@ export async function POST(req: NextRequest) {
         const commission = displayCommissionPay;
 
         // Vendor layout REG/OT rate display
-        // AZ/NY: REG RATE shows the regular Loaded Rate; if weekly OT applies, show OT RATE instead (1.5x Loaded Rate).
-        // Non-AZ/NY vendor layout: REG RATE shows the Loaded Rate and OT RATE is blank.
-        const loadedRate = loadedRateBase;
+        // REG RATE is the rate actually paid for the shift (commission pay incl. variable
+        // incentive / hours), the same as every other state. AZ/NY's loadedRateBase can carry
+        // the $150 shift minimum, which is not what the row pays, so it is not shown there.
+        // AZ/NY with weekly OT: OT RATE (1.5x Loaded Rate) is shown instead and REG RATE is blank.
+        const loadedRate =
+          isAZorNY && !isWeeklyOT && payrollHours > 0
+            ? roundPayrollAmount(totalFinalCommissionAmt / payrollHours)
+            : loadedRateBase;
         const regRate = (isAZorNY && isWeeklyOT) ? 0 : loadedRate;
         const otRate = (isAZorNY && isWeeklyOT) ? computedOtRate : 0;
 
