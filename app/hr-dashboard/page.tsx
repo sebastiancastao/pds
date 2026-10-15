@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
-import { isLosAngelesRegionName, isSanDiegoRegion } from "@/lib/commission-pool";
+import { isLosAngelesRegionName, isSanDiegoRegion, LOS_ANGELES_COMMISSION_POOL_PERCENT } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -1300,8 +1300,9 @@ function HRDashboardContent() {
         const isNonEventPayroll = isNonEventPayrollEvent(eventInfo);
         const isHourlyPayroll = isEventSD || isNonEventPayroll;
         // Los Angeles-region vendors keep commission pay when they work a San Diego event;
-        // everyone else there is paid hourly. Their share comes out of the event's commission
-        // pool split across the whole team, the same split every vendor would get.
+        // everyone else there is paid hourly. Their pool is their LA agreement percent (4%) of
+        // the event's net sales, not the San Diego event's own 3%, split across the whole team
+        // the same way every vendor's pool is.
         const sanDiegoLaCommissionUserIds = new Set<string>(
           isEventSD && !isNonEventPayroll && Array.isArray(eventPaymentData?.vendorPayments)
             ? eventPaymentData.vendorPayments
@@ -1313,6 +1314,7 @@ function HRDashboardContent() {
         const hasCommissionPool = !isNonEventPayroll && (!isEventSD || sanDiegoLaCommissionUserIds.size > 0);
         const commissionPoolPercent =
           !hasCommissionPool ? 0 :
+          isEventSD ? LOS_ANGELES_COMMISSION_POOL_PERCENT :
           Number(eventInfo.commission_pool ?? eventPaymentSummary.commission_pool_percent ?? 0) || 0;
         const eventCommissionDollarsRaw =
           adjustedGrossAmount * commissionPoolPercent;

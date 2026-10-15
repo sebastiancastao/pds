@@ -7,7 +7,13 @@ import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
-import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
+import {
+  getRegionFallbackCommissionPoolPercent,
+  hasSanDiegoLaCommissionPool,
+  isSanDiegoRegion,
+  LOS_ANGELES_COMMISSION_POOL_PERCENT,
+  paysSanDiegoHourlyForVendor,
+} from '@/lib/commission-pool';
 import { getRestBreakPay } from '@/lib/rest-breaks';
 import {
   PAYROLL_UPLOAD_FIELD_KEYS,
@@ -65,6 +71,9 @@ interface Worker {
   adjustment_note?: string | null;
   // Rest breaks a manager recorded on the event Timesheet tab; null/absent = none recorded.
   rest_break_count?: number | null;
+  // Home region name (regions.name). Los Angeles-region vendors are paid commission at San
+  // Diego events instead of San Diego hourly.
+  vendor_region_name?: string | null;
 }
 
 interface EventPaymentSummary {
@@ -177,6 +186,8 @@ interface FinalPayEvent {
   venue: string;
   city: string | null;
   state: string | null;
+  // Paid San Diego hourly at this event (no commission row). Absent from older responses.
+  sanDiegoHourly?: boolean;
   actualHours: number;
   regularPay: number;
   overtimePay: number;
@@ -540,8 +551,10 @@ export default function PaystubGenerator() {
     adjustedGross: number,
     grossCommission: number
   ) => {
+    // A San Diego event's only pool is the one Los Angeles-region vendors working there are
+    // paid from: their LA agreement percent (San Diego's own vendors are paid hourly).
     if (isSanDiegoRegion(event)) {
-      return 0;
+      return hasSanDiegoLaCommissionPool(event) ? LOS_ANGELES_COMMISSION_POOL_PERCENT : 0;
     }
 
     const persistedPercent = Number(event.event_payment?.commission_pool_percent);
@@ -568,7 +581,12 @@ export default function PaystubGenerator() {
   // $0 pool: older Payment tab saves wrote a whole shared group's pool into that cache, which
   // counted the group pool once more for every no-sales day of the group.
   const getGrossCommissionForEvent = (event: Event): number => {
-    if (isSanDiegoRegion(event)) return 0;
+    // San Diego: the Los Angeles vendors' pool, always recomputed (the cached dollar figure
+    // there is the event's own 3% pool).
+    if (isSanDiegoRegion(event)) {
+      if (!hasSanDiegoLaCommissionPool(event)) return 0;
+      return roundMoney(getAdjustedGrossForEvent(event)) * LOS_ANGELES_COMMISSION_POOL_PERCENT;
+    }
     const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
     const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
     const percent = getCommissionPoolPercentForEvent(event, adjustedGross, persistedGrossCommission);
@@ -576,7 +594,8 @@ export default function PaystubGenerator() {
     return persistedGrossCommission || adjustedGross * percent;
   };
   const getCommissionVendorCountForEvent = (event: Event) => {
-    if (isSanDiegoRegion(event)) {
+    // A San Diego event's LA pool is split across its whole team, like any pool.
+    if (isSanDiegoRegion(event) && !hasSanDiegoLaCommissionPool(event)) {
       return 0;
     }
 
@@ -622,7 +641,9 @@ export default function PaystubGenerator() {
   }, [events, linkedPartnerEvents]);
 
   const getDistributedSharesForEvent = (event: Event) => {
-    const isEventSD = isSanDiegoRegion(event);
+    // San Diego events have a pool only for Los Angeles-region vendors (split across the
+    // whole team); a San Diego non-event timesheet has none.
+    const hasNoCommissionPool = isSanDiegoRegion(event) && !hasSanDiegoLaCommissionPool(event);
     const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
     const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
     const adjustedGrossPercent = getCommissionPoolPercentForEvent(
@@ -633,7 +654,7 @@ export default function PaystubGenerator() {
     const rawGrossCommission = getGrossCommissionForEvent(event);
     const linkedGroupEventIds = linkedCommissionDistribution.groupEventIdsByEventId[event.id] || [event.id];
     const isCommissionShared = linkedGroupEventIds.length > 1;
-    const commissionEligibleMembers = isEventSD ? [] : (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
+    const commissionEligibleMembers = hasNoCommissionPool ? [] : (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
       const workerId = (worker?.user_id || '').toString();
       const hoursWorked = getCommissionReportHours(worker);
       const division = normalizeDivision(worker?.division);
@@ -690,19 +711,34 @@ export default function PaystubGenerator() {
   // Rest break pay for the commission report, priced with the current rule (lib/rest-breaks)
   // rather than read back out of the saved payment total, which still holds whatever rule was
   // in force when that event's Payment tab was last saved. Same exclusions as the event
-  // Payment tab: none for San Diego or non-event ("special") timesheets.
+  // Payment tab: none for San Diego hourly work or non-event ("special") timesheets. A Los
+  // Angeles-region vendor (`vendorRegionName`) at a San Diego event is on commission, so paid.
   const getRestPayForReport = (
     actualHours: number,
     event?: { city?: string | null; venue?: string | null; event_type?: string | null; event_date?: string | null } | null,
-    recordedBreaks?: number | null
+    recordedBreaks?: number | null,
+    vendorRegionName?: string | null
   ) => {
-    if (event && isSanDiegoRegion({ city: event.city, venue: event.venue })) return 0;
+    if (
+      event &&
+      paysSanDiegoHourlyForVendor(
+        { city: event.city, venue: event.venue, event_type: event.event_type },
+        vendorRegionName
+      )
+    ) {
+      return 0;
+    }
     if ((event?.event_type || '').toString().trim().toLowerCase() === 'special') return 0;
     if (!Number.isFinite(actualHours) || actualHours <= 0) {
       return 0;
     }
     return getRestBreakPay(actualHours, recordedBreaks, event?.event_date);
   };
+  // True when this worker is paid San Diego hourly at this event. Los Angeles-region vendors
+  // are paid commission at San Diego events instead (their LA agreement, 4% pool), so their
+  // San Diego events belong on the commission report.
+  const paysSanDiegoHourlyForWorker = (event: Event, worker?: Worker | null): boolean =>
+    paysSanDiegoHourlyForVendor(event, worker?.vendor_region_name);
   const getCommissionReportBonusAmount = (worker?: Worker | null) => {
     if (!worker) return 0;
     const adjustmentTotal = roundMoney(Number(worker.adjustment_amount || 0));
@@ -1584,7 +1620,13 @@ export default function PaystubGenerator() {
 
   const hasCommissionReportEventsForUserId = (userId: string | null) => {
     if (!userId) return false;
-    return filterEventsForUserId(userId).some((event) => !isSanDiegoRegion(event));
+    return filterEventsForUserId(userId).some(
+      (event) =>
+        !paysSanDiegoHourlyForWorker(
+          event,
+          (event.workers || []).find((worker) => worker.user_id === userId) || null
+        )
+    );
   };
 
   const resolveEmployeeUserIdByOfficialName = async (
@@ -2230,8 +2272,10 @@ export default function PaystubGenerator() {
         ['Net Pay', netPay],
       ];
 
+      // Every event paid on commission, including San Diego events worked by a Los
+      // Angeles-region vendor (the route flags San Diego hourly work as sanDiegoHourly).
       const commissionFinalPayEvents = (latestFinalPay.events || []).filter(
-        (ev) => !isSanDiegoRegion(ev)
+        (ev) => !(ev.sanDiegoHourly ?? isSanDiegoRegion(ev))
       );
       const totalCommissionHours = commissionFinalPayEvents.reduce((sum, ev) => sum + (ev.actualHours || 0), 0);
       const totalVariableIncentiveForRate = commissionFinalPayEvents.reduce((sum, ev) => sum + (ev.variableIncentive || 0), 0);
@@ -2306,7 +2350,9 @@ export default function PaystubGenerator() {
             (event.workers || []).find((candidate) => candidate.user_id === reportUserId) || null;
           if (!worker) return [];
 
-          const isEventSD = isSanDiegoRegion(event);
+          // San Diego hourly work has no commission row. A Los Angeles-region vendor at a San
+          // Diego event is on commission there (4% pool), so that event is listed.
+          const isEventSD = paysSanDiegoHourlyForWorker(event, worker);
           if (isEventSD) return [];
           const usesPeriodRate = !isEventSD && isPeriodRateCommissionState(event.state);
           const finalPayData = finalPayByEventId.get(event.id);
@@ -2352,7 +2398,9 @@ export default function PaystubGenerator() {
                 : Number(worker.payment_data?.tips ?? 0)
           );
           const restPay = roundMoney(
-            isEventSD ? 0 : getRestPayForReport(hoursWorked, event, worker.rest_break_count)
+            isEventSD
+              ? 0
+              : getRestPayForReport(hoursWorked, event, worker.rest_break_count, worker.vendor_region_name)
           );
           const bonusValue = getCommissionReportBonusAmount(worker);
           const rateInEffect = roundMoney(
@@ -3781,13 +3829,13 @@ export default function PaystubGenerator() {
                                               <span className="font-medium text-blue-700">${worker.payment_data.tips.toFixed(2)}</span>
                                             </div>
                                           )}
-                                          {!isSanDiegoRegion(event) && worker.payment_data.variable_incentive !== null && worker.payment_data.variable_incentive > 0 && (
+                                          {!paysSanDiegoHourlyForWorker(event, worker) && worker.payment_data.variable_incentive !== null && worker.payment_data.variable_incentive > 0 && (
                                             <div>
                                               <span className="text-slate-500">Variable Incentive:</span>{' '}
                                               <span className="font-medium text-blue-700">${worker.payment_data.variable_incentive.toFixed(2)}</span>
                                             </div>
                                           )}
-                                          {!isSanDiegoRegion(event) && worker.payment_data.commissions !== null && worker.payment_data.commissions > 0 && (
+                                          {!paysSanDiegoHourlyForWorker(event, worker) && worker.payment_data.commissions !== null && worker.payment_data.commissions > 0 && (
                                             <div>
                                               <span className="text-slate-500">Commissions:</span>{' '}
                                               <span className="font-medium text-blue-700">${worker.payment_data.commissions.toFixed(2)}</span>

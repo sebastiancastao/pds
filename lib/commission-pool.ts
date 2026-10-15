@@ -53,6 +53,39 @@ export function usesSanDiegoHourlyPay(
   return isSanDiegoRegion(event) && !isLosAngelesRegionName(vendorRegionName);
 }
 
+// Commission pool percent in the Los Angeles vendor agreement. A Los Angeles-region vendor who
+// works a San Diego event stays on that agreement: the pool is this percent of the San Diego
+// event's net sales, split across the event's whole team like any commission pool, and the
+// vendor is paid their share of it. The San Diego event's own percent (3%) does not apply to
+// them. San Diego's own vendors are paid hourly there and get nothing from this pool.
+export const LOS_ANGELES_COMMISSION_POOL_PERCENT = 0.04;
+
+const isNonEventTimesheetType = (eventType?: string | null): boolean =>
+  (eventType || "").toString().trim().toLowerCase() === "special";
+
+/**
+ * True for a San Diego event that pays Los Angeles-region vendors commission: every San Diego
+ * event except non-event ("special") timesheets, which are hourly for everyone. Its commission
+ * pool is LOS_ANGELES_COMMISSION_POOL_PERCENT of net sales.
+ */
+export function hasSanDiegoLaCommissionPool(
+  event: (SanDiegoRegionInput & { event_type?: string | null }) | null | undefined
+): boolean {
+  return isSanDiegoRegion(event) && !isNonEventTimesheetType(event?.event_type);
+}
+
+/**
+ * True when this vendor is paid San Diego hourly at this event: a San Diego event, unless the
+ * vendor's home region (regions.name) is Los Angeles and the event is not a non-event timesheet.
+ */
+export function paysSanDiegoHourlyForVendor(
+  event: (SanDiegoRegionInput & { event_type?: string | null }) | null | undefined,
+  vendorRegionName?: string | null
+): boolean {
+  if (!isSanDiegoRegion(event)) return false;
+  return !(hasSanDiegoLaCommissionPool(event) && isLosAngelesRegionName(vendorRegionName));
+}
+
 // Venues the app already treats as NorCal / SF Metro (see event-dashboard team tab).
 export const NORCAL_VENUE_KEYWORDS = [
   "save mart",

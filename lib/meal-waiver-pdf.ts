@@ -373,3 +373,101 @@ export async function renderMealWaiversPdf(waivers: MealWaiverRecord[]): Promise
   const bytes = await pdfDoc.save();
   return Buffer.from(bytes);
 }
+
+// ---------------------------------------------------------------------------
+// Blank (unsigned) meal waiver forms. Same wording and layout as the paper
+// Word documents at the repo root:
+//   "Meal Period Waiver - 6 Hour (Hourly Employees).docx"
+//   "Meal Period Waiver - 10 12 Hour (Hourly Employees).docx"
+// Served by /api/meal-waiver/blank for the /california-forms download page.
+// No employee data is read or stamped.
+// ---------------------------------------------------------------------------
+
+export type BlankMealWaiverType = '6_hour' | '10_hour';
+
+const BLANK_MEAL_WAIVER_DOCUMENT_TITLES: Record<BlankMealWaiverType, string> = {
+  '6_hour': '6 Hour Meal Waiver',
+  '10_hour': '10-12 Hour Meal Waiver',
+};
+
+export async function renderBlankMealWaiverPdf(waiverType: BlankMealWaiverType): Promise<Buffer> {
+  const narrative = MEAL_WAIVER_NARRATIVES[waiverType];
+  const title = BLANK_MEAL_WAIVER_DOCUMENT_TITLES[waiverType];
+
+  const pdfDoc = await PDFDocument.create();
+  pdfDoc.setTitle(title);
+  const regular = await pdfDoc.embedFont(StandardFonts.TimesRoman);
+  const bold = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
+  const page = pdfDoc.addPage([612, 792]);
+  const form = pdfDoc.getForm();
+
+  const black = rgb(0, 0, 0);
+  const marginX = 72;
+  const maxWidth = 612 - marginX * 2;
+  const fontSize = 11;
+  const lineHeight = 15;
+  let y = 720;
+
+  const titleWidth = bold.widthOfTextAtSize(title, 14);
+  page.drawText(title, { x: (612 - titleWidth) / 2, y, size: 14, font: bold, color: black });
+  y -= 36;
+
+  const drawUnderlinedHeading = (text: string) => {
+    page.drawText(text, { x: marginX, y, size: fontSize, font: bold, color: black });
+    const width = bold.widthOfTextAtSize(text, fontSize);
+    page.drawLine({
+      start: { x: marginX, y: y - 2 },
+      end: { x: marginX + width, y: y - 2 },
+      thickness: 0.75,
+      color: black,
+    });
+    y -= lineHeight + 6;
+  };
+
+  const drawParagraph = (text: string) => {
+    for (const line of wrapTextLines(regular, text, fontSize, maxWidth)) {
+      page.drawText(line, { x: marginX, y, size: fontSize, font: regular, color: black });
+      y -= lineHeight;
+    }
+    y -= 9;
+  };
+
+  drawUnderlinedHeading(narrative.heading);
+  narrative.paragraphs.forEach(drawParagraph);
+  y -= 4;
+  drawUnderlinedHeading('General Terms');
+  GENERAL_MEAL_WAIVER_TERMS.forEach(drawParagraph);
+
+  // Signature block, as on the paper form: Date and Name [print] side by side,
+  // Signature under the name. Date and name are fillable; the signature is
+  // left as a plain line for a handwritten signature.
+  const fieldPrefix = waiverType === '6_hour' ? 'meal_waiver_6_hour' : 'meal_waiver_10_12_hour';
+  const drawSignatureLine = (label: string, x: number, width: number, fieldName?: string) => {
+    page.drawLine({ start: { x, y }, end: { x: x + width, y }, thickness: 0.75, color: black });
+    page.drawText(label, { x, y: y - 13, size: fontSize, font: bold, color: black });
+    if (fieldName) {
+      const field = form.createTextField(`${fieldPrefix}_${fieldName}`);
+      field.addToPage(page, {
+        x: x + 2,
+        y: y + 1,
+        width: width - 4,
+        height: 16,
+        borderWidth: 0,
+        borderColor: undefined,
+        backgroundColor: undefined,
+      });
+      field.setFontSize(fontSize);
+    }
+  };
+
+  const nameColumnX = marginX + 200;
+  const nameColumnWidth = maxWidth - 200;
+  y -= 50;
+  drawSignatureLine('Date', marginX, 170, 'date');
+  drawSignatureLine('Name [print]', nameColumnX, nameColumnWidth, 'name');
+  y -= 60;
+  drawSignatureLine('Signature', nameColumnX, nameColumnWidth);
+
+  const bytes = await pdfDoc.save();
+  return Buffer.from(bytes);
+}

@@ -1221,6 +1221,15 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
           >
             {parsing ? "Reading…" : "Upload Excel Files"}
           </button>
+          {/* Static file built by scripts/generate-payroll-upload-template.py. */}
+          <a
+            href="/templates/payroll-upload-template.xlsx"
+            download="Payroll Upload Template.xlsx"
+            title="Blank payroll sheet with every column this upload reads, an example sheet and instructions"
+            className="apple-button apple-button-secondary"
+          >
+            Download Template
+          </a>
           <button
             type="button"
             onClick={() => void loadUploads()}

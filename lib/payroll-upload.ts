@@ -947,6 +947,8 @@ export const sanitizePayrollExtra = (input: unknown): PayrollUploadRow["extra"] 
 // Column headers used when downloading uploaded payroll. They match the
 // Payroll tab's own "Export to Excel" ("Vendor Payments" sheet), and every one
 // is recognized by the parser above, so a download can be edited and re-uploaded.
+// The upload template (public/templates/payroll-upload-template.xlsx) uses the
+// same headers: rerun scripts/generate-payroll-upload-template.py after changing them.
 export const PAYROLL_EXPORT_HEADERS: Record<PayrollUploadFieldKey, string> = {
   first_name: "First Name",
   last_name: "Last Name",

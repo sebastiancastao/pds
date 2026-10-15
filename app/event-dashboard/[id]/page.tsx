@@ -3,7 +3,15 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate, tipsDistributionModeLabel } from "@/lib/payroll-distribution";
-import { getRegionFallbackCommissionPoolPercent, isLosAngelesRegionName, isSanDiegoRegion, isNorCalRegion } from "@/lib/commission-pool";
+import {
+  getRegionFallbackCommissionPoolPercent,
+  hasSanDiegoLaCommissionPool,
+  isLosAngelesRegionName,
+  isSanDiegoRegion,
+  isNorCalRegion,
+  LOS_ANGELES_COMMISSION_POOL_PERCENT,
+  paysSanDiegoHourlyForVendor,
+} from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -5070,6 +5078,29 @@ export default function EventDashboardPage() {
     return ids;
   }, [isEventSanDiego, isNonEventTimesheet, teamMembers]);
   const hasSanDiegoLaCommissionVendors = sanDiegoLaCommissionUserIds.size > 0;
+  // Pool the team's commission split is drawn from. On a San Diego event only Los
+  // Angeles-region vendors are paid commission, and their LA agreement is 4% of the event's
+  // net sales, not the San Diego event's own percent (the Sales tab still shows and saves that
+  // one as the event's pool). Every other event splits its own pool.
+  const commissionSplitPoolDollars = useMemo(() => {
+    if (isEventSanDiego && !isNonEventTimesheet) {
+      return Math.max(resolvedCommissionNetSales, 0) * LOS_ANGELES_COMMISSION_POOL_PERCENT;
+    }
+    return currentEventCommissionPoolDollars;
+  }, [currentEventCommissionPoolDollars, isEventSanDiego, isNonEventTimesheet, resolvedCommissionNetSales]);
+  // Invite list cue: on a San Diego event, Los Angeles-region vendors keep commission pay (4%
+  // LA agreement) instead of San Diego hourly, so the Create Team list flags them.
+  const regionNameById = useMemo(() => {
+    const byId: Record<string, string> = {};
+    for (const region of regions) {
+      if (region?.id && region?.name) byId[region.id] = region.name;
+    }
+    return byId;
+  }, [regions]);
+  const showsSanDiegoLaCommissionCue = isEventSanDiego && !isNonEventTimesheet;
+  const isLaCommissionInviteVendor = (vendor: TeamVendorOption): boolean =>
+    showsSanDiegoLaCommissionCue &&
+    isLosAngelesRegionName(regionNameById[(vendor.profiles?.region_id || vendor.region_id || "").toString()]);
   // True when this worker is paid San Diego hourly (with no uid: when the event is San Diego).
   const paysSanDiegoHourly = (uid?: string | null): boolean =>
     isEventSanDiego && !(uid && sanDiegoLaCommissionUserIds.has(uid));
@@ -5292,7 +5323,7 @@ export default function EventDashboardPage() {
       eventId,
       linkedCommissionEventId: selectedLinkedCommissionEventIds[0] || null,
       eventDate: event?.event_date || null,
-      commissionPoolDollars: currentEventCommissionPoolDollars,
+      commissionPoolDollars: commissionSplitPoolDollars,
       workers: teamMembers.map((member: any) => {
         const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
         return {
@@ -5307,7 +5338,7 @@ export default function EventDashboardPage() {
   }, [
     commissionsOverrides,
     commissionEvenSplitOverrides,
-    currentEventCommissionPoolDollars,
+    commissionSplitPoolDollars,
     event?.event_date,
     eventId,
     selectedLinkedCommissionEventIds,
@@ -5399,10 +5430,16 @@ export default function EventDashboardPage() {
     const savedPoolPercent = Number(periodEvent?.event_payment?.commission_pool_percent || 0);
     const configuredPoolPercent = Number(periodEvent?.commission_pool || 0);
     const fallbackPoolPercent = Number(getRegionFallbackCommissionPoolPercent(periodEvent) || 0);
-    const resolvedPoolPercent =
-      (savedPoolPercent > 0 ? savedPoolPercent : 0) ||
-      (configuredPoolPercent > 0 ? configuredPoolPercent : 0) ||
-      (fallbackPoolPercent > 0 ? fallbackPoolPercent : 0);
+    // A San Diego event's pool is the Los Angeles vendors' one: their LA agreement percent of
+    // net sales, not the event's own percent. A San Diego non-event timesheet has none.
+    const isSanDiegoPeriodEvent = isSanDiegoRegion(periodEvent);
+    const resolvedPoolPercent = isSanDiegoPeriodEvent
+      ? hasSanDiegoLaCommissionPool(periodEvent)
+        ? LOS_ANGELES_COMMISSION_POOL_PERCENT
+        : 0
+      : (savedPoolPercent > 0 ? savedPoolPercent : 0) ||
+        (configuredPoolPercent > 0 ? configuredPoolPercent : 0) ||
+        (fallbackPoolPercent > 0 ? fallbackPoolPercent : 0);
 
     if (savedNetSales > 0 && resolvedPoolPercent > 0) {
       return savedNetSales * resolvedPoolPercent;
@@ -5419,6 +5456,9 @@ export default function EventDashboardPage() {
       const netSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
       return netSales * resolvedPoolPercent;
     }
+
+    // The cached dollar figure on a San Diego event is its own 3% pool, never the LA one.
+    if (isSanDiegoPeriodEvent) return 0;
 
     // Last resort: only reached when we have no usable percent to recompute from.
     return Number(periodEvent?.event_payment?.commission_pool_dollars || 0);
@@ -5439,6 +5479,8 @@ export default function EventDashboardPage() {
         commissionOverride?: number | null;
         commissionShare?: number | null;
         forceEvenSplit?: boolean;
+        // Paid San Diego hourly at this event: counts in the pool split, paid nothing from it.
+        paidHourly?: boolean;
       }>;
     }> = [];
 
@@ -5448,7 +5490,7 @@ export default function EventDashboardPage() {
         linkedCommissionEventId: selectedLinkedCommissionEventIds[0] || null,
         state: event.state,
         date: event.event_date,
-        commissionPoolDollars: currentEventCommissionPoolDollars,
+        commissionPoolDollars: commissionSplitPoolDollars,
         workers: teamMembers.map((member: any) => {
           const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
           return {
@@ -5461,6 +5503,7 @@ export default function EventDashboardPage() {
                 ? Number(commissionsOverrides[uid])
                 : null,
             forceEvenSplit: commissionEvenSplitOverrides[uid],
+            paidHourly: paysSanDiegoHourly(uid),
           };
         }),
       });
@@ -5523,6 +5566,7 @@ export default function EventDashboardPage() {
                 ? Number(worker.payment_data.commission_override)
                 : null,
             forceEvenSplit: worker?.payment_data?.commission_even_split ?? undefined,
+            paidHourly: paysSanDiegoHourlyForVendor(periodEvent, worker?.vendor_region_name),
           })),
         });
       }
@@ -5550,15 +5594,20 @@ export default function EventDashboardPage() {
         commissionPoolDollars:
           Number(periodLinkedDistribution.groupPoolByEventId[periodEvent.eventId] || 0) ||
           periodEvent.commissionPoolDollars,
-        workers: periodEvent.workers.map((worker) => ({
+        workers: periodEvent.workers.map(({ paidHourly, ...worker }) => ({
           ...worker,
-          commissionShare:
-            periodLinkedDistribution.commissionShareByEventId[periodEvent.eventId]?.[worker.userId] ?? 0,
+          // San Diego hourly workers count in a San Diego pool's split but are paid nothing
+          // from it (it is the Los Angeles vendors' pool), as on /hr-dashboard and paystubs.
+          commissionShare: paidHourly
+            ? 0
+            : periodLinkedDistribution.commissionShareByEventId[periodEvent.eventId]?.[worker.userId] ?? 0,
         })),
       })),
     });
   }, [
-    currentEventCommissionPoolDollars,
+    commissionSplitPoolDollars,
+    sanDiegoLaCommissionUserIds,
+    isEventSanDiego,
     event,
     eventId,
     teamMembers,
@@ -6869,6 +6918,13 @@ export default function EventDashboardPage() {
                           } $${linkedEventsCommissionPoolDollarsTotal.toFixed(2)}`
                         : "Auto: Net Sales × Commission Pool (fraction)"}
                     </p>
+                    {showsSanDiegoLaCommissionCue && hasSanDiegoLaCommissionVendors && (
+                      <p className="text-xs text-indigo-700 mt-1">
+                        LA-region vendors on this team are paid from their LA agreement pool:{" "}
+                        {(LOS_ANGELES_COMMISSION_POOL_PERCENT * 100).toFixed(0)}% of net sales = $
+                        {commissionSplitPoolDollars.toFixed(2)}, split across the whole team.
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -8685,6 +8741,15 @@ export default function EventDashboardPage() {
             )}
           </button>
         )}
+        {userRole === "exec" && (
+          <Link
+            href="/event-dashboard"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+            title="Timesheet PDFs for every event and non-event, zipped by pay period"
+          >
+            Pay period ZIPs
+          </Link>
+        )}
       </div>
       <div className="text-sm text-gray-500 text-right">
         <div className="font-medium text-gray-700">
@@ -9605,7 +9670,7 @@ export default function EventDashboardPage() {
                     </div>
                     {isEventSanDiego && hasSanDiegoLaCommissionVendors && (
                       <div className="text-xs text-blue-700 mt-1">
-                        LA-region vendors: commission, ${formatPayrollMoney(getBaseRateForState(event?.state || 'CA'))}/hr base
+                        LA-region vendors: commission at {(LOS_ANGELES_COMMISSION_POOL_PERCENT * 100).toFixed(0)}% of net sales (LA agreement, ${formatPayrollMoney(commissionSplitPoolDollars)} pool), ${formatPayrollMoney(getBaseRateForState(event?.state || 'CA'))}/hr base
                       </div>
                     )}
                   </div>
@@ -9766,9 +9831,9 @@ export default function EventDashboardPage() {
                                       <div className="mt-0.5">
                                         <span
                                           className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 leading-none"
-                                          title="Los Angeles-region vendor: paid commission at this San Diego event instead of hourly"
+                                          title="Los Angeles-region vendor: paid commission at this San Diego event (4% LA agreement pool) instead of hourly"
                                         >
-                                          LA vendor · Commission
+                                          LA vendor · Commission 4%
                                         </span>
                                       </div>
                                     )}
@@ -10380,6 +10445,14 @@ export default function EventDashboardPage() {
                     <span className="font-semibold">{locationTeamVendors.length}</span>{" "}
                     vendor{locationTeamVendors.length !== 1 ? "s" : ""} available on this date.
                   </div>
+                  {showsSanDiegoLaCommissionCue && (
+                    <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
+                      <span className="font-semibold">San Diego event:</span> San Diego vendors are paid hourly.
+                      Vendors from the Los Angeles region stay on commission at{" "}
+                      {(LOS_ANGELES_COMMISSION_POOL_PERCENT * 100).toFixed(0)}% of net sales (their LA agreement).
+                      They are tagged <span className="font-semibold">LA · Commission 4%</span> below.
+                    </div>
+                  )}
 
 
                   {locationTeamProposalStep && (() => {
@@ -10536,6 +10609,14 @@ export default function EventDashboardPage() {
                             <div className="flex items-center justify-between gap-2">
                               <div className="text-sm font-semibold text-gray-900 truncate">{fullName}</div>
                               <div className="flex items-center gap-2 flex-wrap justify-end">
+                                {isLaCommissionInviteVendor(vendor) && (
+                                  <span
+                                    className="px-2 py-0.5 rounded text-xs font-semibold bg-indigo-100 text-indigo-800"
+                                    title="Los Angeles-region vendor: paid commission at this San Diego event (4% LA agreement pool), not San Diego hourly"
+                                  >
+                                    LA · Commission 4%
+                                  </span>
+                                )}
                                 {isBusy && (
                                   isPendingConflict ? (
                                     <span

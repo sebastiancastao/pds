@@ -7,6 +7,10 @@ import { safeDecrypt } from "@/lib/encryption";
 import { formatIsoToHHMM, getLocalDateRange, getTimezoneForState } from "@/lib/timezones";
 
 export const runtime = "nodejs";
+// The pay-period ZIP page (/event-dashboard) pulls many of these in a row, so
+// never let the Next.js fetch Data Cache hand back stale time entries.
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -566,6 +570,8 @@ export async function GET(
           "Content-Type": "application/pdf",
           "Content-Disposition": 'attachment; filename="timesheet.pdf"',
           "Cache-Control": "no-store",
+          // Staff rows printed; the pay-period ZIP uses it to skip empty timesheets.
+          "X-Timesheet-Row-Count": "0",
         },
       });
     }
@@ -1152,6 +1158,7 @@ export async function GET(
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="timesheet-${safeName}-${dateStr}.pdf"`,
         "Cache-Control": "no-store",
+        "X-Timesheet-Row-Count": String(rows.length),
       },
     });
   } catch (err: any) {
