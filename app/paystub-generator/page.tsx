@@ -34,6 +34,7 @@ import {
   type UploadedPayrollPayload,
   type UploadedPayrollWarning,
 } from '@/lib/paystub-uploaded-payroll';
+import { voluntaryDeductionsFromRow, type VoluntaryDeductionInput } from '@/lib/voluntary-deductions';
 
 interface PaymentData {
   effective_hours?: number | null;
@@ -160,6 +161,9 @@ type ImportedEmployeeRow = {
   // Other
   miscDeduction: string;
   miscReimbursement: string;
+  // Voluntary deductions besides CalSavers (e.g. ADP "Creditor 1"), from the
+  // "Voluntary: <label>" columns of the /pdf-reader export.
+  voluntaryDeductions: VoluntaryDeductionInput[];
 
   matchedUserId: string | null;
   matchError?: string;
@@ -298,6 +302,7 @@ type PaystubFields = YtdOverrideSource & {
   state: string;
   miscDeduction: string;
   miscReimbursement: string;
+  voluntaryDeductions?: VoluntaryDeductionInput[];
 };
 
 // An imported row as paystub fields. The CalSavers Roth column is the misc deduction
@@ -373,6 +378,7 @@ export default function PaystubGenerator() {
     // Other
     miscDeduction: '',
     miscReimbursement: '',
+    voluntaryDeductions: [] as VoluntaryDeductionInput[],
   });
 
   const [generating, setGenerating] = useState(false);
@@ -1200,7 +1206,8 @@ export default function PaystubGenerator() {
       (parseFloat(formData.medicare) || 0) +
       (parseFloat(formData.stateIncome) || 0) +
       (parseFloat(formData.stateDI) || 0) +
-      (parseFloat(formData.miscDeduction) || 0)
+      (parseFloat(formData.miscDeduction) || 0) +
+      formData.voluntaryDeductions.reduce((sum, line) => sum + (line.thisPeriod || 0), 0)
     );
   };
 
@@ -1503,6 +1510,8 @@ export default function PaystubGenerator() {
       // Other
       miscDeduction: fields.miscDeduction,
       miscReimbursement: fields.miscReimbursement,
+      // Voluntary deductions besides CalSavers, each its own paystub line (e.g. "Creditor 1").
+      voluntaryDeductions: fields.voluntaryDeductions || [],
       mealPremium: override ? parseFloat(override.mealPremium) || 0 : 0,
       sick: override ? parseFloat(override.sick) || 0 : 0,
 
@@ -3019,6 +3028,7 @@ export default function PaystubGenerator() {
 
           miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
           miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
+          voluntaryDeductions: voluntaryDeductionsFromRow(jsonData[0], valuesRow),
 
           // Keep for backward compat: these fields still exist on the single form, but batch uses the per-row data.
           // (We don't store earnings fields in ImportedEmployeeRow because the PDF derives earnings from DB events.)
@@ -3049,6 +3059,7 @@ export default function PaystubGenerator() {
           state: first.state || prev.state,
           miscDeduction: first.calSaversRothRet || first.miscDeduction,
           miscReimbursement: first.miscReimbursement,
+          voluntaryDeductions: first.voluntaryDeductions,
           federalIncomeYtd: first.federalIncomeYtd,
           socialSecurityYtd: first.socialSecurityYtd,
           medicareYtd: first.medicareYtd,
@@ -3739,6 +3750,12 @@ export default function PaystubGenerator() {
                                               <span className="font-medium text-red-700">${parseFloat(formData.miscDeduction).toFixed(2)}</span>
                                             </div>
                                           )}
+                                          {formData.voluntaryDeductions.filter((line) => line.thisPeriod > 0).map((line) => (
+                                            <div key={line.label}>
+                                              <span className="text-blue-600">{line.label}:</span>{' '}
+                                              <span className="font-medium text-red-700">${line.thisPeriod.toFixed(2)}</span>
+                                            </div>
+                                          ))}
                                           {formData.miscReimbursement && (
                                             <div>
                                               <span className="text-blue-600">Misc Reimbursement:</span>{' '}

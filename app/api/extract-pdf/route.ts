@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument, PDFArray } from 'pdf-lib';
 import { extractPayrollDataWithLLM } from '@/app/lib/llm-extraction';
 import { collapseRepeatedText } from '@/lib/adp-statement-ytd';
+import { parseOtherVoluntaryDeductions } from '@/lib/voluntary-deductions';
 
 export const dynamic = 'force-dynamic';
 
@@ -1136,6 +1137,13 @@ function extractPayrollData(text: string) {
 
   guessMissingDeductions(payrollData, lines);
 
+  // Voluntary deductions without a field of their own (e.g. ADP "Creditor 1"), so the
+  // export and /paystub-generator can carry them and net pay matches the statement.
+  const otherVoluntaryDeductions = parseOtherVoluntaryDeductions(text);
+  if (otherVoluntaryDeductions.length > 0) {
+    payrollData.otherVoluntaryDeductions = otherVoluntaryDeductions;
+  }
+
   return payrollData;
 }
 
@@ -1342,6 +1350,11 @@ export async function POST(req: NextRequest) {
           pagePayrollData = await extractPayrollDataWithLLM(pageText);
           usedLLM = true;
           console.log(`[EXTRACT_PDF] Page ${i + 1}: Used LLM extraction`);
+          const llmPage = pagePayrollData as any;
+          if (llmPage && !llmPage.otherVoluntaryDeductions) {
+            const otherVoluntaryDeductions = parseOtherVoluntaryDeductions(pageText);
+            if (otherVoluntaryDeductions.length > 0) llmPage.otherVoluntaryDeductions = otherVoluntaryDeductions;
+          }
 
           // Check if critical deductions are missing (Medicare or Social Security)
           const hasMedicare = pagePayrollData.statutoryDeductions?.medicare?.thisPeriod;

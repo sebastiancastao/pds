@@ -7,6 +7,7 @@
 // AI-vision fallbacks. Browser-only: import it from client components.
 
 import Tesseract from 'tesseract.js';
+import { parseOtherVoluntaryDeductions } from './voluntary-deductions';
 
 export type OcrProgress = { page: number; progress: number; total: number };
 
@@ -1380,6 +1381,12 @@ export function extractPayrollData(text: string) {
   }
 
   guessMissingDeductions(payrollData, lines);
+
+  // Same as the server parser: voluntary deductions without a field of their own (e.g. "Creditor 1").
+  const otherVoluntaryDeductions = parseOtherVoluntaryDeductions(text);
+  if (otherVoluntaryDeductions.length > 0) {
+    payrollData.otherVoluntaryDeductions = otherVoluntaryDeductions;
+  }
 
   return payrollData;
 }

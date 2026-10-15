@@ -27,6 +27,7 @@ import {
   type PaystubUploadTotals,
   type UploadedPayrollLineInput,
 } from "@/lib/paystub-uploaded-payroll";
+import { sanitizeVoluntaryDeductions } from "@/lib/voluntary-deductions";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -118,6 +119,9 @@ export async function POST(req: NextRequest) {
       // Other
       miscDeduction,
       miscReimbursement,
+      // Voluntary deductions besides CalSavers / misc, e.g. ADP "Creditor 1":
+      // [{ label, thisPeriod, ytd }] from the /pdf-reader export (lib/voluntary-deductions).
+      voluntaryDeductions: rawVoluntaryDeductions = [],
       mealPremium = 0,
       sick = 0,
 
@@ -199,6 +203,12 @@ export async function POST(req: NextRequest) {
       sickLeave && typeof sickLeave === "object"
         ? (sickLeave as Partial<SickLeaveSummary>)
         : null;
+    // Voluntary deductions besides CalSavers / misc (e.g. "Creditor 1"): positive amounts,
+    // YTD as on the statement (it includes this period). Each is its own paystub line and
+    // is taken out of net pay like the other deductions.
+    const otherVoluntaryDeductions = sanitizeVoluntaryDeductions(rawVoluntaryDeductions);
+    const otherVoluntaryThisPeriod =
+      Math.round(otherVoluntaryDeductions.reduce((sum, line) => sum + line.thisPeriod, 0) * 100) / 100;
     if (matchedUserId) {
       try {
         const { data: profile } = await supabaseAdmin
@@ -2103,7 +2113,8 @@ export async function POST(req: NextRequest) {
         medicareAmt +
         stateIncomeAmt +
         stateDIAmt +
-        miscDeductionAmt
+        miscDeductionAmt +
+        otherVoluntaryThisPeriod
       );
       const totalRegularPayRounded = round2(totalRegularPayAmount);
       const totalOvertimePayRounded = round2(totalOvertimePayAmount);
@@ -2628,6 +2639,12 @@ export async function POST(req: NextRequest) {
           thisPeriod: miscDeductionAmt,
           ytd: ytdVoluntaryDeduction,
         },
+        // Other voluntary deductions as on the ADP statement (e.g. "Creditor 1").
+        ...otherVoluntaryDeductions.map((line) => ({
+          label: line.label,
+          thisPeriod: line.thisPeriod,
+          ytd: line.ytd ?? line.thisPeriod,
+        })),
       ];
 
       const positionedStatutoryDeductionRows = statutoryDeductionRows.map((row, index) => ({
@@ -3344,6 +3361,10 @@ export async function POST(req: NextRequest) {
     if (miscDeduction && parseFloat(miscDeduction) > 0) {
       deductions.push({ label: "Misc Deduction", value: parseFloat(miscDeduction) });
     }
+    // Other voluntary deductions (e.g. "Creditor 1"), each its own line.
+    otherVoluntaryDeductions
+      .filter((line) => line.thisPeriod > 0)
+      .forEach((line) => deductions.push({ label: line.label, value: line.thisPeriod }));
 
     yPosition -= 15;
     const appliedDeductionValues = capDeductionValuesToGross(

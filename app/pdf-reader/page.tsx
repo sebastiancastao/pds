@@ -15,6 +15,8 @@ import {
   getDeductionYtdValues,
 } from '@/lib/pdf-reader-extraction';
 import type { ExtractResponse, OcrHooks, PayrollData } from '@/lib/pdf-reader-extraction';
+import { voluntaryColumnHeaders } from '@/lib/voluntary-deductions';
+import type { VoluntaryDeductionLine } from '@/lib/voluntary-deductions';
 
 type PdfStatus = 'pending' | 'extracting' | 'done' | 'error';
 
@@ -134,6 +136,9 @@ function StructuredPayrollGrid({ payrollInfo }: { payrollInfo: PayrollData }) {
             { label: 'CA State DI', thisPeriod: payrollInfo.statutoryDeductions?.californiaStateDI?.thisPeriod, ytd: payrollInfo.statutoryDeductions?.californiaStateDI?.yearToDate },
             { label: 'Misc Non Taxable', thisPeriod: payrollInfo.voluntaryDeductions?.miscNonTaxableDeduction?.thisPeriod, ytd: payrollInfo.voluntaryDeductions?.miscNonTaxableDeduction?.yearToDate },
             { label: 'CalSavers Roth Ret', thisPeriod: payrollInfo.voluntaryDeductions?.calSaversRothRet?.thisPeriod, ytd: payrollInfo.voluntaryDeductions?.calSaversRothRet?.yearToDate },
+            ...(Array.isArray(payrollInfo.otherVoluntaryDeductions) ? (payrollInfo.otherVoluntaryDeductions as VoluntaryDeductionLine[]) : []).map(
+              (line) => ({ label: line.label, thisPeriod: line.thisPeriod, ytd: line.yearToDate ?? undefined })
+            ),
           ].map(({ label, thisPeriod, ytd }) => (
             <div key={label} className="grid grid-cols-3 gap-x-2 text-sm">
               <span className="text-slate-600">{label}</span>
@@ -376,6 +381,32 @@ export default function PDFReaderPage() {
         .trim();
     };
 
+    // Voluntary deductions without a column of their own (e.g. ADP "Creditor 1"): one
+    // "Voluntary: <label>" + "<label> YTD" pair per label found in any of these PDFs, added
+    // after the fixed columns so those keep their places. /paystub-generator reads them back.
+    const otherVoluntaryOf = (data?: PayrollData): VoluntaryDeductionLine[] =>
+      Array.isArray(data?.otherVoluntaryDeductions) ? data.otherVoluntaryDeductions : [];
+    const voluntaryLabels: string[] = [];
+    for (const item of completed) {
+      const pages = item.extracted?.payrollDataByPage || [];
+      const sources = pages.length > 0 ? pages.map((page) => page.payrollData) : [item.extracted?.payrollData];
+      sources.forEach((data) =>
+        otherVoluntaryOf(data).forEach((line) => {
+          if (!voluntaryLabels.some((label) => label.toLowerCase() === line.label.toLowerCase())) {
+            voluntaryLabels.push(line.label);
+          }
+        })
+      );
+    }
+    const pushVoluntaryColumns = (row: any[], data?: PayrollData) => {
+      const lines = otherVoluntaryOf(data);
+      voluntaryLabels.forEach((label) => {
+        const line = lines.find((entry) => entry.label.toLowerCase() === label.toLowerCase());
+        row.push(line ? line.thisPeriod : '');
+        row.push(line && line.yearToDate !== null ? line.yearToDate : '');
+      });
+    };
+
     // Build header row
     const headers = [
       'PDF File',
@@ -395,6 +426,10 @@ export default function PDFReaderPage() {
       'Gross Pay',
       'Net Pay',
       'Extraction Method',
+      ...voluntaryLabels.flatMap((label) => {
+        const columns = voluntaryColumnHeaders(label);
+        return [columns.thisPeriod, columns.ytd];
+      }),
     ];
 
     const rows: any[][] = [headers];
@@ -464,6 +499,7 @@ export default function PDFReaderPage() {
         row.push(data.employeeInfo?.grossPay || 0);
         row.push(data.employeeInfo?.netPay || 0);
         row.push('N/A');
+        pushVoluntaryColumns(row, data);
 
         rows.push(row);
       } else {
@@ -537,6 +573,7 @@ export default function PDFReaderPage() {
           // Add extraction method
           const method = pageData.extractionMethod || 'N/A';
           row.push(method.charAt(0).toUpperCase() + method.slice(1));
+          pushVoluntaryColumns(row, pageData.payrollData);
 
           rows.push(row);
         }
@@ -573,6 +610,7 @@ export default function PDFReaderPage() {
     colWidths.push({ wch: 12 }); // Gross Pay
     colWidths.push({ wch: 12 }); // Net Pay
     colWidths.push({ wch: 15 }); // Extraction Method
+    voluntaryLabels.forEach(() => { colWidths.push({ wch: 20 }, { wch: 22 }); });
 
     (ws as any)['!cols'] = colWidths;
 
