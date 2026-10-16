@@ -108,6 +108,8 @@ type ImportedEmployeeRow = {
   adpMealPremium: string;
   // ADP Sick pay this period ("Sick Pay" column of the /pdf-reader export).
   adpSickPay: string;
+  // ADP Commission this period ("Commission" column of the /pdf-reader export).
+  adpCommission: string;
   ssn: string;
   address: string;
   employeeId: string;
@@ -298,6 +300,7 @@ type PaystubFields = YtdOverrideSource & {
   voluntaryDeductions?: VoluntaryDeductionInput[];
   adpMealPremium?: string;
   adpSickPay?: string;
+  adpCommission?: string;
 };
 
 // An imported row as paystub fields. The CalSavers Roth column is the misc deduction
@@ -373,6 +376,7 @@ export default function PaystubGenerator() {
     // Other
     adpMealPremium: '',
     adpSickPay: '',
+    adpCommission: '',
     miscDeduction: '',
     miscReimbursement: '',
     voluntaryDeductions: [] as VoluntaryDeductionInput[],
@@ -1498,6 +1502,9 @@ export default function PaystubGenerator() {
       adpMealPremium: fields.adpMealPremium || '',
       sick: override ? parseFloat(override.sick) || 0 : 0,
       adpSickPay: fields.adpSickPay || '',
+      // ADP's commission this period from the imported file. The PDF prints it, with any
+      // gap from the events shown as an adjustment row on the commission report.
+      adpCommission: fields.adpCommission || '',
 
       // Events this employee worked in the period, plus linked commission partners
       events: filterEventsForUserIdWithHours(userId),
@@ -3129,6 +3136,8 @@ export default function PaystubGenerator() {
           ]),
           // ADP Sick pay this period. The paystub prints it on the Sick Pay row.
           adpSickPay: getExactAbsoluteValue(valuesRow, ['sick pay', 'sick']),
+          // ADP Commission this period (exact header: "Commission YTD" is the YTD column).
+          adpCommission: getExactAbsoluteValue(valuesRow, ['commission']),
 
           miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
           miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
@@ -3188,6 +3197,7 @@ export default function PaystubGenerator() {
           miscReimbursementYtd: first.miscReimbursementYtd,
           adpMealPremium: first.adpMealPremium,
           adpSickPay: first.adpSickPay,
+          adpCommission: first.adpCommission,
         }));
       }
 

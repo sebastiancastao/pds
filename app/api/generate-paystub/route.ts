@@ -121,6 +121,8 @@ export async function POST(req: NextRequest) {
       sick = 0,
       // ADP Sick pay this period, from the /pdf-reader export.
       adpSickPay = null,
+      // ADP Commission this period, from the /pdf-reader export.
+      adpCommission = null,
 
       // Events data
       events: rawEvents = []
@@ -385,7 +387,9 @@ export async function POST(req: NextRequest) {
         ) {
           return [];
         }
-        return [{ id: workerId, hours: workerHours }];
+        // The per-vendor split toggle on the event-dashboard Payment tab (even / prorated /
+        // auto), as /paystub-generator, /hr-dashboard and the tips split below already honor.
+        return [{ id: workerId, hours: workerHours, forceEvenSplit: w?.payment_data?.commission_even_split ?? undefined }];
       });
       const tipsEligibleMembers = workers.flatMap((w: any) => {
         const workerId = (w?.user_id || "").toString();
@@ -562,6 +566,7 @@ export async function POST(req: NextRequest) {
               division: worker?.division,
               hours: Number(getActualHoursForWorker(event, worker).toFixed(2)),
               commissionDeleted: worker?.payment_data?.commission_deleted === true,
+              forceEvenSplit: worker?.payment_data?.commission_even_split ?? undefined,
               commissionOverride:
                 worker?.payment_data?.commission_override != null &&
                 Number.isFinite(Number(worker.payment_data.commission_override))
@@ -1972,6 +1977,53 @@ export async function POST(req: NextRequest) {
             uploadId: uploadedPaystub.uploadId,
             lines: uploadedPaystub.lines.length,
             totals: u,
+          });
+        }
+      }
+
+      // Commission this period. ADP's Commission from the imported /pdf-reader file is what
+      // was paid (its taxes and net pay are printed as is), so when the events (or uploaded
+      // payroll) add up to something else, the difference goes on the Commission Report as
+      // its own "Adjustment / Per ADP" row: the report total, the Commission row, Gross Pay
+      // and Net Pay then agree with ADP. ADP 0 means no figure, never a $0 commission. A stub
+      // with no commission rows at all (no events loaded or matched) is left as it is, so a
+      // failed event load still shows instead of turning ADP's whole commission into one row.
+      const adpCommissionAmount = round2(Math.abs(Number(adpCommission) || 0));
+      const commissionBeforeAdp = roundPayrollAmount(
+        caCommissionRows.reduce((sum, row) => sum + row.commissionPerEmployee, 0)
+      );
+      const adpCommissionGap =
+        adpCommissionAmount > 0 && caCommissionRows.length > 0
+          ? round2(adpCommissionAmount - commissionBeforeAdp)
+          : 0;
+      if (Math.abs(adpCommissionGap) >= 0.01) {
+        caCommissionRows.push({
+          dateStr: "",
+          show: "Adjustment",
+          stadium: "Per ADP",
+          stateCode: paystubState,
+          usesPeriodRate: false,
+          commissionOverride: 0,
+          adjGrossSales: 0,
+          commissionPoolDollars: 0,
+          commissionPoolPercent: 0,
+          numEmployees: 0,
+          commissionPerEmployee: adpCommissionGap,
+          hoursWorked: 0,
+          rateInEffect: 0,
+          variableRate: 0,
+          variableIncentive: 0,
+          tips: 0,
+          restBreak: 0,
+          bonus: 0,
+          finalPay: adpCommissionGap,
+          poolUnknown: true,
+        });
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] commission set to ADP", {
+            adpCommission: adpCommissionAmount,
+            commissionBeforeAdp,
+            adjustment: adpCommissionGap,
           });
         }
       }
