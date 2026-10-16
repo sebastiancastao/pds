@@ -101,6 +101,24 @@ interface Event {
   linked_commission_event_id?: string | null;
 }
 
+// ADP's earnings lines this period plus Gross Pay, as read from the /pdf-reader export
+// ('' when the column is missing). /api/generate-paystub prints them when they add up.
+type AdpEarningsInput = {
+  regular: string;
+  overtime: string;
+  doubleTime: string;
+  commission: string;
+  variableIncentive: string;
+  tips: string;
+  restBreak: string;
+  travel: string;
+  bonus: string;
+  sick: string;
+  mealPremium: string;
+  holiday: string;
+  grossPay: string;
+};
+
 type ImportedEmployeeRow = {
   rowIndex: number;
   employeeName: string;
@@ -110,6 +128,8 @@ type ImportedEmployeeRow = {
   adpSickPay: string;
   // ADP Commission this period ("Commission" column of the /pdf-reader export).
   adpCommission: string;
+  // Every ADP earnings line this period plus Gross Pay.
+  adpEarnings: AdpEarningsInput | null;
   ssn: string;
   address: string;
   employeeId: string;
@@ -301,6 +321,7 @@ type PaystubFields = YtdOverrideSource & {
   adpMealPremium?: string;
   adpSickPay?: string;
   adpCommission?: string;
+  adpEarnings?: AdpEarningsInput | null;
 };
 
 // An imported row as paystub fields. The CalSavers Roth column is the misc deduction
@@ -377,6 +398,7 @@ export default function PaystubGenerator() {
     adpMealPremium: '',
     adpSickPay: '',
     adpCommission: '',
+    adpEarnings: null as AdpEarningsInput | null,
     miscDeduction: '',
     miscReimbursement: '',
     voluntaryDeductions: [] as VoluntaryDeductionInput[],
@@ -1505,6 +1527,8 @@ export default function PaystubGenerator() {
       // ADP's commission this period from the imported file. The PDF prints it, with any
       // gap from the events shown as an adjustment row on the commission report.
       adpCommission: fields.adpCommission || '',
+      // Every ADP earnings line and Gross Pay: when they add up, the PDF prints ADP's lines.
+      adpEarnings: fields.adpEarnings || null,
 
       // Events this employee worked in the period, plus linked commission partners
       events: filterEventsForUserIdWithHours(userId),
@@ -2969,6 +2993,38 @@ export default function PaystubGenerator() {
         return '';
       };
 
+      // Signed value of an exact header ('' when the column is missing or blank).
+      const getExactNumberValue = (valuesRow: any[], possibleNames: string[]) => {
+        for (const name of possibleNames) {
+          const index = normalizedHeaders.indexOf(normalizeHeaderText(name));
+          if (index === -1) continue;
+          const num = parseCurrencyNumber(valuesRow[index]);
+          return Number.isFinite(num) ? String(num) : '';
+        }
+        return '';
+      };
+      // ADP's earnings lines this period plus Gross Pay (exact headers: the YTD columns are
+      // "<line> YTD"). Only the /pdf-reader export has a this-period Gross Pay column.
+      const adpEarningsFromRow = (valuesRow: any[]): AdpEarningsInput | null => {
+        const grossPay = getExactNumberValue(valuesRow, ['gross pay']);
+        if (!grossPay) return null;
+        return {
+          regular: getExactNumberValue(valuesRow, ['regular']),
+          overtime: getExactNumberValue(valuesRow, ['overtime']),
+          doubleTime: getExactNumberValue(valuesRow, ['double time']),
+          commission: getExactNumberValue(valuesRow, ['commission']),
+          variableIncentive: getExactNumberValue(valuesRow, ['variable incentive']),
+          tips: getExactNumberValue(valuesRow, ['credit card tips', 'credit card tips owed']),
+          restBreak: getExactNumberValue(valuesRow, ['rest break pay', 'rest pay']),
+          travel: getExactNumberValue(valuesRow, ['travel pay', 'travel']),
+          bonus: getExactNumberValue(valuesRow, ['bonus']),
+          sick: getExactNumberValue(valuesRow, ['sick pay', 'sick']),
+          mealPremium: getExactNumberValue(valuesRow, ['meal premium', 'meal break premium pay']),
+          holiday: getExactNumberValue(valuesRow, ['holiday pay', 'holiday']),
+          grossPay,
+        };
+      };
+
       // Helper to format dates
       const formatDate = (value: any) => {
         if (!value) return '';
@@ -3138,6 +3194,7 @@ export default function PaystubGenerator() {
           adpSickPay: getExactAbsoluteValue(valuesRow, ['sick pay', 'sick']),
           // ADP Commission this period (exact header: "Commission YTD" is the YTD column).
           adpCommission: getExactAbsoluteValue(valuesRow, ['commission']),
+          adpEarnings: adpEarningsFromRow(valuesRow),
 
           miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
           miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
@@ -3198,6 +3255,7 @@ export default function PaystubGenerator() {
           adpMealPremium: first.adpMealPremium,
           adpSickPay: first.adpSickPay,
           adpCommission: first.adpCommission,
+          adpEarnings: first.adpEarnings,
         }));
       }
 

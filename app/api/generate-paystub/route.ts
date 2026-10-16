@@ -61,6 +61,58 @@ interface SickLeaveSummary {
   }>;
 }
 
+// ADP's earnings this period from the imported /pdf-reader file, one figure per earnings
+// line plus Gross Pay. Used only when the lines add up to Gross Pay (within a cent): then the
+// file holds every line ADP paid and the statement can print them as they are.
+type AdpEarningsLines = {
+  regular: number;
+  overtime: number;
+  doubleTime: number;
+  commission: number;
+  variableIncentive: number;
+  tips: number;
+  restBreak: number;
+  travel: number;
+  bonus: number;
+  sick: number;
+  mealPremium: number;
+  holiday: number;
+  grossPay: number;
+};
+const ADP_EARNINGS_LINE_KEYS = [
+  "regular",
+  "overtime",
+  "doubleTime",
+  "commission",
+  "variableIncentive",
+  "tips",
+  "restBreak",
+  "travel",
+  "bonus",
+  "sick",
+  "mealPremium",
+  "holiday",
+] as const;
+
+// HR pays each worker a flat commission for a count-in / set-up day, which has no sales of its
+// own (HR payroll sheets: SMX Count In/Set Up 9/18/2026, the Hot Wheels and Aespa count-ins
+// 10/2/2026). The system has no such rule, so the day's commission report row pays $0.
+const COUNT_IN_DAY_COMMISSION = 150;
+
+function parseAdpEarningsLines(raw: unknown): AdpEarningsLines | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const money = (value: unknown): number => {
+    const parsed = Number(String(value ?? "").replace(/[$,\s]/g, ""));
+    return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
+  };
+  const lines = { grossPay: money(source.grossPay) } as AdpEarningsLines;
+  for (const key of ADP_EARNINGS_LINE_KEYS) lines[key] = money(source[key]);
+  if (lines.grossPay <= 0) return null;
+  const lineTotal = Math.round(ADP_EARNINGS_LINE_KEYS.reduce((sum, key) => sum + lines[key], 0) * 100) / 100;
+  return Math.abs(lineTotal - lines.grossPay) <= 0.01 ? lines : null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -123,6 +175,9 @@ export async function POST(req: NextRequest) {
       adpSickPay = null,
       // ADP Commission this period, from the /pdf-reader export.
       adpCommission = null,
+      // Every ADP earnings line this period plus Gross Pay, from the /pdf-reader export
+      // ({ regular, overtime, ..., grossPay }). See parseAdpEarningsLines.
+      adpEarnings = null,
 
       // Events data
       events: rawEvents = []
@@ -290,6 +345,10 @@ export async function POST(req: NextRequest) {
     // timesheets, but it is for the timesheet only (see lib/rest-breaks).
     const isHourlyRestBreakEvent = (event: any): boolean =>
       isRestBreakRecordOnlyEvent(event) || isSanDiegoRegion(event);
+    // Non-event ("special") timesheets are pure hourly for everyone: no commission pool, no
+    // wage floor and no rest break, as /api/vendor-payments and the HR dashboard pay them.
+    const isNonEventTimesheet = (event: any): boolean =>
+      (event?.event_type || "").toString().trim().toLowerCase() === "special";
 
     // `recordedBreaks` is the number of rest breaks a manager entered on the event Timesheet tab
     // (null/undefined = none entered, so the flat per-shift amount applies). `eventDate` picks
@@ -1187,7 +1246,9 @@ export async function POST(req: NextRequest) {
     };
 
     const addCommissionReportPage = (
-      rows: CommissionReportRow[]
+      rows: CommissionReportRow[],
+      // The statement's Variable Incentive when it is ADP's, so both pages show one figure.
+      options?: { variableIncentiveTotal?: number }
     ) => {
       if (rows.length === 0) return;
       const { rawPayPeriodRateInEffect, payPeriodRateInEffect } = (() => {
@@ -1355,11 +1416,15 @@ export async function POST(req: NextRequest) {
         const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
         return sum + Math.max(0, (minRate - rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
       }, 0);
+      const reportVariableIncentive =
+        options?.variableIncentiveTotal !== undefined
+          ? options.variableIncentiveTotal
+          : grandRawVariableIncentive;
       const totalVariableRate =
         grandHoursWorked > 0
-          ? roundPayrollAmount(grandRawVariableIncentive / grandHoursWorked)
+          ? roundPayrollAmount(reportVariableIncentive / grandHoursWorked)
           : 0;
-      const totalVariableIncentive = roundPayrollAmount(grandRawVariableIncentive);
+      const totalVariableIncentive = roundPayrollAmount(reportVariableIncentive);
       const totalFinalPay = roundPayrollAmount(
         roundPayrollAmount(grandCommission) +
         totalVariableIncentive +
@@ -1457,15 +1522,16 @@ export async function POST(req: NextRequest) {
           };
         });
 
-    // California and Arizona paystubs use the ADP-style statement below (ADP prints both
-    // states the same way). It is also the layout /pdf-reader reads: the simpler statement
-    // further down has no YTD and its text cannot be read back into the payroll Excel.
-    // Arizona differs only in its state tax lines (see adpStateName).
-    const useAdpStatement = paystubState === "CA" || paystubState === "AZ";
+    // California, Arizona and Wisconsin paystubs use the ADP-style statement below (ADP
+    // prints these states the same way). It is also the layout /pdf-reader reads: the simpler
+    // statement further down has no YTD and its text cannot be read back into the payroll
+    // Excel. Arizona and Wisconsin differ only in their state tax lines (see adpStateName).
+    const useAdpStatement = paystubState === "CA" || paystubState === "AZ" || paystubState === "WI";
     if (useAdpStatement) {
       // State tax lines as ADP prints them: "California State Income" + "California State DI",
-      // "Arizona State Income" only (Arizona has no state disability insurance).
-      const adpStateName = isCalifornia ? "California" : "Arizona";
+      // "Arizona State Income" or "Wisconsin State Income" only (neither state has state
+      // disability insurance).
+      const adpStateName = isCalifornia ? "California" : paystubState === "WI" ? "Wisconsin" : "Arizona";
       const parseAmount = (value: any, absolute = true) => {
         const raw = (value ?? "").toString().replace(/,/g, "").trim();
         const parsed = Number.parseFloat(raw);
@@ -1653,7 +1719,10 @@ export async function POST(req: NextRequest) {
       let totalVariableIncentive = 0;
       let totalMileageReimbursement = 0;
       let totalFinalCommission = 0;
+      // True when any shift is paid hourly (San Diego or a non-event timesheet).
       let hasSanDiegoEventHours = false;
+      // Hourly shifts from non-event timesheets, paid at their own base rate.
+      let hasNonEventHourlyHours = false;
       let hourlySummaryRegularHours = 0;
       let hourlySummaryOvertimeHours = 0;
       let hourlySummaryDoubletimeHours = 0;
@@ -1707,13 +1776,17 @@ export async function POST(req: NextRequest) {
           hoursComparison
         );
         const isEventSD = sdEventIds.has(eventId);
+        // A non-event timesheet outside San Diego (e.g. "PDS Operations") is hourly too: it is
+        // Regular pay, not a $0 commission row whose hours would lower the period's rate.
+        const paysNonEventHourly = !isEventSD && isNonEventTimesheet(event);
+        const paysHourly = isEventSD || paysNonEventHourly;
         const priorWeeklyHours = (azNyMode || isEventSD) ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = azNyMode && (priorWeeklyHours + actualHours) > 40;
         const workerUserId = (worker?.user_id || "").toString();
         const usesPeriodRate = isPeriodRateState(eventState);
         const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[workerUserId];
         const distributedCommissionShare =
-          !isEventSD && !isTrailersDivision(worker?.division) && workerUserId
+          !paysHourly && !isTrailersDivision(worker?.division) && workerUserId
             ? Number(commissionSharesByUser[workerUserId] || 0)
             : 0;
         const distributedTipsShare =
@@ -1752,6 +1825,14 @@ export async function POST(req: NextRequest) {
           commissionAmt = 0;
           totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRate : 0;
           loadedRateBase = payrollHours > 0 ? sanDiegoBreakdown.blendedRate : baseRate;
+        } else if (paysNonEventHourly) {
+          // Straight hourly at the event's base rate, like /api/vendor-payments.
+          sdRegHours = payrollHours;
+          sdRegPay = roundPayrollAmount(payrollHours * baseRate);
+          extAmtOnRegRate = sdRegPay;
+          commissionAmt = 0;
+          totalFinalCommissionAmt = payrollHours > 0 ? sdRegPay : 0;
+          loadedRateBase = payrollHours > 0 ? baseRate : 0;
         } else if (azNyMode) {
           const isEligibleThisWorker =
             !!worker &&
@@ -1790,20 +1871,20 @@ export async function POST(req: NextRequest) {
 
         const tips = roundPayrollAmount(distributedTipsShare);
         const reportCommissionShare = roundPayrollAmount(
-          isEventSD
+          paysHourly
             ? 0
             : usesPeriodRate
             ? Number(periodWorker?.commissionPay || 0)
             : distributedCommissionShare
         );
-        const reportVariableIncentive = isEventSD
+        const reportVariableIncentive = paysHourly
           ? 0
           : usesPeriodRate
           ? roundPayrollAmount(Number(periodWorker?.variableIncentive || 0))
           : roundPayrollAmount(Math.max(0, totalFinalCommissionAmt - reportCommissionShare));
         // Commission report "Final Pay" should include commission pay plus tips/rest,
         // matching the paystub generator UI/export semantics.
-        const reportFinalCommissionAmt = isEventSD
+        const reportFinalCommissionAmt = paysHourly
           ? roundPayrollAmount(totalFinalCommissionAmt)
           : usesPeriodRate
             ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
@@ -1833,12 +1914,12 @@ export async function POST(req: NextRequest) {
         const adjustmentMealPremium = parsedAdj.mealPremiumAmount;
         const adjustmentReimbursement = parsedAdj.reimbursementAmount;
 
-        const regPay = isEventSD ? sdRegPay : Number(paymentData?.regular_pay || 0);
-        const otPay = isEventSD ? sdOtPay : Number(paymentData?.overtime_pay || 0);
-        const dtPay = isEventSD ? sdDtPay : Number(paymentData?.doubletime_pay || 0);
+        const regPay = paysHourly ? sdRegPay : Number(paymentData?.regular_pay || 0);
+        const otPay = paysHourly ? sdOtPay : Number(paymentData?.overtime_pay || 0);
+        const dtPay = paysHourly ? sdDtPay : Number(paymentData?.doubletime_pay || 0);
 
-        const displayCommissionPay = roundPayrollAmount(isEventSD ? 0 : reportCommissionShare);
-        const displayVariableIncentive = roundPayrollAmount(isEventSD ? 0 : reportVariableIncentive);
+        const displayCommissionPay = roundPayrollAmount(paysHourly ? 0 : reportCommissionShare);
+        const displayVariableIncentive = roundPayrollAmount(paysHourly ? 0 : reportVariableIncentive);
         const commission = displayCommissionPay;
         const recordedRestBreaks = getRecordedRestBreaks(event, worker);
         const restBreak = roundPayrollAmount(
@@ -1846,14 +1927,14 @@ export async function POST(req: NextRequest) {
             ? getRestBreakAmount(
                 actualHours,
                 paystubState,
-                isEventSD || isHourlyRestBreakEvent(event),
+                paysHourly || isHourlyRestBreakEvent(event),
                 recordedRestBreaks,
                 event?.event_date
               )
             : 0
         );
         const reportFinalPay = roundPayrollAmount(
-          (isEventSD ? reportFinalCommissionAmt : displayCommissionPay + displayVariableIncentive) + tips + restBreak
+          (paysHourly ? reportFinalCommissionAmt : displayCommissionPay + displayVariableIncentive) + tips + restBreak
         );
         const computedTotalPay = reportFinalPay;
         const computedTotalGrossPay = computedTotalPay + other;
@@ -1870,7 +1951,7 @@ export async function POST(req: NextRequest) {
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
 
-        if (!isEventSD && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
+        if (!paysHourly && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
           // Match HR dashboard payroll logic:
           // Commission Pay = distributed share, Variable Incentive = excess above that share.
           caCommissionRows.push({
@@ -1897,24 +1978,25 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        hasSanDiegoEventHours = hasSanDiegoEventHours || (isEventSD && payrollHours > 0);
-        totalRegHours += isEventSD ? sdRegHours : regHours;
-        totalOtHours += isEventSD ? sdOtHours : otHours;
-        totalDtHours += isEventSD ? sdDtHours : dtHours;
+        hasSanDiegoEventHours = hasSanDiegoEventHours || (paysHourly && payrollHours > 0);
+        hasNonEventHourlyHours = hasNonEventHourlyHours || (paysNonEventHourly && payrollHours > 0);
+        totalRegHours += paysHourly ? sdRegHours : regHours;
+        totalOtHours += paysHourly ? sdOtHours : otHours;
+        totalDtHours += paysHourly ? sdDtHours : dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
         totalCommission += displayCommissionPay;
         totalVariableIncentive += displayVariableIncentive;
-        totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
+        totalFinalCommission += paysHourly ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalAdjustmentMealPremium += adjustmentMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;
         totalGross += computedTotalGrossPay;
-        totalRegularPayAmount += isEventSD ? sdRegPay : regPay;
-        totalOvertimePayAmount += isEventSD ? sdOtPay : otPay;
-        totalDoubletimePayAmount += isEventSD ? sdDtPay : dtPay;
-        if (isEventSD) {
+        totalRegularPayAmount += paysHourly ? sdRegPay : regPay;
+        totalOvertimePayAmount += paysHourly ? sdOtPay : otPay;
+        totalDoubletimePayAmount += paysHourly ? sdDtPay : dtPay;
+        if (paysHourly) {
           hourlySummaryRegularHours += sdRegHours;
           hourlySummaryOvertimeHours += sdOtHours;
           hourlySummaryDoubletimeHours += sdDtHours;
@@ -1965,6 +2047,7 @@ export async function POST(req: NextRequest) {
         totalGross = u.taxableGross;
         totalFinalCommission = u.commission + u.variableIncentive;
         hasSanDiegoEventHours = false;
+        hasNonEventHourlyHours = false;
         hourlySummaryRegularHours = u.regularHours;
         hourlySummaryOvertimeHours = u.overtimeHours;
         hourlySummaryDoubletimeHours = u.doubletimeHours;
@@ -1988,15 +2071,55 @@ export async function POST(req: NextRequest) {
       // and Net Pay then agree with ADP. ADP 0 means no figure, never a $0 commission. A stub
       // with no commission rows at all (no events loaded or matched) is left as it is, so a
       // failed event load still shows instead of turning ADP's whole commission into one row.
+      //
+      // When the file has every ADP earnings line (they add up to its Gross Pay), every line
+      // on the statement is ADP's: hours still come from the system, and the same adjustment
+      // row also carries a bonus the system does not have (e.g. one HR added to the sheet).
+      const adpLines = parseAdpEarningsLines(adpEarnings);
       const adpCommissionAmount = round2(Math.abs(Number(adpCommission) || 0));
+      const adpCommissionTarget = adpLines
+        ? adpLines.commission
+        : adpCommissionAmount > 0
+          ? adpCommissionAmount
+          : null;
       const commissionBeforeAdp = roundPayrollAmount(
         caCommissionRows.reduce((sum, row) => sum + row.commissionPerEmployee, 0)
       );
-      const adpCommissionGap =
-        adpCommissionAmount > 0 && caCommissionRows.length > 0
-          ? round2(adpCommissionAmount - commissionBeforeAdp)
+      const bonusBeforeAdp = roundPayrollAmount(caCommissionRows.reduce((sum, row) => sum + row.bonus, 0));
+      const hasCommissionReportRows = caCommissionRows.length > 0;
+      let adpCommissionGap =
+        adpCommissionTarget !== null && hasCommissionReportRows
+          ? round2(adpCommissionTarget - commissionBeforeAdp)
           : 0;
-      if (Math.abs(adpCommissionGap) >= 0.01) {
+      // When ADP's extra commission is exactly the flat count-in pay for each $0 shift on the
+      // report (no pool, no commission, hours worked), it is that pay: it goes on those days'
+      // rows, where HR expects it, instead of on the adjustment row.
+      const countInDayRows = caCommissionRows.filter(
+        (row) =>
+          !row.poolUnknown &&
+          row.commissionPoolDollars === 0 &&
+          row.commissionPerEmployee === 0 &&
+          row.hoursWorked > 0
+      );
+      if (
+        adpCommissionGap > 0 &&
+        countInDayRows.length > 0 &&
+        Math.abs(adpCommissionGap - countInDayRows.length * COUNT_IN_DAY_COMMISSION) < 0.005
+      ) {
+        for (const row of countInDayRows) {
+          row.commissionPerEmployee = COUNT_IN_DAY_COMMISSION;
+          row.finalPay = roundPayrollAmount(row.finalPay + COUNT_IN_DAY_COMMISSION);
+        }
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] ADP count-in commission on its rows", {
+            rows: countInDayRows.length,
+            amount: adpCommissionGap,
+          });
+        }
+        adpCommissionGap = 0;
+      }
+      const adpBonusGap = adpLines && hasCommissionReportRows ? round2(adpLines.bonus - bonusBeforeAdp) : 0;
+      if (Math.abs(adpCommissionGap) >= 0.01 || Math.abs(adpBonusGap) >= 0.01) {
         caCommissionRows.push({
           dateStr: "",
           show: "Adjustment",
@@ -2015,16 +2138,42 @@ export async function POST(req: NextRequest) {
           variableIncentive: 0,
           tips: 0,
           restBreak: 0,
-          bonus: 0,
-          finalPay: adpCommissionGap,
+          bonus: adpBonusGap,
+          finalPay: round2(adpCommissionGap + adpBonusGap),
           poolUnknown: true,
         });
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] commission set to ADP", {
-            adpCommission: adpCommissionAmount,
+            adpCommission: adpCommissionTarget,
             commissionBeforeAdp,
             adjustment: adpCommissionGap,
+            bonusAdjustment: adpBonusGap,
           });
+        }
+      }
+
+      // The system's hourly pay, kept for the rates printed on the hourly rows.
+      const systemHourlyRegularPay = round2(hourlySummaryRegularPay);
+      const systemHourlyOvertimePay = round2(hourlySummaryOvertimePay);
+      const systemHourlyDoubletimePay = round2(hourlySummaryDoubletimePay);
+      if (adpLines) {
+        // ADP's hourly lines replace the system's. Hours the system has stay on a line ADP
+        // paid; a line ADP paid nothing on (e.g. a San Diego shift ADP paid as commission)
+        // shows no hours.
+        totalRegularPayAmount = adpLines.regular;
+        totalOvertimePayAmount = adpLines.overtime;
+        totalDoubletimePayAmount = adpLines.doubleTime;
+        hourlySummaryRegularPay = adpLines.regular;
+        hourlySummaryOvertimePay = adpLines.overtime;
+        hourlySummaryDoubletimePay = adpLines.doubleTime;
+        if (adpLines.regular === 0) hourlySummaryRegularHours = 0;
+        if (adpLines.overtime === 0) hourlySummaryOvertimeHours = 0;
+        if (adpLines.doubleTime === 0) hourlySummaryDoubletimeHours = 0;
+        totalTips = adpLines.tips;
+        totalRestBreak = adpLines.restBreak;
+        totalOther = adpLines.bonus;
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] earnings from the ADP file", adpLines);
         }
       }
 
@@ -2069,13 +2218,19 @@ export async function POST(req: NextRequest) {
 
       const rawCommissionTotalForEarnings =
         normalizedCaCommissionRows.rows.reduce((sum, row) => sum + row.commissionPerEmployee, 0);
-      const commissionTotalForEarnings = roundPayrollAmount(rawCommissionTotalForEarnings);
+      // ADP's commission when the file has every line. With commission report rows the
+      // adjustment row above already makes them add up to it.
+      const commissionTotalForEarnings = adpLines
+        ? adpLines.commission
+        : roundPayrollAmount(rawCommissionTotalForEarnings);
 
       // Uploaded payroll: Variable Incentive as uploaded, not recomputed from the period rate.
       // Arizona is paid per shift, not per pay period: each shift row carries its own
       // incentive (the $150 shift minimum / weekly OT top-up), the same amount the
       // Commission Report totals. California paystubs keep period-rate incentive only.
-      const rawVariableIncentiveTotalForEarnings = uploadedPaystub
+      const rawVariableIncentiveTotalForEarnings = adpLines
+        ? adpLines.variableIncentive
+        : uploadedPaystub
         ? uploadedPaystub.totals.variableIncentive
         : normalizedCaCommissionRows.rows.reduce((sum, row) => {
             if (!row.usesPeriodRate && !isCalifornia) return sum + row.variableIncentive;
@@ -2141,7 +2296,9 @@ export async function POST(req: NextRequest) {
       const mealPremiumThisPeriod =
         typedMealPremium > 0
           ? round2(typedMealPremium + totalAdjustmentMealPremium)
-          : adpMealPremiumAmount > 0
+          : adpLines
+            ? adpLines.mealPremium
+            : adpMealPremiumAmount > 0
             ? adpMealPremiumAmount
             : round2(totalAdjustmentMealPremium);
       // Sick pay this period. One typed on this page wins. Otherwise ADP's Sick pay from the
@@ -2152,21 +2309,36 @@ export async function POST(req: NextRequest) {
       const sickThisPeriod =
         manualSickThisPeriod > 0
           ? manualSickThisPeriod
-          : adpSickPayAmount > 0
+          : adpLines
+            ? adpLines.sick
+            : adpSickPayAmount > 0
             ? adpSickPayAmount
             : uploadedPaystub
               ? round2(uploadedPaystub.totals.sick)
               : 0;
       // Travel pay only comes from uploaded payroll (the system has none on the CA paystub).
-      const travelPayThisPeriod = uploadedPaystub ? round2(uploadedPaystub.totals.travel) : 0;
+      const travelPayThisPeriod = adpLines
+        ? adpLines.travel
+        : uploadedPaystub
+          ? round2(uploadedPaystub.totals.travel)
+          : 0;
       // Holiday pay is an ADP earnings line. Neither the system nor uploaded payroll pays
-      // it, so it only shows up in YTD (the /pdf-reader export or the ADP carryover).
-      const holidayPayThisPeriod = 0;
+      // it, so this period it only comes from the ADP file's complete lines; otherwise it
+      // only shows up in YTD (the /pdf-reader export or the ADP carryover).
+      const holidayPayThisPeriod = adpLines ? adpLines.holiday : 0;
       const adjustmentReimbursementRounded = round2(totalAdjustmentReimbursement);
       const grossPayThisPeriod = round2(
         // Regular pay is wages on San Diego hourly events and on uploaded payroll lines
         // (hourly and salaried); for system commission work the commission covers it.
-        (hasSanDiegoEventHours || uploadedPaystub ? totalRegularPayAmount : 0) +
+        // With a non-event timesheet only the hourly pay on the Regular row counts, never a
+        // commission event's saved regular_pay. ADP's complete lines are used as they are.
+        (adpLines
+          ? totalRegularPayAmount
+          : hasNonEventHourlyHours
+            ? hourlySummaryRegularPay
+            : hasSanDiegoEventHours || uploadedPaystub
+              ? totalRegularPayAmount
+              : 0) +
         travelPayThisPeriod +
         totalOvertimePayAmount +
         totalTips +
@@ -2466,7 +2638,8 @@ export async function POST(req: NextRequest) {
       const ytdFederalIncome = round2(runningYtd(priorYtd(federalIncomeYtd, ytdSnapshot?.federal_income_ytd, 'federal_income_ytd'), federalIncomeAmt));
       const ytdSocialSecurity = round2(runningYtd(priorYtd(socialSecurityYtd, ytdSnapshot?.social_security_ytd, 'social_security_ytd'), socialSecurityAmt));
       const ytdMedicare = round2(runningYtd(priorYtd(medicareYtd, ytdSnapshot?.medicare_ytd, 'medicare_ytd'), medicareAmt));
-      // The saved paystub snapshot only holds California state tax, so Arizona never reads it.
+      // The saved paystub snapshot only holds California state tax, so Arizona and Wisconsin
+      // never read it.
       const ytdStateIncome = round2(runningYtd(priorYtd(stateIncomeYtd, isCalifornia ? ytdSnapshot?.ca_state_income_ytd : null, 'state_income_ytd'), stateIncomeAmt));
       const ytdStateDI = isCalifornia
         ? round2(runningYtd(priorYtd(stateDIYtd, ytdSnapshot?.ca_state_di_ytd, 'state_di_ytd'), stateDIAmt))
@@ -2548,8 +2721,10 @@ export async function POST(req: NextRequest) {
         hourlySummaryRegularHours > 0 ||
         hourlySummaryOvertimeHours > 0 ||
         hourlySummaryDoubletimeHours > 0 ||
-        // Uploaded salaried lines (ADP Payroll Summary) have pay but no hours.
-        (!!uploadedPaystub && (hourlySummaryRegularPay !== 0 || hourlySummaryOvertimePay !== 0 || hourlySummaryDoubletimePay !== 0));
+        // Uploaded salaried lines (ADP Payroll Summary) have pay but no hours, and so can
+        // ADP's own hourly lines.
+        ((!!uploadedPaystub || !!adpLines) &&
+          (hourlySummaryRegularPay !== 0 || hourlySummaryOvertimePay !== 0 || hourlySummaryDoubletimePay !== 0));
       const hourlySummaryBaseRate = SAN_DIEGO_BASE_RATE;
       // Uploaded payroll: average rates from the uploaded pay and hours.
       const uploadedRate = (pay: number, hours: number) => (hours > 0 ? round2(pay / hours) : 0);
@@ -2559,22 +2734,30 @@ export async function POST(req: NextRequest) {
       const regularPayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryRegularPay) : totalRegularPayRounded;
       const overtimePayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryOvertimePay) : totalOvertimePayRounded;
       const doubletimePayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryDoubletimePay) : totalDoubletimePayRounded;
+      // The system's rate, or the pay over the hours when ADP paid a different amount (e.g.
+      // a non-event timesheet ADP paid at another rate). Non-event shifts are paid at their
+      // event's base rate, so a period with one shows the average.
+      const hourlyRowRate = (pay: number, hours: number, systemPay: number, systemRate: number) =>
+        hours <= 0 ? 0 : Math.abs(round2(pay) - systemPay) < 0.005 ? systemRate : round2(pay / hours);
+      const systemRegularRate = hasNonEventHourlyHours
+        ? uploadedRate(systemHourlyRegularPay, hourlySummaryRegularHours)
+        : round2(hourlySummaryBaseRate);
       const regularRateForEarnings = showHourlyEarningsRows
         ? uploadedPaystub
           ? uploadedRate(hourlySummaryRegularPay, hourlySummaryRegularHours)
-          : round2(hourlySummaryBaseRate)
+          : hourlyRowRate(hourlySummaryRegularPay, hourlySummaryRegularHours, systemHourlyRegularPay, systemRegularRate)
         : 0;
       const overtimeRateAvg = showHourlyEarningsRows
         ? uploadedPaystub
           ? uploadedRate(hourlySummaryOvertimePay, hourlySummaryOvertimeHours)
-          : round2(hourlySummaryBaseRate * 1.5)
+          : hourlyRowRate(hourlySummaryOvertimePay, hourlySummaryOvertimeHours, systemHourlyOvertimePay, round2(hourlySummaryBaseRate * 1.5))
         : totalOtHours > 0
           ? round2(totalOvertimePayRounded / totalOtHours)
           : 0;
       const doubletimeRateAvg = showHourlyEarningsRows
         ? uploadedPaystub
           ? uploadedRate(hourlySummaryDoubletimePay, hourlySummaryDoubletimeHours)
-          : round2(hourlySummaryBaseRate * 2)
+          : hourlyRowRate(hourlySummaryDoubletimePay, hourlySummaryDoubletimeHours, systemHourlyDoubletimePay, round2(hourlySummaryBaseRate * 2))
         : totalDtHours > 0
           ? round2(totalDoubletimePayRounded / totalDtHours)
           : 0;
@@ -2804,7 +2987,10 @@ export async function POST(req: NextRequest) {
       if (addressLine2) drawTopText(addressLine2, 139.2, 703.5, { size: 10 });
       if (addressLine3) drawTopText(addressLine3, 139.2, 714.0, { size: 10 });
 
-      addCommissionReportPage(caCommissionRows);
+      addCommissionReportPage(
+        caCommissionRows,
+        adpLines ? { variableIncentiveTotal: adpLines.variableIncentive } : undefined
+      );
       const pdfBytes = await pdfDoc.save();
 
       return new NextResponse(Buffer.from(pdfBytes), {
