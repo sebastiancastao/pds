@@ -116,7 +116,11 @@ export async function POST(req: NextRequest) {
       // [{ label, thisPeriod, ytd }] from the /pdf-reader export (lib/voluntary-deductions).
       voluntaryDeductions: rawVoluntaryDeductions = [],
       mealPremium = 0,
+      // ADP Meal Break Premium Pay this period, from the /pdf-reader export.
+      adpMealPremium = null,
       sick = 0,
+      // ADP Sick pay this period, from the /pdf-reader export.
+      adpSickPay = null,
 
       // Events data
       events: rawEvents = []
@@ -2077,11 +2081,30 @@ export async function POST(req: NextRequest) {
       const totalRestBreakCount = Math.floor(totalRestBreakRounded / REST_BREAK_RATE + 1e-9);
       const totalOtherRounded = round2(totalOther);
       const totalMileageReimbursementRounded = round2(totalMileageReimbursement);
-      const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0) + totalAdjustmentMealPremium);
-      // Sick pay typed on this page wins; otherwise uploaded payroll's Sick Pay is used.
+      // Meal premium this period. One typed on this page wins, as before. Otherwise ADP's
+      // Meal Break Premium Pay from the imported file is what was paid, so it replaces the
+      // system's meal-break adjustments and the uploaded Meal Premium instead of adding to them.
+      const typedMealPremium = round2(Math.abs(Number(mealPremium) || 0));
+      const adpMealPremiumAmount = round2(Math.abs(Number(adpMealPremium) || 0));
+      const mealPremiumThisPeriod =
+        typedMealPremium > 0
+          ? round2(typedMealPremium + totalAdjustmentMealPremium)
+          : adpMealPremiumAmount > 0
+            ? adpMealPremiumAmount
+            : round2(totalAdjustmentMealPremium);
+      // Sick pay this period. One typed on this page wins. Otherwise ADP's Sick pay from the
+      // imported file is what was paid, so it replaces uploaded payroll's Sick Pay; without
+      // either, uploaded payroll's Sick Pay is used.
       const manualSickThisPeriod = round2(Math.abs(Number(sick) || 0));
+      const adpSickPayAmount = round2(Math.abs(Number(adpSickPay) || 0));
       const sickThisPeriod =
-        uploadedPaystub && manualSickThisPeriod === 0 ? round2(uploadedPaystub.totals.sick) : manualSickThisPeriod;
+        manualSickThisPeriod > 0
+          ? manualSickThisPeriod
+          : adpSickPayAmount > 0
+            ? adpSickPayAmount
+            : uploadedPaystub
+              ? round2(uploadedPaystub.totals.sick)
+              : 0;
       // Travel pay only comes from uploaded payroll (the system has none on the CA paystub).
       const travelPayThisPeriod = uploadedPaystub ? round2(uploadedPaystub.totals.travel) : 0;
       // Holiday pay is an ADP earnings line. Neither the system nor uploaded payroll pays

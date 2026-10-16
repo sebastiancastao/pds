@@ -104,6 +104,10 @@ interface Event {
 type ImportedEmployeeRow = {
   rowIndex: number;
   employeeName: string;
+  // ADP Meal Break Premium Pay this period ("Meal Premium" column of the /pdf-reader export).
+  adpMealPremium: string;
+  // ADP Sick pay this period ("Sick Pay" column of the /pdf-reader export).
+  adpSickPay: string;
   ssn: string;
   address: string;
   employeeId: string;
@@ -292,6 +296,8 @@ type PaystubFields = YtdOverrideSource & {
   miscDeduction: string;
   miscReimbursement: string;
   voluntaryDeductions?: VoluntaryDeductionInput[];
+  adpMealPremium?: string;
+  adpSickPay?: string;
 };
 
 // An imported row as paystub fields. The CalSavers Roth column is the misc deduction
@@ -365,6 +371,8 @@ export default function PaystubGenerator() {
     miscReimbursementYtd: '',
 
     // Other
+    adpMealPremium: '',
+    adpSickPay: '',
     miscDeduction: '',
     miscReimbursement: '',
     voluntaryDeductions: [] as VoluntaryDeductionInput[],
@@ -1486,7 +1494,10 @@ export default function PaystubGenerator() {
       // Voluntary deductions besides CalSavers, each its own paystub line (e.g. "Creditor 1").
       voluntaryDeductions: fields.voluntaryDeductions || [],
       mealPremium: override ? parseFloat(override.mealPremium) || 0 : 0,
+      // ADP's meal premium and sick pay this period from the imported file; the boxes win when typed.
+      adpMealPremium: fields.adpMealPremium || '',
       sick: override ? parseFloat(override.sick) || 0 : 0,
+      adpSickPay: fields.adpSickPay || '',
 
       // Events this employee worked in the period, plus linked commission partners
       events: filterEventsForUserIdWithHours(userId),
@@ -2939,6 +2950,18 @@ export default function PaystubGenerator() {
         return isNaN(num) ? value : String(Math.abs(num));
       };
 
+      // Exact header names only. The token fallback of findHeaderIndex would also match
+      // "Meal Premium YTD" and read the year-to-date amount as this period's.
+      const getExactAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
+        for (const name of possibleNames) {
+          const index = normalizedHeaders.indexOf(normalizeHeaderText(name));
+          if (index === -1) continue;
+          const num = parseCurrencyNumber(valuesRow[index]);
+          return Number.isFinite(num) ? String(Math.abs(num)) : '';
+        }
+        return '';
+      };
+
       // Helper to format dates
       const formatDate = (value: any) => {
         if (!value) return '';
@@ -3094,6 +3117,19 @@ export default function PaystubGenerator() {
           ]),
           miscReimbursementYtd: getAbsoluteValue(valuesRow, ['misc reimbursement ytd']),
 
+          // ADP Meal Break Premium Pay this period. The paystub prints it on the Meal Premium row.
+          adpMealPremium: getExactAbsoluteValue(valuesRow, [
+            'meal premium',
+            'meal break premium pay',
+            'meal break premium',
+            'meal premium pay',
+            'meal time premium',
+            'meal period premium',
+            'meal prem',
+          ]),
+          // ADP Sick pay this period. The paystub prints it on the Sick Pay row.
+          adpSickPay: getExactAbsoluteValue(valuesRow, ['sick pay', 'sick']),
+
           miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
           miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
           voluntaryDeductions: voluntaryDeductionsFromRow(jsonData[0], valuesRow),
@@ -3150,6 +3186,8 @@ export default function PaystubGenerator() {
           equipmentReimbYtd: first.equipmentReimbYtd,
           mileageReimbYtd: first.mileageReimbYtd,
           miscReimbursementYtd: first.miscReimbursementYtd,
+          adpMealPremium: first.adpMealPremium,
+          adpSickPay: first.adpSickPay,
         }));
       }
 
@@ -3418,7 +3456,8 @@ export default function PaystubGenerator() {
                                     type="number"
                                     min="0"
                                     step="0.01"
-                                    placeholder="0.00"
+                                    placeholder={Number(e.adpMealPremium) > 0 ? Number(e.adpMealPremium).toFixed(2) : '0.00'}
+                                    title={Number(e.adpMealPremium) > 0 ? 'From the ADP file. Type an amount to replace it.' : undefined}
                                     value={getOverride(e.matchedUserId).mealPremium}
                                     onChange={(ev) => setOverride(e.matchedUserId!, 'mealPremium', ev.target.value)}
                                     className="w-20 px-1.5 py-0.5 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
@@ -3430,7 +3469,8 @@ export default function PaystubGenerator() {
                                     type="number"
                                     min="0"
                                     step="0.01"
-                                    placeholder="0.00"
+                                    placeholder={Number(e.adpSickPay) > 0 ? Number(e.adpSickPay).toFixed(2) : '0.00'}
+                                    title={Number(e.adpSickPay) > 0 ? 'From the ADP file. Type an amount to replace it.' : undefined}
                                     value={getOverride(e.matchedUserId).sick}
                                     onChange={(ev) => setOverride(e.matchedUserId!, 'sick', ev.target.value)}
                                     className="w-20 px-1.5 py-0.5 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
