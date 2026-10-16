@@ -402,6 +402,15 @@ export default function PaystubGenerator() {
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [matchedUserId, setMatchedUserId] = useState<string | null>(null);
   const [importedEmployees, setImportedEmployees] = useState<ImportedEmployeeRow[]>([]);
+  // Excel rows left out of Distribute Batch to Profiles and of Send Paystubs by Email,
+  // by rowIndex, each chosen in the dropdown under its own button. Every row starts
+  // ticked in both.
+  const [batchUncheckedRows, setBatchUncheckedRows] = useState<Set<number>>(new Set());
+  const [distributePickerOpen, setDistributePickerOpen] = useState(false);
+  const isRowInBatch = (emp: { rowIndex: number }) => !batchUncheckedRows.has(emp.rowIndex);
+  const [emailUncheckedRows, setEmailUncheckedRows] = useState<Set<number>>(new Set());
+  const [emailPickerOpen, setEmailPickerOpen] = useState(false);
+  const isRowInEmail = (emp: { rowIndex: number }) => !emailUncheckedRows.has(emp.rowIndex);
   const [batchGenerating, setBatchGenerating] = useState(false);
   const [batchMessage, setBatchMessage] = useState<string | null>(null);
   const [batchErrors, setBatchErrors] = useState<string[]>([]);
@@ -1549,7 +1558,7 @@ export default function PaystubGenerator() {
   const emailCandidates = useMemo(() => {
     if (importedEmployees.length > 0) {
       return importedEmployees
-        .filter(emp => !!emp.matchedUserId)
+        .filter(emp => !!emp.matchedUserId && !emailUncheckedRows.has(emp.rowIndex))
         .map(emp => ({
           key: emp.matchedUserId!,
           userId: emp.matchedUserId!,
@@ -1561,7 +1570,7 @@ export default function PaystubGenerator() {
       return [{ key: matchedUserId, userId: matchedUserId, name: formData.employeeName, empRow: null as ImportedEmployeeRow | null }];
     }
     return [] as { key: string; userId: string; name: string; empRow: ImportedEmployeeRow | null }[];
-  }, [importedEmployees, formData.employeeName, matchedUserId]);
+  }, [importedEmployees, emailUncheckedRows, formData.employeeName, matchedUserId]);
 
   const resolveEmployeeUserIdFromLoadedEvents = (nameRaw: string): string | null => {
     const normalizedName = normalizeEmployeeLookupName(nameRaw);
@@ -2035,8 +2044,8 @@ export default function PaystubGenerator() {
   };
 
   // Each row is built exactly like the single paystub (buildPaystubRequest) and saved the
-  // same way. Rows left out: no name, no matching profile, or no events and no uploaded
-  // lines in the period.
+  // same way. Rows left out: unticked in the dropdown, no name, no matching profile, or
+  // no events and no uploaded lines in the period.
   const handleDistributeBatch = async () => {
     if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
     if ((importedEmployees || []).length === 0) {
@@ -2047,13 +2056,20 @@ export default function PaystubGenerator() {
       alert('Missing pay period start/end.');
       return;
     }
+    if (!importedEmployees.some(isRowInBatch)) {
+      setDistributePickerOpen(true);
+      alert('No employees are ticked. Tick at least one in the list under Distribute Batch to Profiles.');
+      return;
+    }
 
     setBatchDistributing(true);
     setBatchDistributeMessage(null);
     setBatchDistributeErrors([]);
 
     // Same name lookup as the single button, for every row still unmatched.
-    const rows = await matchUnmatchedImportedNow();
+    const allRows = await matchUnmatchedImportedNow();
+    const rows = allRows.filter(isRowInBatch);
+    const notTickedNote = allRows.length > rows.length ? ` ${allRows.length - rows.length} unticked employee(s) left out.` : '';
     if (
       !confirmPaystubRun(
         rows
@@ -2108,7 +2124,7 @@ export default function PaystubGenerator() {
         }
       }
 
-      setBatchDistributeMessage(`Distributed ${sent} paystub(s) to employee profiles. Skipped ${skipped}.`);
+      setBatchDistributeMessage(`Distributed ${sent} paystub(s) to employee profiles. Skipped ${skipped}.${notTickedNote}`);
       setBatchDistributeErrors(errors);
     } catch (err: any) {
       alert(`Error: ${err.message}`);
@@ -2195,6 +2211,106 @@ export default function PaystubGenerator() {
       setShowEmailModal(false);
       setShowEmailResults(true);
     }
+  };
+
+  // Dropdown checklist of the imported Excel rows, shown under a batch button. Every
+  // row starts ticked; `unchecked` holds the rowIndex of each unticked row.
+  const renderBatchPicker = (opts: {
+    open: boolean;
+    setOpen: (open: boolean) => void;
+    unchecked: Set<number>;
+    setUnchecked: (update: (prev: Set<number>) => Set<number>) => void;
+    label: string;
+    disabled: boolean;
+    checkboxClass: string;
+    rowNote: (row: ImportedEmployeeRow) => { text: string; title: string } | null;
+  }) => {
+    const tickedCount = importedEmployees.filter((row) => !opts.unchecked.has(row.rowIndex)).length;
+    return (
+      <div className="mt-2 border border-slate-200 rounded-lg bg-white">
+        <button
+          type="button"
+          onClick={() => opts.setOpen(!opts.open)}
+          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 rounded-lg"
+          aria-expanded={opts.open}
+        >
+          <span>
+            {opts.label}:{' '}
+            <span className="font-semibold text-slate-900">
+              {tickedCount} of {importedEmployees.length}
+            </span>
+          </span>
+          <svg
+            className={`w-4 h-4 text-slate-500 transition-transform ${opts.open ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {opts.open && (
+          <div className="border-t border-slate-200 px-3 py-2 space-y-2">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-slate-500">Untick anyone whose paystub is not ready.</span>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => opts.setUnchecked(() => new Set())}
+                  disabled={opts.unchecked.size === 0 || opts.disabled}
+                  className="font-medium text-blue-700 hover:text-blue-900 underline disabled:opacity-40 disabled:no-underline"
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => opts.setUnchecked(() => new Set(importedEmployees.map((row) => row.rowIndex)))}
+                  disabled={tickedCount === 0 || opts.disabled}
+                  className="font-medium text-blue-700 hover:text-blue-900 underline disabled:opacity-40 disabled:no-underline"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
+              {importedEmployees.map((e) => {
+                const note = opts.rowNote(e);
+                return (
+                  <label
+                    key={`pick-${e.rowIndex}`}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 cursor-pointer text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      className={`w-4 h-4 flex-shrink-0 cursor-pointer ${opts.checkboxClass}`}
+                      checked={!opts.unchecked.has(e.rowIndex)}
+                      disabled={opts.disabled}
+                      onChange={(ev) => {
+                        const include = ev.target.checked;
+                        opts.setUnchecked((prev) => {
+                          const next = new Set(prev);
+                          if (include) next.delete(e.rowIndex);
+                          else next.add(e.rowIndex);
+                          return next;
+                        });
+                      }}
+                    />
+                    <span className="flex-1 truncate text-slate-800">
+                      {e.employeeName || `(missing name, row ${e.rowIndex})`}
+                    </span>
+                    {note && (
+                      <span className="flex-shrink-0 text-xs text-slate-500" title={note.title}>
+                        {note.text}
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   const handleCreateReport = async () => {
@@ -3101,6 +3217,8 @@ export default function PaystubGenerator() {
       }
 
       setImportedEmployees(matched);
+      setBatchUncheckedRows(new Set());
+      setEmailUncheckedRows(new Set());
 
       // The single form shows row 1, so the single buttons use row 1's account (none when
       // row 1 did not match: they then look the name up on click, never another row's).
@@ -4056,7 +4174,7 @@ export default function PaystubGenerator() {
                       onClick={handleDistributeBatch}
                       disabled={batchDistributing || batchGenerating || rematchingImported}
                       className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                      title="Generate each paystub and add it to the employee profile"
+                      title="Generate the paystub of each ticked employee and add it to their profile"
                     >
                       {batchDistributing ? (
                         <>
@@ -4068,10 +4186,25 @@ export default function PaystubGenerator() {
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                           </svg>
-                          Distribute Batch to Profiles
+                          Distribute Batch to Profiles ({importedEmployees.filter(isRowInBatch).length})
                         </>
                       )}
                     </button>
+                    {renderBatchPicker({
+                      open: distributePickerOpen,
+                      setOpen: setDistributePickerOpen,
+                      unchecked: batchUncheckedRows,
+                      setUnchecked: setBatchUncheckedRows,
+                      label: 'Employees to send',
+                      disabled: batchDistributing,
+                      checkboxClass: 'accent-emerald-600',
+                      rowNote: (row) =>
+                        !row.matchedUserId
+                          ? { text: 'Unmatched', title: 'Skipped when distributing unless the name matches a profile' }
+                          : batchSkipReason(row.matchedUserId)
+                            ? { text: 'No pay data', title: 'Skipped when distributing, even if ticked' }
+                            : null,
+                    })}
                     {batchDistributeMessage && (
                       <div className="mt-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
                         {batchDistributeMessage}
@@ -4100,17 +4233,24 @@ export default function PaystubGenerator() {
                           // Same name lookup as the single button, for every row still
                           // unmatched, so the picker lists everyone single would find.
                           const rows = await matchUnmatchedImportedNow();
-                          const keys = rows.filter((e) => !!e.matchedUserId).map((e) => e.matchedUserId as string);
-                          if (keys.length === 0) {
+                          const matchedRows = rows.filter((e) => !!e.matchedUserId);
+                          if (matchedRows.length === 0) {
                             alert('No imported employee matches a profile.');
                             return;
                           }
-                          setEmailSelectedIds(new Set(keys));
+                          // Only the employees ticked in the dropdown under this button.
+                          const tickedRows = matchedRows.filter(isRowInEmail);
+                          if (tickedRows.length === 0) {
+                            setEmailPickerOpen(true);
+                            alert('No matched employees are ticked. Tick at least one in the list under Send Paystubs by Email.');
+                            return;
+                          }
+                          setEmailSelectedIds(new Set(tickedRows.map((e) => e.matchedUserId as string)));
                           setShowEmailModal(true);
                         }}
                         disabled={emailSending || batchDistributing || batchGenerating || rematchingImported}
                         className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-violet-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                        title="Send paystubs by email to selected employees"
+                        title="Send paystubs by email to the ticked employees"
                       >
                         {emailSending || rematchingImported ? (
                           <>
@@ -4126,6 +4266,21 @@ export default function PaystubGenerator() {
                           </>
                         )}
                       </button>
+                      {renderBatchPicker({
+                        open: emailPickerOpen,
+                        setOpen: setEmailPickerOpen,
+                        unchecked: emailUncheckedRows,
+                        setUnchecked: setEmailUncheckedRows,
+                        label: 'Employees to email',
+                        disabled: emailSending,
+                        checkboxClass: 'accent-violet-600',
+                        rowNote: (row) =>
+                          !row.matchedUserId
+                            ? { text: 'Unmatched', title: 'Not emailed unless the name matches a profile' }
+                            : batchSkipReason(row.matchedUserId)
+                              ? { text: 'No pay data', title: 'No events and no uploaded lines in this period, so the paystub would show no earnings' }
+                              : null,
+                      })}
                     </div>
                   )}
                 </div>
