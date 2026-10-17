@@ -1306,6 +1306,8 @@ export async function POST(req: NextRequest) {
         restBreakTotal?: number;
         bonusTotal?: number;
         rateInEffect?: number;
+        hoursTotal?: number;
+        variableRate?: number;
       }
     ) => {
       if (rows.length === 0) return;
@@ -1478,8 +1480,10 @@ export async function POST(req: NextRequest) {
         options?.variableIncentiveTotal !== undefined
           ? options.variableIncentiveTotal
           : grandRawVariableIncentive;
-      const totalVariableRate =
-        grandHoursWorked > 0
+      if (options?.hoursTotal !== undefined) grandHoursWorked = options.hoursTotal;
+      const totalVariableRate = options?.variableRate !== undefined
+        ? options.variableRate
+        : grandHoursWorked > 0
           ? roundPayrollAmount(reportVariableIncentive / grandHoursWorked)
           : 0;
       const totalVariableIncentive = roundPayrollAmount(reportVariableIncentive);
@@ -3064,6 +3068,8 @@ export async function POST(req: NextRequest) {
           restBreakTotal: totalRestBreakRounded,
           bonusTotal: totalOtherRounded,
           rateInEffect: effectiveRate,
+          hoursTotal: commissionHoursForEarnings,
+          variableRate: round2(variableRateForEarnings),
         }
       );
       const pdfBytes = await pdfDoc.save();
