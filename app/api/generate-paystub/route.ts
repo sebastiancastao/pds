@@ -1249,8 +1249,17 @@ export async function POST(req: NextRequest) {
 
     const addCommissionReportPage = (
       rows: CommissionReportRow[],
-      // The statement's Variable Incentive when it is ADP's, so both pages show one figure.
-      options?: { variableIncentiveTotal?: number }
+      // The statement's earnings figures, so the "Total for Pay Period" row (and its Final
+      // Gross Pay) agrees with the Earnings table even when a row is not printed (the ADP
+      // adjustment) or ADP paid other tips / rest / bonus than the events add up to.
+      options?: {
+        variableIncentiveTotal?: number;
+        commissionTotal?: number;
+        tipsTotal?: number;
+        restBreakTotal?: number;
+        bonusTotal?: number;
+        rateInEffect?: number;
+      }
     ) => {
       if (rows.length === 0) return;
       const { rawPayPeriodRateInEffect, payPeriodRateInEffect } = (() => {
@@ -1409,7 +1418,7 @@ export async function POST(req: NextRequest) {
         y -= 11;
       }
       drawRL(20, y + 9, 592);
-      const averageRateInEffect = payPeriodRateInEffect;
+      const averageRateInEffect = options?.rateInEffect ?? payPeriodRateInEffect;
       const grandRawVariableIncentive = displayRows.reduce((sum, row) => {
         // Uploaded and per-shift (AZ/NY) rows carry their own incentive; period-rate rows
         // are recomputed from the pay period's rate in effect.
@@ -1427,6 +1436,10 @@ export async function POST(req: NextRequest) {
           ? roundPayrollAmount(reportVariableIncentive / grandHoursWorked)
           : 0;
       const totalVariableIncentive = roundPayrollAmount(reportVariableIncentive);
+      if (options?.commissionTotal !== undefined) grandCommission = options.commissionTotal;
+      if (options?.tipsTotal !== undefined) grandTips = options.tipsTotal;
+      if (options?.restBreakTotal !== undefined) grandRestPay = options.restBreakTotal;
+      if (options?.bonusTotal !== undefined) grandBonus = options.bonusTotal;
       const totalFinalPay = roundPayrollAmount(
         roundPayrollAmount(grandCommission) +
         totalVariableIncentive +
@@ -2992,7 +3005,14 @@ export async function POST(req: NextRequest) {
 
       addCommissionReportPage(
         caCommissionRows.filter((row) => !row.adpAdjustment),
-        adpLines ? { variableIncentiveTotal: adpLines.variableIncentive } : undefined
+        {
+          variableIncentiveTotal: totalVariableIncentiveRounded,
+          commissionTotal: totalCommissionRounded,
+          tipsTotal: totalTipsRounded,
+          restBreakTotal: totalRestBreakRounded,
+          bonusTotal: totalOtherRounded,
+          rateInEffect: effectiveRate,
+        }
       );
       const pdfBytes = await pdfDoc.save();
 
