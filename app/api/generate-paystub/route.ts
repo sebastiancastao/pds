@@ -1243,6 +1243,8 @@ export async function POST(req: NextRequest) {
       fromUpload?: boolean;
       // Uploaded line that matches none of the request's events: pool and head count unknown.
       poolUnknown?: boolean;
+      // The "Adjustment / Per ADP" row: counted in the stub's totals, not printed on the report.
+      adpAdjustment?: boolean;
     };
 
     const addCommissionReportPage = (
@@ -2066,9 +2068,9 @@ export async function POST(req: NextRequest) {
 
       // Commission this period. ADP's Commission from the imported /pdf-reader file is what
       // was paid (its taxes and net pay are printed as is), so when the events (or uploaded
-      // payroll) add up to something else, the difference goes on the Commission Report as
-      // its own "Adjustment / Per ADP" row: the report total, the Commission row, Gross Pay
-      // and Net Pay then agree with ADP. ADP 0 means no figure, never a $0 commission. A stub
+      // payroll) add up to something else, the difference goes in as its own "Adjustment /
+      // Per ADP" row: the Commission row, Gross Pay and Net Pay then agree with ADP. The row
+      // is not printed on the Commission Report, which lists the events only. ADP 0 means no figure, never a $0 commission. A stub
       // with no commission rows at all (no events loaded or matched) is left as it is, so a
       // failed event load still shows instead of turning ADP's whole commission into one row.
       //
@@ -2141,6 +2143,7 @@ export async function POST(req: NextRequest) {
           bonus: adpBonusGap,
           finalPay: round2(adpCommissionGap + adpBonusGap),
           poolUnknown: true,
+          adpAdjustment: true,
         });
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] commission set to ADP", {
@@ -2988,7 +2991,7 @@ export async function POST(req: NextRequest) {
       if (addressLine3) drawTopText(addressLine3, 139.2, 714.0, { size: 10 });
 
       addCommissionReportPage(
-        caCommissionRows,
+        caCommissionRows.filter((row) => !row.adpAdjustment),
         adpLines ? { variableIncentiveTotal: adpLines.variableIncentive } : undefined
       );
       const pdfBytes = await pdfDoc.save();
