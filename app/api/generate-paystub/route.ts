@@ -101,10 +101,11 @@ const ADP_EARNINGS_LINE_KEYS = [
   "holiday",
 ] as const;
 
-// HR pays each worker a flat commission for a count-in / set-up day, which has no sales of its
-// own (HR payroll sheets: SMX Count In/Set Up 9/18/2026, the Hot Wheels and Aespa count-ins
-// 10/2/2026). The system has no such rule, so the day's commission report row pays $0.
-const COUNT_IN_DAY_COMMISSION = 150;
+// HR pays a flat $150 commission for every shift worked at an event with no commission: its
+// pool is $0, like a count-in / set-up day with no sales of its own (HR payroll sheets: SMX
+// Count In/Set Up 9/18/2026, the Hot Wheels and Aespa count-ins 10/2/2026). Without it those
+// clocked hours would pay $0 on the commission report.
+const ZERO_COMMISSION_SHIFT_PAY = 150;
 
 function parseAdpEarningsLines(raw: unknown): AdpEarningsLines | null {
   if (!raw || typeof raw !== "object") return null;
@@ -649,6 +650,28 @@ export async function POST(req: NextRequest) {
       };
     };
 
+    // The flat ZERO_COMMISSION_SHIFT_PAY for a shift with hours at an event whose pool (or
+    // shared group's pool) pays this worker nothing; 0 otherwise. Shifts paid hourly (San Diego
+    // hourly, non-event timesheets), Trailers, non-vendors and a commission deleted on the
+    // event-dashboard Payment tab stay at $0. It feeds the pay-period calculation, which only
+    // pays commission in the period-rate states (CA, NV, WI); AZ and NY are unchanged.
+    const getZeroCommissionShiftPay = (event: any, worker: any, poolShare: unknown): number => {
+      if (!worker || Number(poolShare || 0) > 0) return 0;
+      const userId = (worker?.user_id || "").toString();
+      if (
+        !userId ||
+        isExplicitNonVendorDivision(worker?.division) ||
+        isTrailersDivision(worker?.division) ||
+        worker?.payment_data?.commission_deleted === true ||
+        isNonEventTimesheet(event) ||
+        paysSanDiegoHourlyForWorker(event, userId) ||
+        Number(getActualHoursForWorker(event, worker).toFixed(2)) <= 0
+      ) {
+        return 0;
+      }
+      return ZERO_COMMISSION_SHIFT_PAY;
+    };
+
     const payPeriodCommission = computePayPeriodCommission({
       events: (Array.isArray(events) ? events : []).map((event: any) => {
         const payrollInputs = getPayrollInputsForEvent(event);
@@ -664,6 +687,13 @@ export async function POST(req: NextRequest) {
           commissionPoolDollars: Number(payrollInputs.commissionPoolDollars || 0),
           workers: (Array.isArray(event?.workers) ? event.workers : []).map((worker: any) => {
             const workerUserId = (worker?.user_id || "").toString();
+            const zeroCommissionShiftPay = getZeroCommissionShiftPay(
+              event,
+              worker,
+              mergedShares
+                ? mergedShares[workerUserId]
+                : payrollInputs.commissionSharesByUser?.[workerUserId]
+            );
             return {
               userId: workerUserId,
               division: worker?.division,
@@ -679,9 +709,11 @@ export async function POST(req: NextRequest) {
               // Diego hourly there still count in its split but are paid nothing from it.
               commissionShare: paysSanDiegoHourlyForWorker(event, workerUserId)
                 ? 0
-                : mergedShares
-                  ? Number(mergedShares[workerUserId] || 0)
-                  : null,
+                : zeroCommissionShiftPay > 0
+                  ? zeroCommissionShiftPay
+                  : mergedShares
+                    ? Number(mergedShares[workerUserId] || 0)
+                    : null,
             };
           }),
         };
@@ -1295,6 +1327,8 @@ export async function POST(req: NextRequest) {
       poolUnknown?: boolean;
       // The "Adjustment / Per ADP" row: counted in the stub's totals, not printed on the report.
       adpAdjustment?: boolean;
+      // Shift at an event with no commission, paid the flat ZERO_COMMISSION_SHIFT_PAY.
+      zeroCommissionShift?: boolean;
     };
 
     const addCommissionReportPage = (
@@ -2024,6 +2058,11 @@ export async function POST(req: NextRequest) {
         const commissionReportFinalPay = roundPayrollAmount(reportFinalPay + other);
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
+        const zeroCommissionShift =
+          usesPeriodRate &&
+          !paysHourly &&
+          getZeroCommissionShiftPay(event, worker, commissionSharesByUser[workerUserId]) > 0 &&
+          Math.abs(displayCommissionPay - ZERO_COMMISSION_SHIFT_PAY) < 0.005;
 
         if (!paysHourly && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
           // Match HR dashboard payroll logic:
@@ -2049,6 +2088,7 @@ export async function POST(req: NextRequest) {
             restBreak,
             bonus: other,
             finalPay: commissionReportFinalPay,
+            zeroCommissionShift,
           });
         }
 
@@ -2178,15 +2218,37 @@ export async function POST(req: NextRequest) {
       if (
         adpCommissionGap > 0 &&
         countInDayRows.length > 0 &&
-        Math.abs(adpCommissionGap - countInDayRows.length * COUNT_IN_DAY_COMMISSION) < 0.005
+        Math.abs(adpCommissionGap - countInDayRows.length * ZERO_COMMISSION_SHIFT_PAY) < 0.005
       ) {
         for (const row of countInDayRows) {
-          row.commissionPerEmployee = COUNT_IN_DAY_COMMISSION;
-          row.finalPay = roundPayrollAmount(row.finalPay + COUNT_IN_DAY_COMMISSION);
+          row.commissionPerEmployee = ZERO_COMMISSION_SHIFT_PAY;
+          row.finalPay = roundPayrollAmount(row.finalPay + ZERO_COMMISSION_SHIFT_PAY);
         }
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] ADP count-in commission on its rows", {
             rows: countInDayRows.length,
+            amount: adpCommissionGap,
+          });
+        }
+        adpCommissionGap = 0;
+      }
+      // The statement prints what ADP paid. When ADP's commission is short by exactly the flat
+      // pay of every no-commission shift on the report, ADP did not pay those shifts: their rows
+      // go back to $0 so the report agrees with the statement (HR has to pay them in ADP).
+      const zeroCommissionShiftRows = caCommissionRows.filter((row) => row.zeroCommissionShift);
+      if (
+        adpCommissionGap < 0 &&
+        zeroCommissionShiftRows.length > 0 &&
+        Math.abs(adpCommissionGap + zeroCommissionShiftRows.length * ZERO_COMMISSION_SHIFT_PAY) < 0.005
+      ) {
+        for (const row of zeroCommissionShiftRows) {
+          row.commissionPerEmployee = 0;
+          row.rateInEffect = 0;
+          row.finalPay = roundPayrollAmount(row.finalPay - ZERO_COMMISSION_SHIFT_PAY);
+        }
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] ADP did not pay the no-commission shift pay", {
+            rows: zeroCommissionShiftRows.length,
             amount: adpCommissionGap,
           });
         }
