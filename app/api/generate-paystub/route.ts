@@ -3,7 +3,7 @@ import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { createClient } from "@supabase/supabase-js";
 import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
-import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, distributeTipsPool, roundAmountsToCents, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution } from "@/lib/linked-commission";
 import { safeDecrypt } from "@/lib/encryption";
@@ -106,6 +106,11 @@ const ADP_EARNINGS_LINE_KEYS = [
 // Count In/Set Up 9/18/2026, the Hot Wheels and Aespa count-ins 10/2/2026). Without it those
 // clocked hours would pay $0 on the commission report.
 const ZERO_COMMISSION_SHIFT_PAY = 150;
+
+// Largest gap between ADP's commission (or tips) and the commission report's event rows that is
+// spread over those rows, as a share of the rows' own total. Above it the gap stays in the
+// hidden "Adjustment / Per ADP" row, so a real difference (a missing event) is not smeared.
+const SMALL_ADP_GAP_SHARE = 0.01;
 
 function parseAdpEarningsLines(raw: unknown): AdpEarningsLines | null {
   if (!raw || typeof raw !== "object") return null;
@@ -2253,6 +2258,61 @@ export async function POST(req: NextRequest) {
           });
         }
         adpCommissionGap = 0;
+      }
+      // A small gap is ADP's split of the same pools coming out a little different from the
+      // system's, e.g. hours edited after HR ran payroll (WWE Monday Night Raw 9/28/2026, WI: ADP
+      // paid each worker 0.67% less). It is spread over the event rows in proportion to their
+      // amounts, to the cent, so the rows add up to what ADP paid instead of leaving the
+      // difference in the hidden adjustment row.
+      const scaleReportRowsToTotal = (
+        rows: CommissionReportRow[],
+        field: "commissionPerEmployee" | "tips",
+        target: number
+      ): boolean => {
+        const current = round2(rows.reduce((sum, row) => sum + row[field], 0));
+        const gap = round2(target - current);
+        if (
+          rows.length === 0 ||
+          current <= 0 ||
+          Math.abs(gap) < 0.01 ||
+          Math.abs(gap) > current * SMALL_ADP_GAP_SHARE
+        ) {
+          return false;
+        }
+        const key = (index: number) => String(index).padStart(4, "0");
+        const scaled = roundAmountsToCents(
+          Object.fromEntries(rows.map((row, index) => [key(index), (row[field] * target) / current])),
+          target
+        );
+        rows.forEach((row, index) => {
+          const next = scaled[key(index)] ?? row[field];
+          row.finalPay = roundPayrollAmount(row.finalPay + next - row[field]);
+          row[field] = next;
+        });
+        return true;
+      };
+      if (adpCommissionTarget !== null && Math.abs(adpCommissionGap) >= 0.01) {
+        const commissionRows = caCommissionRows.filter(
+          (row) => !row.adpAdjustment && row.commissionPerEmployee > 0
+        );
+        const rowsCommission = round2(commissionRows.reduce((sum, row) => sum + row.commissionPerEmployee, 0));
+        if (scaleReportRowsToTotal(commissionRows, "commissionPerEmployee", round2(rowsCommission + adpCommissionGap))) {
+          if (debugEnabled) {
+            console.log("[GENERATE-PAYSTUB][debug] small ADP commission gap spread over the rows", {
+              rows: commissionRows.length,
+              amount: adpCommissionGap,
+            });
+          }
+          adpCommissionGap = 0;
+        }
+      }
+      if (adpLines) {
+        // Tips: the statement prints ADP's tips, so the rows' tips are evened out the same way.
+        scaleReportRowsToTotal(
+          caCommissionRows.filter((row) => !row.adpAdjustment && row.tips > 0),
+          "tips",
+          adpLines.tips
+        );
       }
       const adpBonusGap = adpLines && hasCommissionReportRows ? round2(adpLines.bonus - bonusBeforeAdp) : 0;
       if (Math.abs(adpCommissionGap) >= 0.01 || Math.abs(adpBonusGap) >= 0.01) {
