@@ -313,7 +313,10 @@ export async function POST(req: NextRequest) {
       paystubState === "WI" ||
       paystubState === "AZ" ||
       paystubState === "NY";
-    const includeRestBreakColumn = paystubState === "CA";
+    // Rest breaks are paid on California, Wisconsin and Arizona paystubs: ADP pays a Rest Pay
+    // line in all three, and the event dashboard Payment tab and the HR dashboard pay them in
+    // every state. Nevada and New York paystubs (simple layout) still pay none.
+    const includeRestBreakColumn = paystubState === "CA" || paystubState === "WI" || paystubState === "AZ";
     const debugEnabled =
       debug === true ||
       debug === "1" ||
@@ -362,7 +365,7 @@ export async function POST(req: NextRequest) {
     ): number => {
       if (hourlyEvent) return 0;
       const st = normalizeState(stateCode);
-      if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
+      if (st === "NV" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
       return getRestBreakPay(actualHours, recordedBreaks, eventDate);
     };
