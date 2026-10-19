@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 import { downloadUploadedPayroll } from "./payroll-upload-export";
+import { downloadPayrollProblemsReport, unreadColumnTotals } from "./payroll-upload-report";
 import UploadedPayrollView, { type PayrollViewEditing } from "./UploadedPayrollView";
 import {
   PAYROLL_UPLOAD_FIELD_KEYS,
@@ -1131,6 +1132,32 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
     else downloadUploadedPayroll(editor.rows, startDate, endDate);
   };
 
+  // Excel report of what went wrong, so HR doesn't have to check each line on screen.
+  const exportProblemsReport = () => {
+    if (!editor) return;
+    try {
+      downloadPayrollProblemsReport({
+        rows: editor.rows,
+        issuesFor,
+        periodStart: editor.mode === "saved" ? editor.upload.period_start : startDate,
+        periodEnd: editor.mode === "saved" ? editor.upload.period_end : endDate,
+        fileNames:
+          editor.mode === "saved"
+            ? [editor.upload.file_name || "", ...editor.addedFiles]
+            : editor.fileNames,
+        sheets: editor.mode === "new" ? editor.sheets : null,
+        selectedSheets: editor.mode === "new" ? editor.selectedSheets : null,
+        ignoredSheets: editor.mode === "new" ? editor.ignoredSheets : null,
+        system: comparison ? comparison.lines : null,
+      });
+    } catch (err) {
+      setError(`Could not build the problems report: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // Columns of the file that sound like pay but aren't read into any pay column.
+  const unreadPayColumns = useMemo(() => unreadColumnTotals(rows).filter((c) => c.looksLikePay), [rows]);
+
   // Use an upload as the payroll for its period, or go back to system payroll.
   const confirmActiveChange = (
     u: { id: string; file_name: string | null; period_start: string; period_end: string },
@@ -1487,6 +1514,14 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             <button type="button" onClick={exportRows} className="apple-button apple-button-secondary">
               Download as Excel
             </button>
+            <button
+              type="button"
+              onClick={exportProblemsReport}
+              className="apple-button apple-button-secondary"
+              title="Excel report of the lines that need a look, with the file, sheet and row of each, plus each employee's total against the ADP Payroll Summary and the system payroll"
+            >
+              Download Problems Report
+            </button>
             {editor.mode === "saved" && (
               <button
                 type="button"
@@ -1570,6 +1605,23 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
               </div>
             ))}
           </div>
+
+          {unreadPayColumns.length > 0 && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              <div className="mb-1 font-medium">Columns in the file that look like pay but are not read</div>
+              <ul className="list-disc space-y-0.5 pl-5">
+                {unreadPayColumns.map((c) => (
+                  <li key={c.label}>
+                    &ldquo;{c.label}&rdquo;: {money(c.amount)} on {c.lines} line{c.lines === 1 ? "" : "s"}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs">
+                These amounts are not in any pay column, so they are not on the paystub unless Total Gross Pay already includes them (then the line is flagged
+                as not adding up). Rename the column to one in the Download Template, such as Meal Premium, Bonus or Other, and upload again.
+              </p>
+            </div>
+          )}
 
           {Object.keys(stats.issueCounts).length > 0 && (
             <div className="mb-3 rounded-lg border border-red-100 bg-red-50/70 px-3 py-2 text-sm text-red-800">

@@ -8,8 +8,8 @@
 // about them) and the PDF route (to turn the lines into earnings).
 //
 // How a line maps onto the paystub:
-// - Reg/OT/DT pay, Commission, Variable Incentive, Tips, Rest Break and Sick Pay
-//   go to their own earnings rows; Bonus and Other go to the Bonus row.
+// - Reg/OT/DT pay, Commission, Variable Incentive, Tips, Rest Break, Meal Premium
+//   and Sick Pay go to their own earnings rows; Bonus and Other go to the Bonus row.
 // - Reimbursement and Mileage Pay are not wages: they are added to Net Pay,
 //   never to Gross Pay (the uploaded Total Gross includes them).
 // - Total Gross is what was paid. A line whose Total Gross differs from its pay
@@ -80,6 +80,7 @@ export type PaystubUploadLine = {
   variableIncentive: number;
   tips: number;
   restBreak: number;
+  mealPremium: number;
   // Bonus + Other (+ the Total Gross difference on commission lines).
   bonus: number;
   sick: number;
@@ -113,6 +114,7 @@ export type PaystubUploadTotals = {
   variableIncentive: number;
   tips: number;
   restBreak: number;
+  mealPremium: number;
   bonus: number;
   sick: number;
   travel: number;
@@ -148,6 +150,7 @@ export const emptyPaystubUploadTotals = (): PaystubUploadTotals => ({
   variableIncentive: 0,
   tips: 0,
   restBreak: 0,
+  mealPremium: 0,
   bonus: 0,
   sick: 0,
   travel: 0,
@@ -204,6 +207,7 @@ type WageKey =
   | "variableIncentive"
   | "tips"
   | "restBreak"
+  | "mealPremium"
   | "bonus"
   | "sick"
   | "travel";
@@ -216,6 +220,7 @@ const WAGE_COLUMNS: Array<[WageKey, Array<keyof PayrollUploadFields>]> = [
   ["variableIncentive", ["variable_incentive"]],
   ["tips", ["tips"]],
   ["restBreak", ["rest_break"]],
+  ["mealPremium", ["meal_premium"]],
   ["bonus", ["bonus", "other"]],
   ["sick", ["sick_pay"]],
   ["travel", ["travel_pay"]],
@@ -382,6 +387,7 @@ function finishLine(work: LineWork): PaystubUploadLine {
     variableIncentive: dollars(wages.variableIncentive),
     tips: dollars(wages.tips),
     restBreak: dollars(wages.restBreak),
+    mealPremium: dollars(wages.mealPremium),
     bonus: dollars(wages.bonus),
     sick: dollars(wages.sick),
     travel: dollars(wages.travel),
@@ -435,6 +441,7 @@ export function summarizePaystubUploadLines(lines: PaystubUploadLine[]): Paystub
     t.variableIncentive += l.variableIncentive;
     t.tips += l.tips;
     t.restBreak += l.restBreak;
+    t.mealPremium += l.mealPremium;
     t.bonus += l.bonus;
     t.sick += l.sick;
     t.travel += l.travel;

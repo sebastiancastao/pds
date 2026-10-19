@@ -2153,8 +2153,9 @@ export async function POST(req: NextRequest) {
         totalVariableIncentive = u.variableIncentive;
         totalRestBreak = u.restBreak;
         totalOther = u.bonus;
-        // Meal premium adjustments are part of the uploaded Other column (Bonus row).
-        totalAdjustmentMealPremium = 0;
+        // The uploaded Meal Premium column goes to the Meal Premium row. A meal premium
+        // typed on this page wins over it (like sick pay), so the two never add up twice.
+        totalAdjustmentMealPremium = Math.abs(Number(mealPremium) || 0) > 0 ? 0 : u.mealPremium;
         // Reimbursement and mileage are added to Net Pay, never to Gross Pay. Uploaded
         // reimbursements are shown as Misc Reimbursement (see below), not Equipment.
         totalAdjustmentReimbursement = 0;
@@ -3682,7 +3683,9 @@ export async function POST(req: NextRequest) {
         totalCommission += line.commission;
         totalVariableIncentive += line.variableIncentive;
         totalRestBreak += line.restBreak;
-        totalOther += line.bonus;
+        // This layout has no Meal Premium row: uploaded meal premium shows under Other.
+        const lineOther = round2(line.bonus + line.mealPremium);
+        totalOther += lineOther;
         totalGross += total;
 
         let eventDate = "";
@@ -3705,7 +3708,7 @@ export async function POST(req: NextRequest) {
           if (includeRestBreakColumn) {
             drawText(`$${line.restBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8 });
           }
-          if (line.bonus !== 0) drawText(`${line.bonus >= 0 ? "$" : "-$"}${Math.abs(line.bonus).toFixed(2)}`, colX.other, yPosition, { size: 8 });
+          if (lineOther !== 0) drawText(`${lineOther >= 0 ? "$" : "-$"}${Math.abs(lineOther).toFixed(2)}`, colX.other, yPosition, { size: 8 });
           if (total !== 0) drawText(`${total >= 0 ? "$" : "-$"}${Math.abs(total).toFixed(2)}`, colX.totalGross, yPosition, { size: 8 });
         } else {
           const colX = defaultColX;

@@ -51,6 +51,7 @@ COLUMNS = [
     ("Variable Incentive", OPT, "Top-up to the hourly wage floor, in dollars.", MONEY, 16),
     ("Tips", OPT, "Tips in dollars.", MONEY, 10),
     ("Rest Break", OPT, "Rest break pay in dollars ($4.50 per break).", MONEY, 11),
+    ("Meal Premium", OPT, "Meal premium pay in dollars (one hour of pay per missed or late meal). Printed on the paystub's Meal Premium line.", MONEY, 13),
     ("Mileage Miles", OPT, "Miles driven (record only).", HOURS, 13),
     ("Mileage Pay", OPT, "Mileage pay in dollars.", MONEY, 12),
     ("Travel Pay", OPT, "Travel pay in dollars.", MONEY, 11),
@@ -63,16 +64,17 @@ COLUMNS = [
 HEADERS = [c[0] for c in COLUMNS]
 PAY_COLUMNS = [
     "Regular Time Pay", "Overtime Pay", "Double Time Pay", "Commission Pay", "Variable Incentive",
-    "Tips", "Rest Break", "Mileage Pay", "Travel Pay", "Reimbursement", "Other", "Bonus", "Sick Pay",
+    "Tips", "Rest Break", "Meal Premium", "Mileage Pay", "Travel Pay", "Reimbursement", "Other", "Bonus", "Sick Pay",
 ]
 
 EXAMPLES = [
-    {   # hourly, day 1 of a two-day event, with overtime
+    {   # hourly, day 1 of a two-day event, with overtime and a late meal (one hour of meal premium)
         "First Name": "Jane", "Last Name": "Doe", "Vendor Email": "jane.doe@example.com",
         "Category": "Hourly", "Venue": "Example Arena", "City": "Los Angeles", "State": "CA",
         "Event Name": "Example Concert", "Event Date": date(2026, 10, 3),
         "Reg Rate": 18.00, "Rate in Effect": 19.42, "Hours in Decimal": 9.5,
         "Regular Time Hours": 8, "Regular Time Pay": 144.00, "Overtime Hours": 1.5, "Overtime Pay": 40.50,
+        "Meal Premium": 18.00,
     },
     {   # same person, day 2, with mileage
         "First Name": "Jane", "Last Name": "Doe", "Vendor Email": "jane.doe@example.com",
@@ -171,7 +173,7 @@ ins["A1"].font = title
 steps = [
     "Fill the Vendor Payments sheet: one row per employee per event day. Keep row 1 exactly as it is.",
     "Header colors: dark blue = required, mid blue = recommended, light = optional. Hover a header for its note. Leave unused columns blank or delete them.",
-    "Total Gross Pay must equal the sum of all pay columns on that row (Regular, Overtime, Double Time, Commission, Variable Incentive, Tips, Rest Break, Mileage Pay, Travel Pay, Reimbursement, Other, Bonus, Sick Pay). A difference over $0.05 is flagged in the review.",
+    "Total Gross Pay must equal the sum of all pay columns on that row (Regular, Overtime, Double Time, Commission, Variable Incentive, Tips, Rest Break, Meal Premium, Mileage Pay, Travel Pay, Reimbursement, Other, Bonus, Sick Pay). A difference over $0.05 is flagged in the review.",
     "Use the email the employee logs in with. A missing or unknown email falls back to name matching, and unmatched lines stay unlinked.",
     "Do not add TOTAL or subtotal rows. Rows whose name starts with TOTAL are skipped.",
     "Enter hours as decimals: 9.5 means 9 hours 30 minutes. Typing 9:30 makes Excel store a clock time, which may not read as hours. Amounts are plain numbers. Only Other may be negative.",
@@ -199,7 +201,7 @@ r += 1
 sample = EXAMPLES[2] | {"Regular Time Hours": 8, "Regular Time Pay": 144.00, "Overtime Hours": 1.5,
                         "Overtime Pay": 40.50, "Mileage Miles": 20, "Mileage Pay": 14.00, "Bonus": 50.00,
                         "Sick Pay": 72.00, "Other": -10.00, "Travel Pay": 30.00, "Double Time Hours": 1,
-                        "Double Time Pay": 36.00}
+                        "Double Time Pay": 36.00, "Meal Premium": 18.00}
 for header, level, what, fmt, _ in COLUMNS:
     ins.cell(row=r, column=1, value=header).font = bold
     ins.cell(row=r, column=2, value=level)
