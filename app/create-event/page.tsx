@@ -3,6 +3,7 @@ import React, { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
+import { EVENT_TYPE_LABELS, type EventType } from "@/lib/event-types";
 import { supabase } from "@/lib/supabase";
 
 type Venue = {
@@ -21,7 +22,7 @@ function CreateEventPageInner() {
   // Opened from /cw-dashboard: the created event is locked to the CWT Trailers division
   const isCWLocked = searchParams?.get("division") === "trailers";
   // CW events are always Non Event Time Sheets
-  const initialEventType =
+  const initialEventType: EventType =
     isCWLocked ||
     searchParams?.get("eventType") === "special" ||
     searchParams?.get("type") === "non-event"
@@ -293,8 +294,9 @@ function CreateEventPageInner() {
                   disabled={isCWEvent}
                   className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
                 >
-                  {!isCWEvent && <option value="normal">Event Time Keeping</option>}
-                  <option value="special">Non Event Time Sheet</option>
+                  {!isCWEvent && <option value="normal">{EVENT_TYPE_LABELS.normal}</option>}
+                  {!isCWEvent && <option value="count_in_setup">{EVENT_TYPE_LABELS.count_in_setup}</option>}
+                  <option value="special">{EVENT_TYPE_LABELS.special}</option>
                 </select>
                 {isCWEvent && (
                   <p className="text-xs text-slate-500 mt-1">CW events are always Non Event Time Sheets.</p>

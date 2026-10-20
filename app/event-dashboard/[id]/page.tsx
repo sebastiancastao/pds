@@ -18,6 +18,7 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-d
 import { computeDailyBreakdownList, sumDailyBreakdown } from "@/lib/daily-overtime";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
+import { EVENT_TYPE_LABELS, normalizeEventType, type EventType } from "@/lib/event-types";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { isPendingTeamStatus } from "@/lib/team-conflicts";
 import { isViewOnlyRole } from "@/lib/roles";
@@ -52,7 +53,9 @@ type EventItem = {
   required_staff: number | null;
   confirmed_staff: number | null;
   is_active: boolean;
-  event_type?: "normal" | "special";
+  event_type?: EventType;
+  // "trailers" for CW events, which always stay Non Event Time Sheets.
+  division?: string | null;
   created_at: string;
   updated_at: string;
   tax_rate_percent?: number | null;
@@ -1069,6 +1072,14 @@ export default function EventDashboardPage() {
   const hideSalesAndMerchandiseForEvent = currentEventType === "special";
   const hideSalesAndMerchandise = hideSalesAndMerchandiseForEvent || userRole === "supervisor2";
   const maxSpecialEndDate = form.event_type === "special" ? getMaxNonEventEndDate(form.event_date || "") : null;
+  // A saved Non Event Time Sheet can be converted to a Count In Setup Day with the checkbox at
+  // the top of the Edit tab. CW (trailers) events always stay Non Event Time Sheets. A Count In
+  // Setup Day has no end date (the events API clears it), so a sheet running several days must
+  // be cut to one day first or the hours on its later days would drop out of payroll.
+  const canConvertToCountInSetup =
+    event?.event_type === "special" && (event?.division || "").toString().toLowerCase() !== "trailers";
+  const convertingToCountInSetup = canConvertToCountInSetup && form.event_type === "count_in_setup";
+  const nonEventSpansSeveralDays = Boolean(form.end_date && form.end_date !== form.event_date);
   const dashboardTabs: Array<[TabType, string, string]> = [
     ["edit", "Edit Event", "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"],
     ...(!hideSalesAndMerchandise
@@ -1404,7 +1415,7 @@ export default function EventDashboardPage() {
           required_staff: eventData.required_staff || null,
           confirmed_staff: eventData.confirmed_staff || null,
           is_active: eventData.is_active !== undefined ? eventData.is_active : true,
-          event_type: eventData.event_type === "special" ? "special" : "normal",
+          event_type: normalizeEventType(eventData.event_type),
         });
         setTicketSales(eventData.ticket_sales?.toString() || "");
         setTicketCount(eventData.ticket_count?.toString() || "");
@@ -4069,6 +4080,12 @@ export default function EventDashboardPage() {
       return;
     }
 
+    if (convertingToCountInSetup && nonEventSpansSeveralDays) {
+      setMessage("A Count In Setup Day covers one day. Uncheck Convert, clear the End Date, then convert it.");
+      setSubmitting(false);
+      return;
+    }
+
     try {
       const payload = {
         ...form,
@@ -4091,8 +4108,16 @@ export default function EventDashboardPage() {
 
       const data = await res.json();
       if (res.ok) {
-        setMessage("Event updated successfully");
+        const previousEventType = normalizeEventType(event?.event_type);
+        const savedEventType = normalizeEventType(data.event?.event_type);
+        setMessage(
+          previousEventType === "special" && savedEventType === "count_in_setup"
+            ? "Event converted to Count In Setup Day successfully"
+            : "Event updated successfully"
+        );
         setEvent(data.event);
+        // The event type decides how this event's hours are paid, so payroll screens must reload.
+        if (previousEventType !== savedEventType) markPayrollDataDirty();
       } else {
         setMessage(data.error || "Failed to update event");
       }
@@ -6258,6 +6283,39 @@ export default function EventDashboardPage() {
           {activeTab === "edit" && (
             <form onSubmit={isViewOnly ? (e) => e.preventDefault() : handleSubmit} className="space-y-8">
               <fieldset disabled={isViewOnly} className="space-y-8 min-w-0 border-0 p-0 m-0">
+              {canConvertToCountInSetup && (
+                <div
+                  className={`rounded-xl border p-5 ${
+                    convertingToCountInSetup ? "bg-amber-50 border-amber-300" : "bg-white border-gray-200 shadow-sm"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <input
+                      id="convert_to_count_in_setup"
+                      type="checkbox"
+                      checked={convertingToCountInSetup}
+                      disabled={!convertingToCountInSetup && nonEventSpansSeveralDays}
+                      onChange={(e) => {
+                        const convert = e.target.checked;
+                        setForm((prev) => ({ ...prev, event_type: convert ? "count_in_setup" : "special" }));
+                      }}
+                      className="mt-0.5 h-5 w-5 text-amber-600 focus:ring-amber-500 border-gray-300 rounded cursor-pointer disabled:cursor-not-allowed"
+                    />
+                    <div>
+                      <label htmlFor="convert_to_count_in_setup" className="text-sm font-semibold text-gray-800 cursor-pointer">
+                        Convert to {EVENT_TYPE_LABELS.count_in_setup}
+                      </label>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {convertingToCountInSetup
+                          ? "Click Update Event to save. After that it is timed and paid like an event instead of a Non Event Time Sheet."
+                          : nonEventSpansSeveralDays
+                          ? "This sheet runs several days. Clear the End Date first, because a Count In Setup Day covers one day."
+                          : "Turns this Non Event Time Sheet into a Count In Setup Day."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
                   <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -6500,17 +6558,28 @@ export default function EventDashboardPage() {
                   </svg>
                   Event Category
                 </h3>
-                <div className="flex gap-3">
+                <div className="flex flex-col sm:flex-row gap-3">
                   <button
                     type="button"
                     onClick={() => setForm((prev) => ({ ...prev, event_type: "normal" }))}
                     className={`flex-1 py-3 px-4 rounded-lg border-2 font-semibold text-sm transition-all duration-200 ${
-                      form.event_type !== "special"
+                      normalizeEventType(form.event_type) === "normal"
                         ? "border-blue-600 bg-blue-50 text-blue-700"
                         : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
                     }`}
                   >
-                    Event Time Keeping
+                    {EVENT_TYPE_LABELS.normal}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, event_type: "count_in_setup" }))}
+                    className={`flex-1 py-3 px-4 rounded-lg border-2 font-semibold text-sm transition-all duration-200 ${
+                      form.event_type === "count_in_setup"
+                        ? "border-amber-600 bg-amber-50 text-amber-700"
+                        : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                    }`}
+                  >
+                    {EVENT_TYPE_LABELS.count_in_setup}
                   </button>
                   <button
                     type="button"

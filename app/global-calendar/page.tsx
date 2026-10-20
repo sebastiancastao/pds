@@ -12,6 +12,7 @@ import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { getVenueAbbreviation } from "@/lib/utils";
 import { isPendingTeamStatus } from "@/lib/team-conflicts";
+import { EVENT_TYPE_LABELS, type EventType } from "@/lib/event-types";
 import "./dashboard-styles.css";
 import PendingFormsList from "@/components/PendingFormsList";
 
@@ -44,7 +45,7 @@ type EventItem = {
   fees?: number | null;
   other_income?: number | null;
   is_empty?: boolean;
-  event_type?: "normal" | "special";
+  event_type?: EventType;
   division?: string | null;
 };
 
@@ -2054,6 +2055,7 @@ export default function DashboardPage() {
                       >
                         <option value="all">All Types</option>
                         <option value="normal">Normal</option>
+                        <option value="count_in_setup">{EVENT_TYPE_LABELS.count_in_setup}</option>
                         <option value="special">Special</option>
                       </select>
                     </div>
@@ -2163,6 +2165,11 @@ export default function DashboardPage() {
                             {ev.event_type === "special" && (
                               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-200">
                                 Special
+                              </span>
+                            )}
+                            {ev.event_type === "count_in_setup" && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                                {EVENT_TYPE_LABELS.count_in_setup}
                               </span>
                             )}
                           </div>

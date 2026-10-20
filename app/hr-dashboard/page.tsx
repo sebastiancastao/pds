@@ -12,6 +12,7 @@ import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown,
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRestBreakPay } from "@/lib/rest-breaks";
+import { COUNT_IN_SETUP_FLAT_PAY, EVENT_TYPE_LABELS, isCountInFlatPayOn, normalizeEventType } from "@/lib/event-types";
 import ReimbursementsPanel from "./ReimbursementsPanel";
 import PayrollUploadPanel, { type SystemPayrollTotal } from "./PayrollUploadPanel";
 import UploadedPayrollView from "./UploadedPayrollView";
@@ -632,6 +633,9 @@ function HRDashboardContent() {
   const [editingCell, setEditingCell] = useState<{ eventId: string; userId: string; column: 'reimbursement' | 'other' } | null>(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [savingTipsModeEventId, setSavingTipsModeEventId] = useState<string | null>(null);
+  const [savingCountInFlatPayEventId, setSavingCountInFlatPayEventId] = useState<string | null>(null);
+  // Signed-in role; only exec may switch a Count In Setup Day's flat $150 on or off.
+  const [viewerRole, setViewerRole] = useState<string>("");
   const [mileagePayOverrides, setMileagePayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' } | null>(null);
   const [editingMileageValue, setEditingMileageValue] = useState<string>('');
@@ -935,6 +939,7 @@ function HRDashboardContent() {
           .eq('id', userId)
           .single() as any);
         const role = (data?.role || '').toString().trim().toLowerCase();
+        setViewerRole(role);
         if (!error && (role === 'admin' || role === 'hr' || role === 'exec')) {
           setIsAuthorized(true);
         } else {
@@ -1447,6 +1452,7 @@ function HRDashboardContent() {
                   date: eventInfo.event_date,
                   division: eventInfo.division,
                   event_type: eventInfo.event_type || 'normal',
+                  countInFlatPayEnabled: eventInfo.count_in_flat_pay_enabled !== false,
                   isSanDiegoHourly: isEventSD,
                   isNonEventHourly: isNonEventPayroll,
                   commissionPerVendor,
@@ -1482,6 +1488,7 @@ function HRDashboardContent() {
             date: eventInfo.event_date,
             division: eventInfo.division,
             event_type: eventInfo.event_type || 'normal',
+            countInFlatPayEnabled: eventInfo.count_in_flat_pay_enabled !== false,
             isSanDiegoHourly: isEventSD,
             isNonEventHourly: isNonEventPayroll,
             commissionPerVendor: 0,
@@ -1529,6 +1536,11 @@ function HRDashboardContent() {
           ? eventCommissionDollars
           : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
         const isAZorNY = eventState === "AZ" || eventState === "NY";
+        // Count In Setup Day: each vendor who clocked hours gets a flat COUNT_IN_SETUP_FLAT_PAY
+        // commission share while the event pays them no pool share (it has no sales of its own),
+        // unless an exec switched it off for this event. Same rule and exclusions as the $0-pool
+        // shift pay in /api/generate-paystub, so it applies in the period-rate states (CA, NV, WI).
+        const appliesCountInFlatPay = isCountInFlatPayOn(eventInfo) && isPeriodRateState(eventState);
 
         // Vendor count for commission allocation
         const vendorCountEligible = vendorPayments.reduce((count: number, p: any) => {
@@ -1609,7 +1621,16 @@ function HRDashboardContent() {
             const isSanDiegoHourlyRow = isEventSD && !isSanDiegoLaCommissionRow;
             const isHourlyRow = isSanDiegoHourlyRow || isNonEventPayroll;
             const rowBaseRate = isSanDiegoHourlyRow ? baseRate : commissionBaseRate;
-            const commissionShare = (isHourlyRow || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
+            const poolCommissionShare = (isHourlyRow || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
+            const countInFlatPay =
+              appliesCountInFlatPay &&
+              !isHourlyRow &&
+              !isTrailers &&
+              !_isExplicitNonVendorDisplay &&
+              payment.commission_deleted !== true &&
+              roundedPayrollHours > 0 &&
+              poolCommissionShare <= 0;
+            const commissionShare = countInFlatPay ? COUNT_IN_SETUP_FLAT_PAY : poolCommissionShare;
 
             const priorWeeklyHours = (isAZorNY || isSanDiegoHourlyRow) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
@@ -1781,6 +1802,7 @@ function HRDashboardContent() {
               sanDiegoLaCommission: isSanDiegoLaCommissionRow,
               isNonEventHourly: isNonEventPayroll,
               dailyBreakdown,
+              countInFlatPay,
             };
           })
         );
@@ -1809,6 +1831,7 @@ function HRDashboardContent() {
           date: eventInfo.event_date,
           division: eventInfo.division,
           event_type: eventInfo.event_type || 'normal',
+          countInFlatPayEnabled: eventInfo.count_in_flat_pay_enabled !== false,
           isSanDiegoHourly: isEventSD,
           isNonEventHourly: isNonEventPayroll,
           commissionPerVendor,
@@ -2071,13 +2094,78 @@ function HRDashboardContent() {
           // San Diego events also pass the resolved share: Los Angeles-region vendors (paid
           // commission there) get their share of the whole team's split, and hourly workers
           // get none, rather than letting the pool be re-split here.
-          commissionShare: (event?.isCommissionShared || event?.isSanDiegoHourly)
+          // A Count In Setup Day's flat $150 is passed the same way (set in the main fetch loop).
+          commissionShare: (event?.isCommissionShared || event?.isSanDiegoHourly || payment?.countInFlatPay === true)
             ? (payment?.commissionShare ?? null)
             : null,
         })),
       })),
     });
   }, [paymentsByVenue]);
+
+  // Exec switches a Count In Setup Day's flat $150 on or off. Payroll reloads so every view,
+  // export and email uses the new pay; /api/generate-paystub reads the same setting.
+  const toggleCountInFlatPay = useCallback(async (eventId: string, enabled: boolean) => {
+    setSavingCountInFlatPayEventId(eventId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${eventId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ count_in_flat_pay_enabled: enabled }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to update the Count In Setup Day $150 pay');
+      }
+      await loadPaymentsData();
+    } catch (err: any) {
+      setPaymentsError(err?.message || 'Failed to update the Count In Setup Day $150 pay');
+    } finally {
+      setSavingCountInFlatPayEventId(null);
+    }
+  }, [loadPaymentsData]);
+
+  // Count In Setup Day tag under an event's name, with its $150 switch (a button for exec,
+  // read-only for everyone else).
+  const renderCountInFlatPayControl = (ev: any) => {
+    if (normalizeEventType(ev?.event_type) !== 'count_in_setup') return null;
+    const stateCode = normalizeState(ev?.state);
+    const paysInState = isPeriodRateState(stateCode);
+    const enabled = ev?.countInFlatPayEnabled !== false;
+    const saving = savingCountInFlatPayEventId === ev?.id;
+    const label = `$${COUNT_IN_SETUP_FLAT_PAY} flat pay: ${enabled ? 'On' : 'Off'}`;
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+          {EVENT_TYPE_LABELS.count_in_setup}
+        </span>
+        {!paysInState ? (
+          <span className="text-[10px] text-gray-500">No ${COUNT_IN_SETUP_FLAT_PAY} in {stateCode || 'this state'}</span>
+        ) : viewerRole === 'exec' ? (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => toggleCountInFlatPay(ev.id, !enabled)}
+            title={`On: every vendor with hours at this Count In Setup Day gets a $${COUNT_IN_SETUP_FLAT_PAY} commission. Saved immediately and used by every payroll view, export and paystub.`}
+            className={`text-[10px] px-1.5 py-0.5 rounded border font-medium disabled:opacity-50 ${enabled ? 'bg-amber-100 border-amber-400 text-amber-800' : 'border-gray-300 text-gray-500 hover:border-amber-400 hover:text-amber-700'}`}
+          >
+            {saving ? 'Saving…' : label}
+          </button>
+        ) : (
+          <span
+            title="Only exec can change this."
+            className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${enabled ? 'bg-amber-50 border-amber-200 text-amber-800' : 'border-gray-200 text-gray-500'}`}
+          >
+            {label}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   const paymentsByVendor = useMemo(() => {
     const byVendor: Record<string, {
@@ -5872,6 +5960,7 @@ function HRDashboardContent() {
                                 <tr className="hover:bg-gray-50">
                                   <td className="px-4 py-2 text-sm">
                                     <Link href={eventHref} className="text-blue-600 hover:text-blue-800 hover:underline">{event.name}</Link>
+                                    {renderCountInFlatPayControl(event)}
                                   </td>
                                   <td className="px-4 py-2 text-sm text-gray-700">{venue}<span className="text-gray-400 ml-1">{city ? `· ${city}` : ''}{state ? `, ${state}` : ''}</span></td>
                                   <td className="px-4 py-2 text-sm text-gray-500">{event.date || '—'}</td>
@@ -6242,6 +6331,7 @@ function HRDashboardContent() {
                                       {ev.name}
                                     </Link>
                                   </div>
+                                  {renderCountInFlatPayControl(ev)}
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-500">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Date</div>

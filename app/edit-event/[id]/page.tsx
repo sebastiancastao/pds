@@ -3,6 +3,7 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
+import { EVENT_TYPE_LABELS, normalizeEventType, type EventType } from "@/lib/event-types";
 import { supabase } from "@/lib/supabase";
 
 type EventItem = {
@@ -26,7 +27,7 @@ type EventItem = {
   required_staff: number | null;
   confirmed_staff: number | null;
   is_active: boolean;
-  event_type: "normal" | "special";
+  event_type: EventType;
   created_at: string;
   updated_at: string;
 };
@@ -147,7 +148,7 @@ export default function EditEventPage() {
           required_staff: event.required_staff || null,
           confirmed_staff: event.confirmed_staff || null,
           is_active: event.is_active !== undefined ? event.is_active : true,
-          event_type: event.event_type || "normal"
+          event_type: normalizeEventType(event.event_type)
         });
       } else {
         setMessage("Failed to load event details");
@@ -315,8 +316,9 @@ export default function EditEventPage() {
                 required
                 className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
               >
-                <option value="normal">Event Time Keeping</option>
-                <option value="special">Non Event Time Sheet</option>
+                <option value="normal">{EVENT_TYPE_LABELS.normal}</option>
+                <option value="count_in_setup">{EVENT_TYPE_LABELS.count_in_setup}</option>
+                <option value="special">{EVENT_TYPE_LABELS.special}</option>
               </select>
             </div>
             {isNonEvent && (

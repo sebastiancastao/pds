@@ -19,6 +19,7 @@ import { attachRegionMetadataToEvents } from "@/lib/event-region";
 import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyForVendor, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
 import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
+import { normalizeEventType } from "@/lib/event-types";
 import {
   buildPaystubFromUploadedLines,
   matchUploadLineToEvent,
@@ -328,6 +329,32 @@ export async function POST(req: NextRequest) {
     // at a San Diego event are paid commission instead (see lib/commission-pool).
     const paysSanDiegoHourlyForWorker = (event: any, userId: unknown): boolean =>
       paysSanDiegoHourlyForVendor(event, getVendorRegionName(userId));
+
+    // A Count In Setup Day pays the flat ZERO_COMMISSION_SHIFT_PAY by default; an exec can switch
+    // it off per event on the HR dashboard Payroll tab (events.count_in_flat_pay_enabled). Read
+    // here, not from the request, so a stale paystub-generator page cannot pay a switched-off $150.
+    const countInFlatPayOffEventIds = new Set<string>();
+    const paystubDbEventIds = Array.from(
+      new Set(
+        (Array.isArray(events) ? events : [])
+          .map((e: any) => (e?.id || "").toString())
+          .filter((id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      )
+    );
+    if (paystubDbEventIds.length > 0) {
+      const { data: flatPayRows, error: flatPayError } = await supabaseAdmin
+        .from("events")
+        .select("id, event_type, count_in_flat_pay_enabled")
+        .in("id", paystubDbEventIds);
+      if (flatPayError) {
+        throw new Error(`Could not read the Count In Setup Day pay settings: ${flatPayError.message}`);
+      }
+      for (const row of (flatPayRows || []) as any[]) {
+        if (normalizeEventType(row?.event_type) === "count_in_setup" && row?.count_in_flat_pay_enabled === false) {
+          countInFlatPayOffEventIds.add(String(row.id));
+        }
+      }
+    }
 
     const isCalifornia = paystubState === "CA";
     const hasAzNyEvent = Array.isArray(events) && events.some((e: any) => {
@@ -658,8 +685,9 @@ export async function POST(req: NextRequest) {
     // The flat ZERO_COMMISSION_SHIFT_PAY for a shift with hours at an event whose pool (or
     // shared group's pool) pays this worker nothing; 0 otherwise. Shifts paid hourly (San Diego
     // hourly, non-event timesheets), Trailers, non-vendors and a commission deleted on the
-    // event-dashboard Payment tab stay at $0. It feeds the pay-period calculation, which only
-    // pays commission in the period-rate states (CA, NV, WI); AZ and NY are unchanged.
+    // event-dashboard Payment tab stay at $0, and so does a Count In Setup Day whose $150 an exec
+    // switched off. It feeds the pay-period calculation, which only pays commission in the
+    // period-rate states (CA, NV, WI); AZ and NY are unchanged.
     const getZeroCommissionShiftPay = (event: any, worker: any, poolShare: unknown): number => {
       if (!worker || Number(poolShare || 0) > 0) return 0;
       const userId = (worker?.user_id || "").toString();
@@ -669,6 +697,7 @@ export async function POST(req: NextRequest) {
         isTrailersDivision(worker?.division) ||
         worker?.payment_data?.commission_deleted === true ||
         isNonEventTimesheet(event) ||
+        countInFlatPayOffEventIds.has((event?.id || "").toString()) ||
         paysSanDiegoHourlyForWorker(event, userId) ||
         Number(getActualHoursForWorker(event, worker).toFixed(2)) <= 0
       ) {
