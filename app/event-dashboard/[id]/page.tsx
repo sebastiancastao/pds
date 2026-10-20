@@ -4483,13 +4483,16 @@ export default function EventDashboardPage() {
   };
 
   // ── Meal-timing alerts (timesheet table) ────────────────────────────────────────
-  // Orange = warning, red = late. Both meals are measured from admin time:
-  //   Meal 1 start  : orange at 4h, red at 5h
-  //   Meal 2 start  : orange at 9h, red at 10h
+  // Orange = warning, red = late.
+  //   Meal 1 start  : orange at 4h, red at 5h after admin time
+  //   Meal 2 start  : orange at 4h, red at 5h after Meal 1 end. A Meal 2 that starts less
+  //                   than 5h after Meal 1 end is never red. Only when Meal 1 has no end
+  //                   time is Meal 2 measured from admin time instead (orange 9h, red 10h).
   // A meal that has not been entered is aged against the clock-out time, or against "now"
   // while the worker is still clocked in, so a missed meal turns the (empty) cell orange/red.
   // Worked time of 12h or more (admin time to clock-out/now, minus recorded meals: the same
-  // figure as the Hrs column) also turns Meal 2 red, whether or not Meal 2 was entered.
+  // figure as the Hrs column) also turns an empty Meal 2 red. A recorded Meal 2 is judged
+  // only by when it started.
   // Colors stay after the worker clocks out (and after the event ends), so a finished shift
   // still shows a late or missed meal.
   type MealAlert = { level: "orange" | "red"; reason: string } | null;
@@ -4563,27 +4566,29 @@ export default function EventDashboardPage() {
     return ageMs >= 0 && ageMs <= MEAL_ALERT_MAX_SHIFT_MINUTES * 60 * 1000;
   };
 
+  // Measures a meal from `fromTime` (admin time, or Meal 1 end for Meal 2).
   // shiftEnd: clock-out time, or "now" while still clocked in, or "" when unknown.
   const evaluateMeal = (
     mealName: string,
     orangeHours: number,
     redHours: number,
-    adminTime: string,
+    fromTime: string,
+    fromLabel: string,
     mealStart: string,
     shiftEnd: string
   ): MealAlert =>
     mealStart
       ? evaluateMealElapsed(
-          minutesBetweenHHMM(adminTime, mealStart),
+          minutesBetweenHHMM(fromTime, mealStart),
           orangeHours,
           redHours,
-          (elapsed) => `${mealName} started ${elapsed} after admin time`
+          (elapsed) => `${mealName} started ${elapsed} after ${fromLabel}`
         )
       : evaluateMealElapsed(
-          minutesBetweenHHMM(adminTime, shiftEnd, MEAL_ALERT_MAX_SHIFT_MINUTES),
+          minutesBetweenHHMM(fromTime, shiftEnd, MEAL_ALERT_MAX_SHIFT_MINUTES),
           orangeHours,
           redHours,
-          (elapsed) => `No ${mealName} recorded, ${elapsed} since admin time`
+          (elapsed) => `No ${mealName} recorded, ${elapsed} since ${fromLabel}`
         );
 
   // Worked minutes = admin time to shiftEnd, minus every meal that has both a start and an end.
@@ -4623,9 +4628,12 @@ export default function EventDashboardPage() {
             reason: `Worked ${formatElapsedHM(workedMinutes)} (${MEAL_ALERT_WORKED_RED_HOURS}h+)`,
           }
         : null;
+    const meal2 = t.meal1End
+      ? evaluateMeal("Meal 2", 4, 5, t.meal1End, "Meal 1 end", t.meal2Start, t.shiftEnd)
+      : evaluateMeal("Meal 2", 9, 10, t.adminTime, "admin time", t.meal2Start, t.shiftEnd);
     return {
-      meal1: evaluateMeal("Meal 1", 4, 5, t.adminTime, t.meal1Start, t.shiftEnd),
-      meal2: workedAlert || evaluateMeal("Meal 2", 9, 10, t.adminTime, t.meal2Start, t.shiftEnd),
+      meal1: evaluateMeal("Meal 1", 4, 5, t.adminTime, "admin time", t.meal1Start, t.shiftEnd),
+      meal2: (!t.meal2Start && workedAlert) || meal2,
     };
   };
 
