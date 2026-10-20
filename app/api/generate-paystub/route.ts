@@ -7,11 +7,18 @@ import { distributePoolByHoursRule, distributeTipsPool, roundAmountsToCents, sho
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution } from "@/lib/linked-commission";
 import { safeDecrypt } from "@/lib/encryption";
-import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
+import {
+  getRegionFallbackCommissionPoolPercent,
+  hasSanDiegoLaCommissionPool,
+  isSanDiegoRegion,
+  LOS_ANGELES_COMMISSION_POOL_PERCENT,
+  paysSanDiegoHourlyForVendor,
+} from "@/lib/commission-pool";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
-import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyEvent, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
+import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyForVendor, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
+import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
 import {
   buildPaystubFromUploadedLines,
   matchUploadLineToEvent,
@@ -94,10 +101,11 @@ const ADP_EARNINGS_LINE_KEYS = [
   "holiday",
 ] as const;
 
-// HR pays each worker a flat commission for a count-in / set-up day, which has no sales of its
-// own (HR payroll sheets: SMX Count In/Set Up 9/18/2026, the Hot Wheels and Aespa count-ins
-// 10/2/2026). The system has no such rule, so the day's commission report row pays $0.
-const COUNT_IN_DAY_COMMISSION = 150;
+// HR pays a flat $150 commission for every shift worked at an event with no commission: its
+// pool is $0, like a count-in / set-up day with no sales of its own (HR payroll sheets: SMX
+// Count In/Set Up 9/18/2026, the Hot Wheels and Aespa count-ins 10/2/2026). Without it those
+// clocked hours would pay $0 on the commission report.
+const ZERO_COMMISSION_SHIFT_PAY = 150;
 
 // Largest gap between ADP's commission (or tips) and the commission report's event rows that is
 // spread over those rows, as a share of the rows' own total. Above it the gap stays in the
@@ -304,6 +312,23 @@ export async function POST(req: NextRequest) {
       Array.isArray(rawEvents) ? rawEvents : []
     );
 
+    // Every worker's home region (profiles.region_id -> regions.name), read here rather than
+    // from the request. Los Angeles-region vendors stay on commission at San Diego events (their
+    // LA agreement, 4% pool), so a failed lookup must stop the paystub instead of silently
+    // paying them San Diego hourly.
+    const vendorRegionByUserId = await fetchRegionNameByUserId(
+      supabaseAdmin,
+      (Array.isArray(events) ? events : []).flatMap((e: any) =>
+        (Array.isArray(e?.workers) ? e.workers : []).map((w: any) => w?.user_id)
+      )
+    );
+    const getVendorRegionName = (userId: unknown): string | null =>
+      vendorRegionByUserId[(userId ?? "").toString()] ?? null;
+    // True when this worker is paid San Diego hourly at this event. Los Angeles-region vendors
+    // at a San Diego event are paid commission instead (see lib/commission-pool).
+    const paysSanDiegoHourlyForWorker = (event: any, userId: unknown): boolean =>
+      paysSanDiegoHourlyForVendor(event, getVendorRegionName(userId));
+
     const isCalifornia = paystubState === "CA";
     const hasAzNyEvent = Array.isArray(events) && events.some((e: any) => {
       const st = normalizeState(e?.state);
@@ -347,12 +372,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Only commission-based work pays rest breaks. Hourly events (San Diego and non-event
-    // "special" timesheets) pay none, matching the event dashboard Payment tab, the HR
+    // Only commission-based work pays rest breaks. Hourly work (San Diego and non-event
+    // "special" timesheets) pays none, matching the event dashboard Payment tab, the HR
     // dashboard and this page's commission report. Managers still record a count on those
-    // timesheets, but it is for the timesheet only (see lib/rest-breaks).
-    const isHourlyRestBreakEvent = (event: any): boolean =>
-      isRestBreakRecordOnlyEvent(event) || isSanDiegoRegion(event);
+    // timesheets, but it is for the timesheet only (see lib/rest-breaks). Los Angeles-region
+    // vendors at a San Diego event are on commission, so their rest breaks are paid.
+    const isHourlyRestBreakForWorker = (event: any, userId: unknown): boolean =>
+      isRestBreakRecordOnlyForVendor(event, getVendorRegionName(userId)) ||
+      paysSanDiegoHourlyForWorker(event, userId);
     // Non-event ("special") timesheets are pure hourly for everyone: no commission pool, no
     // wage floor and no rest break, as /api/vendor-payments and the HR dashboard pay them.
     const isNonEventTimesheet = (event: any): boolean =>
@@ -397,16 +424,26 @@ export async function POST(req: NextRequest) {
       const eventPaymentSummary = event?.event_payment || event?.eventPayment || event?.event_payment_summary || null;
       const eventState = normalizeState(event?.state) || paystubState;
       const isEventSD = isSanDiegoRegion(event);
+      // San Diego events pay their own vendors hourly. Their only commission pool is the one
+      // Los Angeles-region vendors working there are paid from: their LA agreement percent of
+      // the event's net sales, split across the whole team. A San Diego non-event timesheet
+      // has no pool at all.
+      const sanDiegoLaPool = hasSanDiegoLaCommissionPool(event);
+      const hasNoCommissionPool = isEventSD && !sanDiegoLaPool;
       const fallbackRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
       const stateBaseRate = dbStateRates[eventState] || fallbackRates[eventState] || 17.28;
       const baseRate = isEventSD
         ? SAN_DIEGO_BASE_RATE
         : Number(eventPaymentSummary?.base_rate || stateBaseRate);
+      // Rate commission pay is built on. At a San Diego event that is the state rate (the saved
+      // event base rate there is the San Diego hourly rate).
+      const commissionBaseRate = isEventSD ? stateBaseRate : baseRate;
       const savedCommissionPoolPercent = Number(eventPaymentSummary?.commission_pool_percent || 0);
       const configuredCommissionPoolPercent = Number(event?.commission_pool || 0);
       const fallbackCommissionPoolPercent = Number(getRegionFallbackCommissionPoolPercent(event) || 0);
       const resolvedCommissionPoolPercent =
-        isEventSD ? 0 :
+        hasNoCommissionPool ? 0 :
+        sanDiegoLaPool ? LOS_ANGELES_COMMISSION_POOL_PERCENT :
         (Number.isFinite(savedCommissionPoolPercent) && savedCommissionPoolPercent > 0 ? savedCommissionPoolPercent : 0) ||
         (Number.isFinite(configuredCommissionPoolPercent) && configuredCommissionPoolPercent > 0 ? configuredCommissionPoolPercent : 0) ||
         (Number.isFinite(fallbackCommissionPoolPercent) && fallbackCommissionPoolPercent > 0 ? fallbackCommissionPoolPercent : 0);
@@ -429,20 +466,24 @@ export async function POST(req: NextRequest) {
       // A known percent on $0 sales is a $0 pool, though: older Payment tab saves wrote a
       // whole shared group's pool into commission_pool_dollars, so trusting it on a day of
       // the group with no sales of its own counted that pool once more for each such day.
-      let commissionPoolDollars = isEventSD
+      // The San Diego LA pool is always recomputed from net sales: the saved dollar figure on a
+      // San Diego event is the event's own 3% pool, not the LA agreement's.
+      let commissionPoolDollars = hasNoCommissionPool
         ? 0
-        : resolvedCommissionPoolPercent > 0 && netSalesForPool <= 0
-          ? 0
-          : Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
-            (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
-            0;
+        : sanDiegoLaPool
+          ? netSalesForPool * resolvedCommissionPoolPercent
+          : resolvedCommissionPoolPercent > 0 && netSalesForPool <= 0
+            ? 0
+            : Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
+              (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
+              0;
 
       if (!isEventSD && commissionPoolDollars === 0 && resolvedCommissionPoolPercent > 0) {
         commissionPoolDollars = netSalesForPool * resolvedCommissionPoolPercent;
       }
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
-      const commissionEligibleMembers = isEventSD ? [] : workers.flatMap((w: any) => {
+      const commissionEligibleMembers = hasNoCommissionPool ? [] : workers.flatMap((w: any) => {
         const workerId = (w?.user_id || "").toString();
         const workerHours = Number(getActualHoursForWorker(event, w).toFixed(2));
         if (
@@ -487,6 +528,7 @@ export async function POST(req: NextRequest) {
       return {
         eventState,
         baseRate,
+        commissionBaseRate,
         memberCount,
         commissionEligibleCount,
         commissionPoolPercent: resolvedCommissionPoolPercent,
@@ -613,6 +655,28 @@ export async function POST(req: NextRequest) {
       };
     };
 
+    // The flat ZERO_COMMISSION_SHIFT_PAY for a shift with hours at an event whose pool (or
+    // shared group's pool) pays this worker nothing; 0 otherwise. Shifts paid hourly (San Diego
+    // hourly, non-event timesheets), Trailers, non-vendors and a commission deleted on the
+    // event-dashboard Payment tab stay at $0. It feeds the pay-period calculation, which only
+    // pays commission in the period-rate states (CA, NV, WI); AZ and NY are unchanged.
+    const getZeroCommissionShiftPay = (event: any, worker: any, poolShare: unknown): number => {
+      if (!worker || Number(poolShare || 0) > 0) return 0;
+      const userId = (worker?.user_id || "").toString();
+      if (
+        !userId ||
+        isExplicitNonVendorDivision(worker?.division) ||
+        isTrailersDivision(worker?.division) ||
+        worker?.payment_data?.commission_deleted === true ||
+        isNonEventTimesheet(event) ||
+        paysSanDiegoHourlyForWorker(event, userId) ||
+        Number(getActualHoursForWorker(event, worker).toFixed(2)) <= 0
+      ) {
+        return 0;
+      }
+      return ZERO_COMMISSION_SHIFT_PAY;
+    };
+
     const payPeriodCommission = computePayPeriodCommission({
       events: (Array.isArray(events) ? events : []).map((event: any) => {
         const payrollInputs = getPayrollInputsForEvent(event);
@@ -628,6 +692,13 @@ export async function POST(req: NextRequest) {
           commissionPoolDollars: Number(payrollInputs.commissionPoolDollars || 0),
           workers: (Array.isArray(event?.workers) ? event.workers : []).map((worker: any) => {
             const workerUserId = (worker?.user_id || "").toString();
+            const zeroCommissionShiftPay = getZeroCommissionShiftPay(
+              event,
+              worker,
+              mergedShares
+                ? mergedShares[workerUserId]
+                : payrollInputs.commissionSharesByUser?.[workerUserId]
+            );
             return {
               userId: workerUserId,
               division: worker?.division,
@@ -639,7 +710,15 @@ export async function POST(req: NextRequest) {
                 Number.isFinite(Number(worker.payment_data.commission_override))
                   ? Number(worker.payment_data.commission_override)
                   : null,
-              commissionShare: mergedShares ? Number(mergedShares[workerUserId] || 0) : null,
+              // A San Diego event's pool is the Los Angeles vendors' one: workers paid San
+              // Diego hourly there still count in its split but are paid nothing from it.
+              commissionShare: paysSanDiegoHourlyForWorker(event, workerUserId)
+                ? 0
+                : zeroCommissionShiftPay > 0
+                  ? zeroCommissionShiftPay
+                  : mergedShares
+                    ? Number(mergedShares[workerUserId] || 0)
+                    : null,
             };
           }),
         };
@@ -1253,6 +1332,8 @@ export async function POST(req: NextRequest) {
       poolUnknown?: boolean;
       // The "Adjustment / Per ADP" row: counted in the stub's totals, not printed on the report.
       adpAdjustment?: boolean;
+      // Shift at an event with no commission, paid the flat ZERO_COMMISSION_SHIFT_PAY.
+      zeroCommissionShift?: boolean;
     };
 
     const addCommissionReportPage = (
@@ -1770,7 +1851,8 @@ export async function POST(req: NextRequest) {
 
         const {
           eventState,
-          baseRate,
+          baseRate: eventBaseRate,
+          commissionBaseRate,
           commissionEligibleCount,
           commissionPoolPercent,
           commissionPoolDollars,
@@ -1802,12 +1884,16 @@ export async function POST(req: NextRequest) {
           },
           hoursComparison
         );
-        const isEventSD = sdEventIds.has(eventId);
+        // San Diego events pay hourly, except to Los Angeles-region vendors: they keep their LA
+        // commission agreement there, so their row is built like any commission event's.
+        const paysSanDiegoHourly =
+          sdEventIds.has(eventId) && paysSanDiegoHourlyForWorker(event, worker?.user_id);
         // A non-event timesheet outside San Diego (e.g. "PDS Operations") is hourly too: it is
         // Regular pay, not a $0 commission row whose hours would lower the period's rate.
-        const paysNonEventHourly = !isEventSD && isNonEventTimesheet(event);
-        const paysHourly = isEventSD || paysNonEventHourly;
-        const priorWeeklyHours = (azNyMode || isEventSD) ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
+        const paysNonEventHourly = !paysSanDiegoHourly && isNonEventTimesheet(event);
+        const paysHourly = paysSanDiegoHourly || paysNonEventHourly;
+        const baseRate = paysSanDiegoHourly ? eventBaseRate : commissionBaseRate;
+        const priorWeeklyHours = (azNyMode || paysSanDiegoHourly) ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = azNyMode && (priorWeeklyHours + actualHours) > 40;
         const workerUserId = (worker?.user_id || "").toString();
         const usesPeriodRate = isPeriodRateState(eventState);
@@ -1836,7 +1922,7 @@ export async function POST(req: NextRequest) {
         let sdOtPay = 0;
         let sdDtPay = 0;
 
-        if (isEventSD) {
+        if (paysSanDiegoHourly) {
           const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(
             payrollHours,
             baseRate,
@@ -1855,11 +1941,11 @@ export async function POST(req: NextRequest) {
         } else if (paysNonEventHourly) {
           // Straight hourly at the event's base rate, like /api/vendor-payments.
           sdRegHours = payrollHours;
-          sdRegPay = roundPayrollAmount(payrollHours * baseRate);
+          sdRegPay = roundPayrollAmount(payrollHours * eventBaseRate);
           extAmtOnRegRate = sdRegPay;
           commissionAmt = 0;
           totalFinalCommissionAmt = payrollHours > 0 ? sdRegPay : 0;
-          loadedRateBase = payrollHours > 0 ? baseRate : 0;
+          loadedRateBase = payrollHours > 0 ? eventBaseRate : baseRate;
         } else if (azNyMode) {
           const isEligibleThisWorker =
             !!worker &&
@@ -1954,7 +2040,7 @@ export async function POST(req: NextRequest) {
             ? getRestBreakAmount(
                 actualHours,
                 paystubState,
-                paysHourly || isHourlyRestBreakEvent(event),
+                paysHourly || isHourlyRestBreakForWorker(event, worker?.user_id),
                 recordedRestBreaks,
                 event?.event_date
               )
@@ -1977,6 +2063,11 @@ export async function POST(req: NextRequest) {
         const commissionReportFinalPay = roundPayrollAmount(reportFinalPay + other);
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
+        const zeroCommissionShift =
+          usesPeriodRate &&
+          !paysHourly &&
+          getZeroCommissionShiftPay(event, worker, commissionSharesByUser[workerUserId]) > 0 &&
+          Math.abs(displayCommissionPay - ZERO_COMMISSION_SHIFT_PAY) < 0.005;
 
         if (!paysHourly && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
           // Match HR dashboard payroll logic:
@@ -2002,6 +2093,7 @@ export async function POST(req: NextRequest) {
             restBreak,
             bonus: other,
             finalPay: commissionReportFinalPay,
+            zeroCommissionShift,
           });
         }
 
@@ -2131,15 +2223,37 @@ export async function POST(req: NextRequest) {
       if (
         adpCommissionGap > 0 &&
         countInDayRows.length > 0 &&
-        Math.abs(adpCommissionGap - countInDayRows.length * COUNT_IN_DAY_COMMISSION) < 0.005
+        Math.abs(adpCommissionGap - countInDayRows.length * ZERO_COMMISSION_SHIFT_PAY) < 0.005
       ) {
         for (const row of countInDayRows) {
-          row.commissionPerEmployee = COUNT_IN_DAY_COMMISSION;
-          row.finalPay = roundPayrollAmount(row.finalPay + COUNT_IN_DAY_COMMISSION);
+          row.commissionPerEmployee = ZERO_COMMISSION_SHIFT_PAY;
+          row.finalPay = roundPayrollAmount(row.finalPay + ZERO_COMMISSION_SHIFT_PAY);
         }
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] ADP count-in commission on its rows", {
             rows: countInDayRows.length,
+            amount: adpCommissionGap,
+          });
+        }
+        adpCommissionGap = 0;
+      }
+      // The statement prints what ADP paid. When ADP's commission is short by exactly the flat
+      // pay of every no-commission shift on the report, ADP did not pay those shifts: their rows
+      // go back to $0 so the report agrees with the statement (HR has to pay them in ADP).
+      const zeroCommissionShiftRows = caCommissionRows.filter((row) => row.zeroCommissionShift);
+      if (
+        adpCommissionGap < 0 &&
+        zeroCommissionShiftRows.length > 0 &&
+        Math.abs(adpCommissionGap + zeroCommissionShiftRows.length * ZERO_COMMISSION_SHIFT_PAY) < 0.005
+      ) {
+        for (const row of zeroCommissionShiftRows) {
+          row.commissionPerEmployee = 0;
+          row.rateInEffect = 0;
+          row.finalPay = roundPayrollAmount(row.finalPay - ZERO_COMMISSION_SHIFT_PAY);
+        }
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] ADP did not pay the no-commission shift pay", {
+            rows: zeroCommissionShiftRows.length,
             amount: adpCommissionGap,
           });
         }
@@ -3258,8 +3372,11 @@ export async function POST(req: NextRequest) {
         const workerUserId = (worker?.user_id || "").toString();
         const usesPeriodRate = isPeriodRateState(eventState);
         const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[workerUserId];
+        // A San Diego event's pool belongs to Los Angeles-region vendors; anyone else paid San
+        // Diego hourly there gets no commission from it.
+        const paysSanDiegoHourlyNonCa = paysSanDiegoHourlyForWorker(event, workerUserId);
         const distributedCommissionShare =
-          !isTrailersDivision(worker?.division) && workerUserId
+          !paysSanDiegoHourlyNonCa && !isTrailersDivision(worker?.division) && workerUserId
             ? Number(commissionSharesByUser[workerUserId] || 0)
             : 0;
         const distributedTipsShare =
@@ -3396,7 +3513,7 @@ export async function POST(req: NextRequest) {
             ? getRestBreakAmount(
                 actualHours,
                 paystubState,
-                isHourlyRestBreakEvent(event),
+                isHourlyRestBreakForWorker(event, workerUserId),
                 getRecordedRestBreaks(event, worker),
                 event?.event_date
               )
@@ -3425,7 +3542,7 @@ export async function POST(req: NextRequest) {
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
 
-        if (!isSanDiegoRegion(event) && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
+        if (!paysSanDiegoHourlyNonCa && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
           // Match HR dashboard payroll logic:
           // Commission Pay = distributed share, Variable Incentive = excess above that share.
           nonCaCommissionRows.push({

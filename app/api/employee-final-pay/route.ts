@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getMondayOfWeek } from '@/lib/utils';
-import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
+import {
+  getRegionFallbackCommissionPoolPercent,
+  hasSanDiegoLaCommissionPool,
+  isSanDiegoRegion,
+  LOS_ANGELES_COMMISSION_POOL_PERCENT,
+  paysSanDiegoHourlyForVendor,
+} from '@/lib/commission-pool';
+import { fetchRegionNameByUserId } from '@/lib/vendor-region-server';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
@@ -146,7 +153,7 @@ export async function GET(req: NextRequest) {
 
     const { data: rawEvents, error: eventsError } = await supabaseAdmin
       .from('events')
-      .select('id, name:event_name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
+      .select('id, name:event_name, event_date, event_type, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
       .gte('event_date', startDate)
       .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
@@ -165,6 +172,16 @@ export async function GET(req: NextRequest) {
     const events = await attachRegionMetadataToEvents(supabaseAdmin, rawEvents || []);
 
     const eventIds = events.map((e: any) => e.id);
+
+    // The employee's home region. A Los Angeles-region vendor is paid commission at San Diego
+    // events (their LA agreement); everyone else is paid San Diego hourly there.
+    let vendorRegionName: string | null = null;
+    try {
+      vendorRegionName = (await fetchRegionNameByUserId(supabaseAdmin, [userId]))[userId] ?? null;
+    } catch (regionError: any) {
+      return NextResponse.json({ error: regionError?.message || 'Failed to load vendor region' }, { status: 500 });
+    }
+    const paysSanDiegoHourly = (ev: any): boolean => paysSanDiegoHourlyForVendor(ev, vendorRegionName);
 
     // Fetch vendor payment records for this user in those events
     const { data: vendorPayments, error: vpError } = await supabaseAdmin
@@ -286,7 +303,7 @@ export async function GET(req: NextRequest) {
       if (stateCode && baseRate > 0) baseRateByState[stateCode] = baseRate;
     }
 
-    const sdEventsForUser = (events || []).filter((ev: any) => vpByEvent[ev.id] && isSanDiegoRegion(ev));
+    const sdEventsForUser = (events || []).filter((ev: any) => vpByEvent[ev.id] && paysSanDiegoHourly(ev));
     const weeklyPriorHoursByEventId: Record<string, number> = {};
     await Promise.all(
       sdEventsForUser.map(async (ev: any) => {
@@ -339,6 +356,11 @@ export async function GET(req: NextRequest) {
     }> = {};
     for (const ev of events || []) {
       const isEventSD = isSanDiegoRegion(ev);
+      // A San Diego event's only pool is the Los Angeles vendors' one (their LA agreement
+      // percent of net sales, split across the whole team); a San Diego non-event timesheet
+      // has none.
+      const sanDiegoLaPool = hasSanDiegoLaCommissionPool(ev);
+      const hasNoCommissionPool = isEventSD && !sanDiegoLaPool;
       const eventRows = allVendorPaymentsByEvent[ev.id] || [];
       const ep = epByEvent[ev.id] || {};
       const ticketSales = Number(ev.ticket_sales || 0);
@@ -353,17 +375,22 @@ export async function GET(req: NextRequest) {
       const configuredPercent = Number(ev.commission_pool || 0);
       const fallbackPercent = Number(getRegionFallbackCommissionPoolPercent(ev) || 0);
       const resolvedCommissionPoolPercent =
-        isEventSD ? 0 :
+        hasNoCommissionPool ? 0 :
+        sanDiegoLaPool ? LOS_ANGELES_COMMISSION_POOL_PERCENT :
         (Number.isFinite(savedPercent) && savedPercent > 0 ? savedPercent : 0) ||
         (Number.isFinite(configuredPercent) && configuredPercent > 0 ? configuredPercent : 0) ||
         (Number.isFinite(fallbackPercent) && fallbackPercent > 0 ? fallbackPercent : 0);
-      const commissionPoolDollars = isEventSD
+      // The San Diego LA pool is always recomputed: the saved dollar figure there is the
+      // event's own 3% pool.
+      const commissionPoolDollars = hasNoCommissionPool
         ? 0
+        : sanDiegoLaPool
+        ? netSales * resolvedCommissionPoolPercent
         : Number(ep.commission_pool_dollars || 0) > 0
         ? Number(ep.commission_pool_dollars || 0)
         : netSales * resolvedCommissionPoolPercent;
       const totalTipsEvent = Number(ep.total_tips || 0) || Number(ev.tips || 0);
-      const commissionEligibleMembers = isEventSD ? [] : eventRows.flatMap((row: any) => {
+      const commissionEligibleMembers = hasNoCommissionPool ? [] : eventRows.flatMap((row: any) => {
         const paymentUserId = (row.user_id || '').toString();
         const actualHours = roundHours(getEffectiveHours(row));
         if (
@@ -433,6 +460,10 @@ export async function GET(req: NextRequest) {
             row?.commission_override != null && Number.isFinite(Number(row.commission_override))
               ? Number(row.commission_override)
               : null,
+          // Only this employee's results are read. Paid San Diego hourly at this event, they get
+          // nothing from its pool (it is the Los Angeles vendors' pool) but still count in its split.
+          commissionShare:
+            (row?.user_id || '').toString() === userId && paysSanDiegoHourly(ev) ? 0 : null,
           forceEvenSplit: row?.commission_even_split ?? undefined,
         })),
       })),
@@ -447,7 +478,9 @@ export async function GET(req: NextRequest) {
         const vp = vpByEvent[ev.id] || {};
         const ep = epByEvent[ev.id] || {};
         const adj = adjByEvent[ev.id] || {};
-        const isEventSD = isSanDiegoRegion(ev);
+        // San Diego hourly pay, unless this employee is a Los Angeles-region vendor: then the
+        // San Diego event is paid like any commission event (their LA agreement).
+        const paysHourlySD = paysSanDiegoHourly(ev);
         const actualHours = getEffectiveHours(vp);
         const hoursDebug = getHoursDebugBreakdown(vp);
 
@@ -464,18 +497,22 @@ export async function GET(req: NextRequest) {
         const adjustmentAmount = Number(adj.adjustment_amount || 0);
         const reimbursementAmount = Number(reimbursementsByEvent[ev.id] || 0);
         const netSales = Number(ep.net_sales || 0);
-        const commissionPoolDollars = isEventSD
+        const commissionPoolDollars = paysHourlySD
           ? 0
-          : Number(ep.commission_pool_dollars || distributionByEvent[ev.id]?.commissionPoolDollars || 0);
-        const distributedCommission = isEventSD ? 0 : Number(distributionByEvent[ev.id]?.commissionSharesByUser?.[userId] || 0);
+          : hasSanDiegoLaCommissionPool(ev)
+            ? Number(distributionByEvent[ev.id]?.commissionPoolDollars || 0)
+            : Number(ep.commission_pool_dollars || distributionByEvent[ev.id]?.commissionPoolDollars || 0);
+        const distributedCommission = paysHourlySD ? 0 : Number(distributionByEvent[ev.id]?.commissionSharesByUser?.[userId] || 0);
         const distributedTips = Number(distributionByEvent[ev.id]?.tipsSharesByUser?.[userId] || 0);
         const resolvedTips = distributedTips > 0 ? distributedTips : storedTips;
         const usesPeriodRate = isPeriodRateState(ev.state);
         const periodWorker = payPeriodCommission.byEvent?.[ev.id]?.[userId];
         const eventState = normalizeState(ev.state);
-        const baseRate = isEventSD
+        // A San Diego event's saved base rate is the San Diego hourly rate, so commission pay
+        // there (Los Angeles-region vendors) is built on the state rate instead.
+        const baseRate = paysHourlySD
           ? SAN_DIEGO_BASE_RATE
-          : Number(ep.base_rate || 0) ||
+          : Number(isSanDiegoRegion(ev) ? 0 : ep.base_rate || 0) ||
             Number(baseRateByState[eventState] || 0) ||
             fallbackBaseRates[eventState] ||
             17.28;
@@ -488,7 +525,7 @@ export async function GET(req: NextRequest) {
         // a flat additive $ amount, independent of the computed commission-uplift figure
         // of the same name below. Layered on top, never replacing it.
         const manualVariableIncentive = roundMoney(Number(vp.variable_incentive || 0));
-        const sanDiegoHourlyBreakdown = isEventSD
+        const sanDiegoHourlyBreakdown = paysHourlySD
           ? computeSanDiegoHourlyBreakdown(
               actualHours,
               baseRate,
@@ -496,28 +533,28 @@ export async function GET(req: NextRequest) {
             )
           : null;
         const commissionPay = roundMoney(
-          isEventSD
+          paysHourlySD
             ? 0
             : usesPeriodRate
               ? Number(periodWorker?.commissionPay || 0)
               : distributedCommission
         );
         const rawCommissionPaidTotal =
-          isEventSD
+          paysHourlySD
             ? Number(sanDiegoHourlyBreakdown?.totalPay || 0)
             : usesPeriodRate
               ? Number(periodWorker?.commissionPaidTotal || 0)
               : persistedCommissionPaidTotal;
         const commissionPaidTotal = roundMoney(rawCommissionPaidTotal + manualVariableIncentive);
         const variableIncentive = roundMoney(
-          (isEventSD
+          (paysHourlySD
             ? 0
             : usesPeriodRate
               ? Number(periodWorker?.variableIncentive || 0)
               : Math.max(0, rawCommissionPaidTotal - commissionPay)) + manualVariableIncentive
         );
         const loadedRate = roundMoney(
-          isEventSD
+          paysHourlySD
             ? Number(sanDiegoHourlyBreakdown?.blendedRate || baseRate)
             : actualHours > 0
               ? Math.max(
@@ -527,24 +564,24 @@ export async function GET(req: NextRequest) {
               : 0
         );
         const rateInEffect = roundMoney(
-          isEventSD
+          paysHourlySD
             ? Number(sanDiegoHourlyBreakdown?.blendedRate || baseRate)
             : usesPeriodRate
               ? Number(periodWorker?.rowRateInEffect || 0)
               : loadedRate
         );
-        const commissions = isEventSD ? 0 : commissionPay;
-        const regularPay = isEventSD
+        const commissions = paysHourlySD ? 0 : commissionPay;
+        const regularPay = paysHourlySD
           ? Number(sanDiegoHourlyBreakdown?.regularPay || 0)
           : Number(vp.regular_pay || 0);
-        const overtimePay = isEventSD
+        const overtimePay = paysHourlySD
           ? Number(sanDiegoHourlyBreakdown?.overtimePay || 0)
           : Number(vp.overtime_pay || 0);
-        const doubletimePay = isEventSD
+        const doubletimePay = paysHourlySD
           ? Number(sanDiegoHourlyBreakdown?.doubletimePay || 0)
           : Number(vp.doubletime_pay || 0);
         const totalPay = roundMoney(
-          isEventSD
+          paysHourlySD
             ? commissionPaidTotal + resolvedTips
             : Number(vp.total_pay || 0)
         );
@@ -558,6 +595,9 @@ export async function GET(req: NextRequest) {
           city: ev.city,
           state: ev.state,
           usesPeriodRate,
+          // Paid San Diego hourly (no commission row). False for Los Angeles-region vendors at
+          // a San Diego event, who are paid commission there.
+          sanDiegoHourly: paysHourlySD,
           actualHours,
           regularPay,
           overtimePay,

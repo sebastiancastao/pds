@@ -135,6 +135,18 @@ export async function GET(req: NextRequest) {
     // Rest breaks managers recorded on the event Timesheet tab (eventId -> userId -> count).
     const restBreakCountsByEvent = await fetchPayableRestBreakCounts(supabaseAdmin, eventIds);
 
+    // Region names by id, so every worker carries their home region (vendor_region_name).
+    // The paystub generator needs it: Los Angeles-region vendors stay on commission pay at
+    // San Diego events, so a failed lookup must not quietly show them as hourly.
+    const regionNameById: Record<string, string> = {};
+    const { data: regionRows, error: regionsError } = await supabaseAdmin
+      .from('regions')
+      .select('id, name');
+    if (regionsError) throw new Error(`Failed to load regions: ${regionsError.message}`);
+    for (const region of regionRows || []) {
+      if (region?.id && region?.name) regionNameById[region.id] = region.name;
+    }
+
     // For each event, fetch assigned workers and their payment data
     const eventsWithPaymentData = await Promise.all(
       (events || []).map(async (event) => {
@@ -378,7 +390,7 @@ export async function GET(req: NextRequest) {
             // Get user profile (name, phone, address)
             const { data: profileData } = await supabaseAdmin
               .from('profiles')
-              .select('first_name, last_name, phone, address')
+              .select('first_name, last_name, phone, address, region_id')
               .eq('user_id', vendorId)
               .maybeSingle();
 
@@ -410,6 +422,10 @@ export async function GET(req: NextRequest) {
               user_name: fullName || 'Unknown',
               user_email: userData?.email || '',
               division: (userData as any)?.division ?? null,
+              // Home region name (regions.name), null when none is assigned.
+              vendor_region_name: (profileData as any)?.region_id
+                ? regionNameById[(profileData as any).region_id] ?? null
+                : null,
               phone: phone,
               address: address,
               status: teamStatusByVendorId[vendorId] || (paymentData ? 'paid_only' : 'unassigned'),
