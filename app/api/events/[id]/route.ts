@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { deleteEventAssociations } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
+import { normalizeEventType } from "@/lib/event-types";
 import { canUserAccessEventById, canUserAccessLoadedEvent } from "@/lib/event-access";
 import {
   MAX_LINKED_COMMISSION_GROUP_SIZE,
@@ -318,7 +319,7 @@ export async function PUT(
     const event_date = body.event_date || null;
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
-    const event_type = body.event_type === "special" ? "special" : "normal";
+    const event_type = normalizeEventType(body.event_type);
     // end_date only applies to multi-day Non Event Time Sheets; cleared for normal events
     const end_date = event_type === "special" && body.end_date ? body.end_date : null;
     // work_details is a required description of the work performed on Non Event Time Sheets
@@ -764,14 +765,39 @@ export async function PATCH(
     if (!eventId) return NextResponse.json({ error: "Event ID required" }, { status: 400 });
 
     const body = await req.json();
-    const { tips_distribution_mode } = body;
-    if (tips_distribution_mode !== "equal" && tips_distribution_mode !== "prorated") {
-      return NextResponse.json({ error: "Invalid tips_distribution_mode" }, { status: 400 });
+    const updates: Record<string, any> = {};
+
+    // Whether a Count In Setup Day pays its flat $150 (HR dashboard Payroll tab). Exec only.
+    if (Object.prototype.hasOwnProperty.call(body, "count_in_flat_pay_enabled")) {
+      if (typeof body.count_in_flat_pay_enabled !== "boolean") {
+        return NextResponse.json({ error: "Invalid count_in_flat_pay_enabled" }, { status: 400 });
+      }
+      const { data: requester } = await supabaseAdmin
+        .from("users")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
+      const requesterRole = ((requester as any)?.role || "").toString().trim().toLowerCase();
+      if (requesterRole !== "exec") {
+        return NextResponse.json(
+          { error: "Only exec can change the Count In Setup Day $150 pay." },
+          { status: 403 }
+        );
+      }
+      updates.count_in_flat_pay_enabled = body.count_in_flat_pay_enabled;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "tips_distribution_mode") || Object.keys(updates).length === 0) {
+      const { tips_distribution_mode } = body;
+      if (tips_distribution_mode !== "equal" && tips_distribution_mode !== "prorated") {
+        return NextResponse.json({ error: "Invalid tips_distribution_mode" }, { status: 400 });
+      }
+      updates.tips_distribution_mode = tips_distribution_mode;
     }
 
     const { error } = await supabaseAdmin
       .from("events")
-      .update({ tips_distribution_mode, updated_at: new Date().toISOString() })
+      .update({ ...updates, updated_at: new Date().toISOString() })
       .eq("id", eventId);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });

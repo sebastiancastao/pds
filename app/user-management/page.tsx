@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import * as XLSX from 'xlsx';
+import TimesheetPayPeriodZips from "./TimesheetPayPeriodZips";
 
 type User = {
   // User fields
@@ -61,6 +62,9 @@ export default function UserManagementPage() {
   const [resettingDownloads, setResettingDownloads] = useState<string | null>(null);
   const [resettingOnboarding, setResettingOnboarding] = useState<string | null>(null);
   const [downloadingRoster, setDownloadingRoster] = useState(false);
+  const [viewerRole, setViewerRole] = useState("");
+  // "Timesheet PDFs by Pay Period" (exec only) loads its events only once opened.
+  const [showTimesheetZips, setShowTimesheetZips] = useState(false);
 
   // Check authorization
   useEffect(() => {
@@ -86,6 +90,7 @@ export default function UserManagementPage() {
           return;
         }
 
+        setViewerRole(userRole);
         setIsAuthorized(true);
       } catch (err) {
         console.error('[USER-MANAGEMENT] Auth error:', err);
@@ -97,6 +102,16 @@ export default function UserManagementPage() {
 
     checkAuth();
   }, [router]);
+
+  // /user-management#timesheet-zips (where old /event-dashboard links land) opens the section.
+  useEffect(() => {
+    if (viewerRole !== 'exec' || typeof window === 'undefined') return;
+    if (window.location.hash !== '#timesheet-zips') return;
+    setShowTimesheetZips(true);
+    requestAnimationFrame(() => {
+      document.getElementById('timesheet-zips')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [viewerRole]);
 
   // Load users
   useEffect(() => {
@@ -566,6 +581,33 @@ export default function UserManagementPage() {
           ))}
         </div>
       </div>
+
+      {/* Timesheet PDFs by Pay Period (exec only) */}
+      {viewerRole === 'exec' && (
+        <div id="timesheet-zips" className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+          <button
+            type="button"
+            onClick={() => setShowTimesheetZips((open) => !open)}
+            aria-expanded={showTimesheetZips}
+            className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
+          >
+            <span>
+              <span className="block text-lg font-semibold text-gray-900">Timesheet PDFs by Pay Period</span>
+              <span className="block text-sm text-gray-500">
+                Every event and non-event timesheet, zipped by pay period.
+              </span>
+            </span>
+            <span className="shrink-0 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700">
+              {showTimesheetZips ? 'Hide' : 'Show'}
+            </span>
+          </button>
+          {showTimesheetZips && (
+            <div className="border-t border-gray-200 bg-gray-50 px-5 py-5">
+              <TimesheetPayPeriodZips />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Search Bar */}
       <div style={{ marginBottom: '1.5rem' }}>

@@ -8,6 +8,7 @@ import { getSupervisorTeamVenueIds } from "@/lib/event-access";
 import { sendNonEventTimesheetCreatedNotification } from "@/lib/email";
 import { getEventAssociationMap } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
+import { normalizeEventType } from "@/lib/event-types";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
     const event_date = body.event_date || null;
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
-    const event_type = body.event_type === "special" ? "special" : "normal";
+    const event_type = normalizeEventType(body.event_type);
     // CW events (created from /cw-calendar) belong to the trailers division; everything else is vendor
     const division = body.division === "trailers" ? "trailers" : "vendor";
     // end_date only applies to multi-day Non Event Time Sheets; ignore it for normal events

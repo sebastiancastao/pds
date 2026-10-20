@@ -5,6 +5,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
+import { EVENT_TYPE_LABELS } from '@/lib/event-types';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
 import {
@@ -3861,7 +3862,7 @@ export default function PaystubGenerator() {
                           </div>
                           <div className="flex-shrink-0">
                             <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                              {event.event_type || 'Event'}
+                              {event.event_type === 'count_in_setup' ? EVENT_TYPE_LABELS.count_in_setup : (event.event_type || 'Event')}
                             </span>
                           </div>
                         </div>
