@@ -200,6 +200,8 @@ function FormViewerContent() {
     // Standalone: no `next` on purpose — only reachable via a direct/assigned link
     // (the admin Packet tab), never a forced step in the regular onboarding chain.
     'attendance-scheduling-policy': { display: 'Part-Time Employee Attendance & Scheduling Policy', api: '/api/payroll-packet-common/attendance-scheduling-policy?state=ca', formId: 'ca-attendance-scheduling-policy', requiresSignature: true },
+    // Standalone too: sent from the admin Packet tab (CA Home Venue preset), never chained.
+    'home-venue-assignment': { display: 'Home Venue Assignment', api: '/api/payroll-packet-common/home-venue-assignment?state=ca', formId: 'ca-home-venue-assignment', requiresSignature: true },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
     'paid-family-leave': { display: 'Paid Family Leave', api: '/api/payroll-packet-ca/paid-family-leave', formId: 'paid-family-leave', next: 'sexual-harassment' },
