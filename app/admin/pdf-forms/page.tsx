@@ -282,9 +282,6 @@ function AdminPdfFormsPageInner() {
   const [venueFormIds, setVenueFormIds] = useState<Set<string> | null>(null);
   const [venueFormsRefreshKey, setVenueFormsRefreshKey] = useState(0);
 
-  // Duplicate-title warning modal
-  const [duplicateTitleModal, setDuplicateTitleModal] = useState(false);
-
   // Send-to-users modal state
   const [sendModalForm, setSendModalForm] = useState<CustomForm | null>(null);
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -1015,13 +1012,24 @@ function AdminPdfFormsPageInner() {
   const isDuplicateTitle = (t = title) =>
     forms.some(f => f.title.trim().toLowerCase() === t.trim().toLowerCase());
 
+  // Always returns a name no active form uses: the name as typed, else with today's
+  // date (-MM-DD) added once, else that plus -2, -3, ... (e.g. "ca-employee-information-2026-10-20-2").
   const getDeduplicatedTitle = (baseTitle: string): string => {
     const trimmed = baseTitle.trim();
-    if (!forms.some(f => f.title.trim().toLowerCase() === trimmed.toLowerCase())) return trimmed;
+    const taken = new Set(forms.map(f => f.title.trim().toLowerCase()));
+    if (!taken.has(trimmed.toLowerCase())) return trimmed;
     const now = new Date();
     const mm = String(now.getMonth() + 1).padStart(2, '0');
     const dd = String(now.getDate()).padStart(2, '0');
-    return `${trimmed}-${mm}-${dd}`;
+    const dateSuffix = `-${mm}-${dd}`;
+    // Do not stack today's date twice ("...-10-20-10-20").
+    const dated = trimmed.endsWith(dateSuffix) ? trimmed : `${trimmed}${dateSuffix}`;
+    if (!taken.has(dated.toLowerCase())) return dated;
+    for (let n = 2; n < 10000; n += 1) {
+      const candidate = `${dated}-${n}`;
+      if (!taken.has(candidate.toLowerCase())) return candidate;
+    }
+    return `${dated}-${Date.now()}`;
   };
 
   const handleRegisterStateForm = async () => {
@@ -1031,7 +1039,6 @@ function AdminPdfFormsPageInner() {
     let effectiveTitle = title.trim();
     if (isDuplicateTitle(effectiveTitle)) {
       const deduped = getDeduplicatedTitle(effectiveTitle);
-      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
       effectiveTitle = deduped;
       setTitle(effectiveTitle);
     }
@@ -1123,7 +1130,6 @@ function AdminPdfFormsPageInner() {
     let effectiveTitle = title.trim();
     if (isDuplicateTitle(effectiveTitle)) {
       const deduped = getDeduplicatedTitle(effectiveTitle);
-      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
       effectiveTitle = deduped;
       setTitle(effectiveTitle);
     }
@@ -1212,7 +1218,6 @@ function AdminPdfFormsPageInner() {
     let effectiveTitle = title.trim();
     if (isDuplicateTitle(effectiveTitle)) {
       const deduped = getDeduplicatedTitle(effectiveTitle);
-      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
       effectiveTitle = deduped;
       setTitle(effectiveTitle);
     }
@@ -1289,7 +1294,6 @@ function AdminPdfFormsPageInner() {
     let effectiveTitle = title.trim();
     if (isDuplicateTitle(effectiveTitle)) {
       const deduped = getDeduplicatedTitle(effectiveTitle);
-      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
       effectiveTitle = deduped;
       setTitle(effectiveTitle);
     }
@@ -1433,34 +1437,6 @@ function AdminPdfFormsPageInner() {
 
   return (
     <>
-    {/* Duplicate-title warning modal */}
-    {duplicateTitleModal && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
-              <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-              </svg>
-            </div>
-            <h2 className="text-base font-semibold text-gray-900">Duplicate Form Name</h2>
-          </div>
-          <p className="text-sm text-gray-600 mb-2">
-            A form named <span className="font-semibold text-gray-900">&ldquo;{title.trim()}&rdquo;</span> already exists.
-          </p>
-          <p className="text-sm text-gray-600 mb-5">
-            Please add a date after the form name to keep forms distinct, for example:<br />
-            <span className="font-medium text-gray-800">&ldquo;{title.trim()} {new Date().getFullYear()}&rdquo;</span>
-          </p>
-          <button
-            onClick={() => setDuplicateTitleModal(false)}
-            className="w-full py-2 px-4 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg transition-colors text-sm"
-          >
-            OK, I&apos;ll update the name
-          </button>
-        </div>
-      </div>
-    )}
     <div className="min-h-screen bg-gray-50 py-10 px-4">
       <div className="max-w-3xl mx-auto">
         <div className="flex items-center justify-between mb-8">
