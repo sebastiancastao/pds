@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 import { downloadUploadedPayroll } from "./payroll-upload-export";
+import { downloadPayrollProblemsReport, unreadColumnTotals } from "./payroll-upload-report";
 import UploadedPayrollView, { type PayrollViewEditing } from "./UploadedPayrollView";
 import {
   PAYROLL_UPLOAD_FIELD_KEYS,
@@ -29,6 +30,7 @@ import {
   REGISTER_NAME_KEY,
   REGISTER_PAID_KEY,
   NOT_ON_REGISTER_KEY,
+  SICK_FROM_REGULAR_KEY,
   roundMoney,
   type ParsedPayrollSheet,
   type PayrollRowIssue,
@@ -416,7 +418,11 @@ function SheetPicker({
                 );
               if (sheet.totalRowAdjustments > 0)
                 details.push(`${sheet.totalRowAdjustments} employee${sheet.totalRowAdjustments === 1 ? "" : "s"} set to their Total row (variable incentive top-ups)`);
-              if (sheet.skippedRows > 0) details.push(`${sheet.skippedRows} total or subtotal row${sheet.skippedRows === 1 ? "" : "s"} skipped`);
+              const sickLines = sheet.rows.filter((r) => r.extra?.[SICK_FROM_REGULAR_KEY]).length;
+              if (sickLines > 0)
+                details.push(`${sickLines} line${sickLines === 1 ? "" : "s"} of hourly pay on this sick leave sheet read as Sick Pay`);
+              if (sheet.skippedRows > 0)
+                details.push(`${sheet.skippedRows} row${sheet.skippedRows === 1 ? "" : "s"} with no employee skipped (totals, subtotals or rates)`);
               if (sheet.unreadableCells > 0) details.push(`${sheet.unreadableCells} unreadable cell${sheet.unreadableCells === 1 ? "" : "s"} left blank`);
               const dupes = checked ? duplicatesBySheet.get(sheet.key) || 0 : 0;
               return (
@@ -859,7 +865,12 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
     let withIssues = 0;
     let edited = 0;
     const people = new Set<string>();
-    const issueCounts: Record<string, { message: string; count: number }> = {};
+    // Per problem: how many lines, and which employees they belong to (name,
+    // sheets and line count), so the box can name them.
+    const issueCounts: Record<
+      string,
+      { message: string; count: number; people: Map<string, { name: string; lines: number; sheets: Set<string> }> }
+    > = {};
     rows.forEach((row) => {
       gross += Number(row.total_gross_pay || 0);
       hours += Number(row.hours || 0);
@@ -879,7 +890,14 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
                   : i.code === "register-similar"
                     ? "Matched to the Payroll Summary by a similar name (nickname or middle name). Check it's the same person"
                     : i.message;
-        issueCounts[i.code] = { message: label, count: (issueCounts[i.code]?.count || 0) + 1 };
+        const entry = issueCounts[i.code] || { message: label, count: 0, people: new Map() };
+        entry.count += 1;
+        const personKey = payrollNameKey(row);
+        const person = entry.people.get(personKey) || { name: payrollRowName(row) || row.email || "(no name)", lines: 0, sheets: new Set<string>() };
+        person.lines += 1;
+        if (row.source_sheet) person.sheets.add(row.source_sheet.trim());
+        entry.people.set(personKey, person);
+        issueCounts[i.code] = entry;
       });
       if (isPayrollRowEdited(row)) edited += 1;
     });
@@ -1131,6 +1149,32 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
     else downloadUploadedPayroll(editor.rows, startDate, endDate);
   };
 
+  // Excel report of what went wrong, so HR doesn't have to check each line on screen.
+  const exportProblemsReport = () => {
+    if (!editor) return;
+    try {
+      downloadPayrollProblemsReport({
+        rows: editor.rows,
+        issuesFor,
+        periodStart: editor.mode === "saved" ? editor.upload.period_start : startDate,
+        periodEnd: editor.mode === "saved" ? editor.upload.period_end : endDate,
+        fileNames:
+          editor.mode === "saved"
+            ? [editor.upload.file_name || "", ...editor.addedFiles]
+            : editor.fileNames,
+        sheets: editor.mode === "new" ? editor.sheets : null,
+        selectedSheets: editor.mode === "new" ? editor.selectedSheets : null,
+        ignoredSheets: editor.mode === "new" ? editor.ignoredSheets : null,
+        system: comparison ? comparison.lines : null,
+      });
+    } catch (err) {
+      setError(`Could not build the problems report: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // Columns of the file that sound like pay but aren't read into any pay column.
+  const unreadPayColumns = useMemo(() => unreadColumnTotals(rows).filter((c) => c.looksLikePay), [rows]);
+
   // Use an upload as the payroll for its period, or go back to system payroll.
   const confirmActiveChange = (
     u: { id: string; file_name: string | null; period_start: string; period_end: string },
@@ -1221,6 +1265,15 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
           >
             {parsing ? "Reading…" : "Upload Excel Files"}
           </button>
+          {/* Static file built by scripts/generate-payroll-upload-template.py. */}
+          <a
+            href="/templates/payroll-upload-template.xlsx"
+            download="Payroll Upload Template.xlsx"
+            title="Blank payroll sheet with every column this upload reads, an example sheet and instructions"
+            className="apple-button apple-button-secondary"
+          >
+            Download Template
+          </a>
           <button
             type="button"
             onClick={() => void loadUploads()}
@@ -1478,6 +1531,14 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             <button type="button" onClick={exportRows} className="apple-button apple-button-secondary">
               Download as Excel
             </button>
+            <button
+              type="button"
+              onClick={exportProblemsReport}
+              className="apple-button apple-button-secondary"
+              title="Excel report of the lines that need a look, with the file, sheet and row of each, plus each employee's total against the ADP Payroll Summary and the system payroll"
+            >
+              Download Problems Report
+            </button>
             {editor.mode === "saved" && (
               <button
                 type="button"
@@ -1562,15 +1623,61 @@ export default function PayrollUploadPanel({ startDate, endDate, systemPayroll, 
             ))}
           </div>
 
+          {unreadPayColumns.length > 0 && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              <div className="mb-1 font-medium">Columns in the file that look like pay but are not read</div>
+              <ul className="list-disc space-y-0.5 pl-5">
+                {unreadPayColumns.map((c) => (
+                  <li key={c.label}>
+                    &ldquo;{c.label}&rdquo;: {money(c.amount)} on {c.lines} line{c.lines === 1 ? "" : "s"}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs">
+                These amounts are not in any pay column, so they are not on the paystub unless Total Gross Pay already includes them (then the line is flagged
+                as not adding up). Rename the column to one in the Download Template, such as Meal Premium, Bonus or Other, and upload again.
+              </p>
+            </div>
+          )}
+
           {Object.keys(stats.issueCounts).length > 0 && (
             <div className="mb-3 rounded-lg border border-red-100 bg-red-50/70 px-3 py-2 text-sm text-red-800">
               <div className="mb-1 font-medium">Lines that need a look</div>
               <ul className="list-disc space-y-0.5 pl-5">
-                {Object.entries(stats.issueCounts).map(([code, info]) => (
-                  <li key={code}>
-                    {info.message}: {info.count}
-                  </li>
-                ))}
+                {Object.entries(stats.issueCounts).map(([code, info]) => {
+                  const people = Array.from(info.people.values()).sort((a, b) => a.name.localeCompare(b.name));
+                  const shown = people.slice(0, 40);
+                  return (
+                    <li key={code}>
+                      {info.message}: {info.count}
+                      <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+                        {shown.map((p) => (
+                          <button
+                            key={p.name}
+                            type="button"
+                            className="text-left text-red-900 underline decoration-red-300 hover:decoration-red-700"
+                            onClick={() => {
+                              setSearch(p.name === "(no name)" ? "" : p.name);
+                              setOnlyIssues(true);
+                              setOnlyEdited(false);
+                              setPage(0);
+                            }}
+                            title="Show this employee's lines that need a look"
+                          >
+                            {p.name}
+                            <span className="text-red-700/80">
+                              {" "}
+                              ({[Array.from(p.sheets).join(", "), `${p.lines} line${p.lines === 1 ? "" : "s"}`].filter(Boolean).join(", ")})
+                            </span>
+                          </button>
+                        ))}
+                        {people.length > shown.length && (
+                          <span className="text-red-700/80">and {people.length - shown.length} more (tick Only lines that need a look below)</span>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}

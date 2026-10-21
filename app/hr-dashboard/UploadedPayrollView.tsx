@@ -54,6 +54,7 @@ const PAY_KEYS = [
   "variable_incentive",
   "tips",
   "rest_break",
+  "meal_premium",
   "mileage_pay",
   "travel_pay",
   "reimbursement",
@@ -87,6 +88,7 @@ type Totals = {
   reimbursement: number;
   other: number;
   bonus: number;
+  mealPremium: number;
   sickPay: number;
   gross: number;
 };
@@ -109,6 +111,7 @@ const emptyTotals = (): Totals => ({
   reimbursement: 0,
   other: 0,
   bonus: 0,
+  mealPremium: 0,
   sickPay: 0,
   gross: 0,
 });
@@ -131,6 +134,7 @@ const addLine = (t: Totals, r: PayrollUploadRow) => {
   t.reimbursement += num(r.reimbursement);
   t.other += num(r.other);
   t.bonus += num(r.bonus);
+  t.mealPremium += num(r.meal_premium);
   t.sickPay += num(r.sick_pay);
   t.gross += num(r.total_gross_pay);
 };
@@ -426,14 +430,22 @@ function CombinedHours({ worked, sick, align }: { worked: number; sick: number; 
   );
 }
 
-// "Other" includes bonuses, labelled underneath like the system's adjustment type.
+// "Other" includes bonuses and meal premiums (the system's "Meal Break Premium"
+// adjustment is an Other too), labelled underneath like the system's adjustment type.
+const otherTotal = (t: Totals) => t.other + t.bonus + t.mealPremium;
 function OtherValue({ t }: { t: Totals }) {
-  const v = t.other + t.bonus;
+  const v = otherTotal(t);
   if (v === 0) return <span className="text-gray-400">—</span>;
+  const parts = [t.bonus !== 0 ? "bonus" : "", t.mealPremium !== 0 ? "meal premium" : ""].filter(Boolean);
+  const onlyPart = t.other === 0 && parts.length === 1;
   return (
     <div className="text-right">
       <div className={v >= 0 ? "text-green-600" : "text-red-600"}>${moneyText(v)}</div>
-      {t.bonus !== 0 && <div className="text-[10px] text-gray-400">{t.other !== 0 ? "Includes bonus" : "Bonus"}</div>}
+      {parts.length > 0 && (
+        <div className="text-[10px] text-gray-400">
+          {onlyPart ? (parts[0] === "bonus" ? "Bonus" : "Meal premium") : `Includes ${parts.join(" and ")}`}
+        </div>
+      )}
     </div>
   );
 }
@@ -520,6 +532,7 @@ const F = {
   other: [
     { key: "other", label: "Other" },
     { key: "bonus", label: "Bonus" },
+    { key: "meal_premium", label: "Meal premium" },
   ] as FieldSpec[],
   sick: [{ key: "sick_pay", label: "Sick leave pay" }] as FieldSpec[],
   gross: [{ key: "total_gross_pay", label: "Total gross pay" }] as FieldSpec[],
@@ -890,7 +903,7 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                       <td className="px-4 py-2 text-right text-blue-600">${moneyText(t.mileage)}</td>
                       {showTravel && <td className="px-4 py-2 text-right text-blue-600">${moneyText(t.travel)}</td>}
                       <td className="px-4 py-2 text-right">${moneyText(t.reimbursement)}</td>
-                      <td className="px-4 py-2 text-right">${moneyText(t.other + t.bonus)}</td>
+                      <td className="px-4 py-2 text-right">${moneyText(otherTotal(t))}</td>
                       <td className="px-4 py-2 text-right text-teal-600">${moneyText(t.sickPay)}</td>
                       <td className="px-4 py-2 text-right">${moneyText(t.gross)}</td>
                       {showActions && <td className="px-2 py-2" />}
@@ -975,7 +988,7 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                           <td className="px-4 py-2 text-right text-sm text-green-600">${moneyText(et.restBreak)}</td>
                           <td className="px-4 py-2 text-right text-sm text-blue-600">${moneyText(et.mileage + et.travel)}</td>
                           <td className="px-4 py-2 text-right text-sm">${moneyText(et.reimbursement)}</td>
-                          <td className="px-4 py-2 text-right text-sm">${moneyText(et.other + et.bonus)}</td>
+                          <td className="px-4 py-2 text-right text-sm">${moneyText(otherTotal(et))}</td>
                           <td className="px-4 py-2 text-right text-sm text-teal-600">${moneyText(et.sickPay)}</td>
                           <td className="px-4 py-2 text-right text-sm font-medium text-gray-900">${moneyText(et.gross)}</td>
                         </tr>
@@ -996,7 +1009,7 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                       <td className="px-4 py-2 text-right text-green-600">${moneyText(t.restBreak)}</td>
                       <td className="px-4 py-2 text-right text-blue-600">${moneyText(t.mileage + t.travel)}</td>
                       <td className="px-4 py-2 text-right">${moneyText(t.reimbursement)}</td>
-                      <td className="px-4 py-2 text-right">${moneyText(t.other + t.bonus)}</td>
+                      <td className="px-4 py-2 text-right">${moneyText(otherTotal(t))}</td>
                       <td className="px-4 py-2 text-right text-teal-600">${moneyText(t.sickPay)}</td>
                       <td className="px-4 py-2 text-right text-gray-900">${moneyText(t.gross)}</td>
                     </tr>
@@ -1113,7 +1126,7 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                         </td>
                         <td className="px-4 py-2 text-right text-sm text-gray-900">
                           <div className="text-[10px] uppercase tracking-wider text-gray-400">Total Other</div>
-                          <div>${moneyText(et.other + et.bonus)}</div>
+                          <div>${moneyText(otherTotal(et))}</div>
                         </td>
                         <td className="px-4 py-2 text-right text-sm text-gray-900">
                           <div className="text-[10px] uppercase tracking-wider text-gray-400">Total</div>
@@ -1327,7 +1340,7 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                                   <td className="p-2 text-blue-600">${moneyText(et.mileage)}</td>
                                   {showTravel && <td className="p-2 text-blue-600">${moneyText(et.travel)}</td>}
                                   <td className="p-2 text-right">${moneyText(et.reimbursement)}</td>
-                                  <td className="p-2 text-right">${moneyText(et.other + et.bonus)}</td>
+                                  <td className="p-2 text-right">${moneyText(otherTotal(et))}</td>
                                   <td className="p-2 text-right text-teal-600">${moneyText(et.sickPay)}</td>
                                   <td className="p-2 text-right">${moneyText(et.gross)}</td>
                                   {showActions && <td className="p-2" />}
@@ -1351,7 +1364,7 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                   <td className="px-4 py-2" />
                   <td className="px-4 py-2 text-right text-gray-900">${moneyText(v.totals.tips)}</td>
                   <td className="px-4 py-2 text-right text-gray-900">${moneyText(v.totals.restBreak)}</td>
-                  <td className="px-4 py-2 text-right text-gray-900">${moneyText(v.totals.other + v.totals.bonus)}</td>
+                  <td className="px-4 py-2 text-right text-gray-900">${moneyText(otherTotal(v.totals))}</td>
                   <td className="px-4 py-2 text-right text-gray-900">${moneyText(v.totals.gross)}</td>
                 </tr>
               </tbody>

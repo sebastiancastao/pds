@@ -137,7 +137,9 @@ export const uploadRowAmounts = (row: PayrollUploadRow): CompareAmounts => ({
   mileage_pay: row.mileage_pay,
   travel_pay: row.travel_pay,
   reimbursement: row.reimbursement,
-  other: row.other,
+  // The system's "Other" includes Meal Break Premium adjustments, so the
+  // uploaded Meal Premium column is compared as part of Other.
+  other: row.other === null && row.meal_premium === null ? null : roundMoney(Number(row.other ?? 0) + Number(row.meal_premium ?? 0)),
   bonus: row.bonus,
   sick_pay: row.sick_pay,
   total_gross_pay: row.total_gross_pay,

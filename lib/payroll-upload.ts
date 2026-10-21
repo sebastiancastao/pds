@@ -6,10 +6,11 @@
 // The parser accepts this dashboard's own "Export to Excel" workbook (the
 // "Vendor Payments" sheet, per-vendor TOTAL rows skipped), HR's final payroll
 // workbooks (one sheet per region or event, the header repeated above each
-// employee, "Rate in effect" / "Variable incentive" / "Total" helper rows under
-// an employee, a sick leave sheet, a reimbursements sheet) and simpler sheets
-// with columns like "Employee Name", "Email", "Hours", "Gross Pay". Sheets
-// from several files can be combined into one upload.
+// employee, "Rate in effect" / "Subtotal" / "Variable incentive" / "Total"
+// helper rows under an employee, sometimes with the employee's name repeated
+// next to the label, a sick leave sheet, a reimbursements sheet) and simpler
+// sheets with columns like "Employee Name", "Email", "Hours", "Gross Pay".
+// Sheets from several files can be combined into one upload.
 
 import { matchName, normalizeName, prepareDirectory } from "./employee-name-match";
 
@@ -39,6 +40,26 @@ export const PAYROLL_UPLOAD_NUMERIC_FIELDS = [
   { key: "variable_incentive", label: "Var. Incentive", money: true, aliases: ["variable incentive", "incentive"] },
   { key: "tips", label: "Tips", money: true, aliases: ["tips", "credit card tips"] },
   { key: "rest_break", label: "Rest Break", money: true, aliases: ["rest break", "rest break pay", "rest breaks"] },
+  // ADP prints "Meal Premium"; the Payroll tab calls it "Meal Break Premium". Other
+  // spellings ("Meal Premium (1 hr)", "Meal Penalty Pay") are caught by isMealPremiumHeader.
+  {
+    key: "meal_premium",
+    label: "Meal Premium",
+    money: true,
+    aliases: [
+      "meal premium",
+      "meal premium pay",
+      "meal premiums",
+      "meal break premium",
+      "meal break premium pay",
+      "meal break premiums",
+      "meal period premium",
+      "meal prem",
+      "meal penalty",
+      "meal penalty pay",
+      "meal break penalty",
+    ],
+  },
   { key: "mileage_miles", label: "Miles", money: false, aliases: ["mileage miles", "miles"] },
   { key: "mileage_pay", label: "Mileage Pay", money: true, aliases: ["mileage pay", "mileage"] },
   { key: "travel_pay", label: "Travel Pay", money: true, aliases: ["travel pay"] },
@@ -112,6 +133,7 @@ export const GROSS_COMPONENT_KEYS: PayrollUploadNumericKey[] = [
   "variable_incentive",
   "tips",
   "rest_break",
+  "meal_premium",
   "mileage_pay",
   "travel_pay",
   "reimbursement",
@@ -155,7 +177,8 @@ export const parsePayrollNumber = (value: unknown, allowDuration = false): numbe
   let raw = String(value).trim();
   // Accounting number format shows zero as "$ -".
   if (/^\$\s*-+$/.test(raw)) return 0;
-  if (raw === "" || /^(n\/?a|none|-+|—)$/i.test(raw)) return null;
+  // A lone "." is a typo for a blank cell.
+  if (raw === "" || /^(n\/?a|none|-+|—|\.)$/i.test(raw)) return null;
   if (allowDuration && /^\d{1,3}:\d{2}$/.test(raw)) {
     const [h, m] = raw.split(":").map(Number);
     return Math.round((h + m / 60) * 100) / 100;
@@ -212,6 +235,20 @@ type HeaderMapping = {
 
 const FULL_NAME_ALIASES = ["employee name", "name", "employee", "vendor name", "vendor", "full name", "worker"];
 
+// A meal premium pay column under a spelling the aliases don't list, such as
+// "Meal Premium (1 hr)", "Meal Break Premium $" or the typo "Meal Premiium".
+// Hours, counts, rates and YTD columns are not pay for this period, so they
+// are left alone.
+export const isMealPremiumHeader = (normalized: string): boolean => {
+  // "1 hr" describes the premium (one hour of pay); "Meal Premium Hours" counts hours.
+  const h = normalized.replace(/\b\d+(\.\d+)?\s*(hours?|hrs?)\b/g, " ");
+  return (
+    /\bmeal/.test(h) &&
+    /\b(prem[a-z]*|penalt[a-z]*)\b/.test(h) &&
+    !/\b(hours?|hrs?|ytd|year to date|rate|count|qty|number)\b/.test(h)
+  );
+};
+
 export const mapPayrollHeaders = (headerRow: unknown[]): HeaderMapping => {
   const normalized = headerRow.map(normalizeHeader);
   const claimed = new Set<number>();
@@ -232,6 +269,13 @@ export const mapPayrollHeaders = (headerRow: unknown[]): HeaderMapping => {
   for (const field of PAYROLL_UPLOAD_NUMERIC_FIELDS) {
     const idx = claim(field.aliases);
     if (idx >= 0) byColumn[idx] = field.key;
+  }
+  if (!Object.values(byColumn).includes("meal_premium")) {
+    const idx = normalized.findIndex((h, i) => !claimed.has(i) && isMealPremiumHeader(h));
+    if (idx >= 0) {
+      claimed.add(idx);
+      byColumn[idx] = "meal_premium";
+    }
   }
   for (const field of PAYROLL_UPLOAD_TEXT_FIELDS) {
     const idx = claim(field.aliases);
@@ -310,6 +354,9 @@ export type ParsedPayrollSheet = {
   totalGross: number;
   // TOTAL/subtotal rows and other rows with amounts but no employee.
   skippedRows: number;
+  // Each skipped row with amounts: its row number, why it wasn't read as a line,
+  // and its amount (Total Gross, else the pay columns added up).
+  skipped: Array<{ row: number; reason: string; amount: number | null; text: string }>;
   // Header rows repeated further down the sheet (a new block of employees).
   repeatedHeaders: number;
   // Employee blocks whose last line was adjusted to match the block's "Total" row
@@ -336,18 +383,34 @@ const headerScore = (cells: unknown[]): number => {
   return keys.some((k) => IDENTITY_KEYS.has(k)) ? keys.length : 0;
 };
 
-// Labels found in the name/email columns of helper rows under an employee.
-type HelperKind = "rate" | "vi" | "total";
+// Labels found on helper rows under an employee's lines. A "subtotal" keeps the
+// employee's block open, since a "Variable incentive" and a "Total" row can
+// follow it; "grand" is the whole sheet's total.
+type HelperKind = "rate" | "vi" | "subtotal" | "total" | "grand";
 const helperKindOf = (text: string): HelperKind | null => {
   const t = normalizeHeader(text);
   if (t === "rate in effect" || t === "rate") return "rate";
   if (t === "variable incentive" || t === "variable" || t === "vi") return "vi";
-  if (t === "total" || t === "totals" || t === "subtotal" || t === "sub total" || t === "grand total") return "total";
+  if (t === "subtotal" || t === "sub total") return "subtotal";
+  if (t === "total" || t === "totals") return "total";
+  if (t === "grand total" || t === "grand totals") return "grand";
   return null;
 };
 
-// Words that show up in these workbooks as layout, not as notes about pay.
-const IGNORED_NOTE_WORDS = new Set(["rates", "rate", "hourly", "commission"]);
+// Columns where HR types a helper label. The Email column is the usual place
+// (with the employee's name sometimes repeated in the name columns); the
+// San Diego sheet uses Last Name.
+const LABEL_COLUMNS = new Set<string>(["email", "first_name", "last_name", "__full_name"]);
+// Columns where a label only counts on a row with no employee name (hourly
+// blocks put "Total" under Event Name).
+const SIDE_LABEL_COLUMNS = new Set<string>(["event_name", "venue"]);
+
+// Words that show up in these workbooks as layout (section titles such as
+// "Hourly" or "Comm"), not as notes about pay.
+const IGNORED_NOTE_WORDS = new Set(["rates", "rate", "hourly", "commission", "commissions", "comm"]);
+
+// Set on a sick leave sheet's line whose hourly pay was read as sick pay.
+export const SICK_FROM_REGULAR_KEY = "Read as sick pay";
 
 const cellText = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -366,6 +429,7 @@ const TOTAL_ROW_KEYS: PayrollUploadNumericKey[] = [
   "variable_incentive",
   "tips",
   "rest_break",
+  "meal_premium",
   "mileage_pay",
   "travel_pay",
   "reimbursement",
@@ -394,6 +458,24 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
   const out: PayrollUploadRow[] = [];
   const notes: SheetNote[] = [];
   let skipped = 0;
+  const skippedList: ParsedPayrollSheet["skipped"] = [];
+  const skipRow = (row: number, reason: string, fields: Record<string, string | number | null>, texts: string[]) => {
+    skipped += 1;
+    const typed = fields as unknown as PayrollUploadFields;
+    const amount =
+      typeof typed.total_gross_pay === "number" ? typed.total_gross_pay : hasAnyGrossComponent(typed) ? grossComponentSum(typed) : null;
+    skippedList.push({ row, reason, amount, text: texts.join(", ").slice(0, 200) });
+  };
+  // Whether the next non-empty row is a header (the San Diego sheet puts the
+  // pay rates on a row just above each header).
+  const nextIsHeader = (r: number) => {
+    for (let n = r + 1; n < rows.length; n += 1) {
+      const next = rows[n] || [];
+      if (next.every((c) => c === null || c === undefined || String(c).trim() === "")) continue;
+      return headerScore(next) >= 3;
+    }
+    return false;
+  };
   let unreadable = 0;
   let repeatedHeaders = 0;
   let totalRowAdjustments = 0;
@@ -445,6 +527,7 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
     const fields = emptyPayrollFields() as Record<string, string | number | null>;
     const extra: PayrollUploadRow["extra"] = {};
     let hasAmount = false;
+    let hasNonZeroAmount = false;
     let hasAnyValue = false;
     let fullName = null as string | null;
     let emailCellText = null as string | null;
@@ -475,7 +558,10 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
           continue;
         }
         fields[key] = num;
-        if (num !== null && key !== "reg_rate" && key !== "rate_in_effect" && key !== "hours") hasAmount = true;
+        if (num !== null && key !== "reg_rate" && key !== "rate_in_effect" && key !== "hours") {
+          hasAmount = true;
+          if (Math.abs(num) >= 0.005) hasNonZeroAmount = true;
+        }
       } else {
         if ((key === "first_name" || key === "last_name") && (cell instanceof Date || typeof cell === "number")) {
           // A date or number in a name column is a note, not a name.
@@ -505,48 +591,125 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
         fields.last_name = last;
       }
     }
-    const nameText = `${fields.first_name ?? ""} ${fields.last_name ?? ""}`.trim();
     const email = fields.email as string | null;
 
-    // ---- rows without an employee: helper, continuation, subtotal or note rows ----
-    if (!nameText && !email) {
-      const helper = helperKindOf(emailCellText || "") || helperKindOf(String(fields.first_name || ""));
-      const otherTexts = texts.filter((t) => !helperKindOf(t) && !IGNORED_NOTE_WORDS.has(normalizeHeader(t)));
-      if (helper === "rate") {
+    // A helper label ("Rate in effect", "Subtotal", "Variable incentive",
+    // "Total", "Grand total") on a row with no email. It is read from the Email
+    // or a name column, or from Event Name / Venue / an unnamed column when the
+    // row names no employee.
+    let label = null as { kind: HelperKind; column: string | null } | null;
+    let sideLabel = null as { kind: HelperKind; column: string | null } | null;
+    if (!email) {
+      for (let c = 0; c < cells.length && !label; c += 1) {
+        const cell = cells[c];
+        if (typeof cell !== "string") continue;
+        const kind = helperKindOf(cell);
+        if (!kind) continue;
+        const column = mapping.byColumn[c] ?? null;
+        if (column && LABEL_COLUMNS.has(column)) label = { kind, column };
+        else if (!sideLabel && (!column || SIDE_LABEL_COLUMNS.has(column))) sideLabel = { kind, column };
+      }
+    }
+    // The employee named on the row, leaving out a label typed in a name column.
+    const namePart = (v: unknown) => (typeof v === "string" && !helperKindOf(v) ? v : "");
+    const nameText = `${namePart(fields.first_name)} ${namePart(fields.last_name)}`.replace(/\s+/g, " ").trim();
+    if (!label && sideLabel && !nameText) label = sideLabel;
+
+    // ---- helper rows under an employee's lines ----
+    if (label) {
+      const nameTexts = new Set([fields.first_name, fields.last_name].filter(Boolean).map(String));
+      const otherTexts = texts.filter((t) => !helperKindOf(t) && !nameTexts.has(t) && !IGNORED_NOTE_WORDS.has(normalizeHeader(t)));
+      if (label.kind === "rate") {
         if (otherTexts.length) noteOnBlock(r + 1, otherTexts.join(", "));
         continue;
       }
-      if (helper === "vi" && block.length > 0) {
+      if (label.kind === "grand") {
+        closeBlock();
+        if (hasNonZeroAmount) skipRow(r + 1, "Grand total row (the whole sheet's total, not an employee line)", fields, texts);
+        continue;
+      }
+      const what = label.kind === "vi" ? "Variable incentive" : label.kind === "subtotal" ? "Subtotal" : "Total";
+      if (block.length === 0) {
+        if (hasNonZeroAmount) skipRow(r + 1, `${what} row with no employee lines above it`, fields, texts);
+        continue;
+      }
+      const last = block[block.length - 1];
+      // A name next to the label must be the employee whose lines are above it.
+      if (nameText && normalizeName(nameText) !== normalizeName(payrollRowName(last))) {
+        closeBlock();
+        skipRow(r + 1, `${what} row for ${nameText} comes right after ${payrollRowName(last) || "another employee"}'s lines`, fields, texts);
+        continue;
+      }
+      if (label.kind === "vi") {
         const amount = Number(fields.variable_incentive ?? fields.total_gross_pay ?? 0);
         const gross = Number(fields.total_gross_pay ?? amount);
         pendingVi = { amount: (pendingVi?.amount || 0) + amount, gross: (pendingVi?.gross || 0) + gross, row: r + 1 };
         continue;
       }
-      if (helper === "total" && block.length > 0) {
-        // The block's final figures: move any difference onto its last line.
-        const last = block[block.length - 1];
-        const changes: string[] = [];
-        TOTAL_ROW_KEYS.forEach((k) => {
-          const target = fields[k];
-          if (typeof target !== "number") return;
-          const current = block.reduce((sum, line) => sum + Number(line[k] || 0), 0);
-          const delta = roundMoney(target - current);
-          if (Math.abs(delta) < 0.005) return;
-          last[k] = roundMoney(Number(last[k] || 0) + delta);
-          changes.push(`${PAYROLL_FIELD_LABELS[k]} ${delta > 0 ? "+" : ""}${delta.toFixed(2)}`);
-        });
-        if (changes.length > 0) {
-          last.extra["Adjusted to Total row"] = `Row ${r + 1}: ${changes.join(", ")}`;
-          refreshOriginal(last);
-          totalRowAdjustments += 1;
-        }
-        pendingVi = null;
-        block = [];
-        if (otherTexts.length) notes.push({ row: r + 1, text: otherTexts.join(", ") });
+      // "Subtotal" / "Total": the block's final figures. A label in the Email
+      // column or next to the employee's name is HR's total for these lines, so
+      // any difference goes onto the block's last line. A "Total" typed only in
+      // a name or event column could be a total for the whole sheet, so it is
+      // used only when it equals the lines (plus a variable incentive row above it).
+      const blockSum = (k: PayrollUploadNumericKey) => block.reduce((sum, line) => sum + Number(line[k] || 0), 0);
+      const grossTarget = fields.total_gross_pay;
+      const explained =
+        typeof grossTarget === "number" &&
+        Math.abs(grossTarget - blockSum("total_gross_pay") - (pendingVi?.gross || 0)) <= GROSS_MISMATCH_TOLERANCE;
+      if (!(label.column === "email" || nameText || explained)) {
+        closeBlock();
+        skipRow(r + 1, "TOTAL row (not an employee line)", fields, texts);
         continue;
       }
+      const changes: string[] = [];
+      let viDelta = 0;
+      TOTAL_ROW_KEYS.forEach((k) => {
+        const target = fields[k];
+        if (typeof target !== "number") return;
+        const delta = roundMoney(target - blockSum(k));
+        if (Math.abs(delta) < 0.005) return;
+        last[k] = roundMoney(Number(last[k] || 0) + delta);
+        if (k === "variable_incentive") viDelta = delta;
+        changes.push(`${PAYROLL_FIELD_LABELS[k]} ${delta > 0 ? "+" : ""}${delta.toFixed(2)}`);
+      });
+      if (changes.length > 0) {
+        const prior = last.extra["Adjusted to Total row"];
+        const note = `Row ${r + 1}: ${changes.join(", ")}`;
+        last.extra["Adjusted to Total row"] = prior ? `${prior}; ${note}` : note;
+        refreshOriginal(last);
+        totalRowAdjustments += 1;
+      }
+      if (otherTexts.length) notes.push({ row: r + 1, text: otherTexts.join(", ") });
+      if (label.kind === "total") {
+        pendingVi = null;
+        block = [];
+      } else if (pendingVi && Math.abs(viDelta - pendingVi.amount) <= GROSS_MISMATCH_TOLERANCE) {
+        // The subtotal already counted the variable incentive row above it.
+        pendingVi = null;
+      }
+      continue;
+    }
+
+    // ---- rows without an employee: continuation, subtotal or note rows ----
+    if (!nameText && !email) {
+      const otherTexts = texts.filter((t) => !helperKindOf(t) && !IGNORED_NOTE_WORDS.has(normalizeHeader(t)));
       if (otherTexts.length && mapping.layout !== "register") noteOnBlock(r + 1, otherTexts.join(", "));
-      if (hasAmount || mapping.layout === "register") skipped += 1;
+      if (hasNonZeroAmount || mapping.layout === "register") {
+        skipRow(
+          r + 1,
+          mapping.layout !== "register" && fields.total_gross_pay === null && texts.length === 0 && nextIsHeader(r)
+            ? "Numbers just above a header row (usually pay rates), not an employee line"
+            : "Amounts with no employee name or email (usually a subtotal row)",
+          fields,
+          texts
+        );
+      }
+      continue;
+    }
+
+    // ---- a section title typed in a name column ("Hourly", "Commission") ----
+    if (!email && !hasAmount && IGNORED_NOTE_WORDS.has(normalizeHeader(nameText))) {
+      closeBlock();
       continue;
     }
 
@@ -566,7 +729,7 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
     const isTotalRow = /^(grand\s+)?(sub)?totals?\b/i.test(nameText) || /^(grand\s+)?(sub)?totals?\b/i.test(String(fields.venue ?? ""));
     if (isTotalRow) {
       closeBlock();
-      skipped += 1;
+      skipRow(r + 1, "TOTAL row (not an employee line)", fields, [nameText || String(fields.venue ?? "")].filter(Boolean));
       continue;
     }
 
@@ -647,6 +810,22 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
   }
   closeBlock();
 
+  // A sick leave sheet laid out with the hourly columns (Regular Time Hours /
+  // Pay) lists sick hours, so that pay is sick pay, as a "sick leave" column
+  // would be. Lines with any other pay are left as they are.
+  if (/\bsick\b/.test(normalizeHeader(sheetName))) {
+    out.forEach((line) => {
+      if (!Number(line.regular_pay || 0) || Number(line.sick_pay || 0)) return;
+      if (GROSS_COMPONENT_KEYS.some((k) => k !== "regular_pay" && Math.abs(Number(line[k] || 0)) >= 0.005)) return;
+      line.sick_pay = line.regular_pay;
+      line.regular_pay = null;
+      if (line.hours === null) line.hours = line.regular_hours;
+      line.regular_hours = null;
+      line.extra[SICK_FROM_REGULAR_KEY] = "Regular pay on the sick leave sheet";
+      refreshOriginal(line);
+    });
+  }
+
   return {
     key: fileName ? `${fileName}::${sheetName}` : sheetName,
     fileName,
@@ -656,6 +835,7 @@ export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName
     rows: out,
     totalGross: roundMoney(out.reduce((s, l) => s + Number(l.total_gross_pay || 0), 0)),
     skippedRows: skipped,
+    skipped: skippedList,
     repeatedHeaders,
     totalRowAdjustments,
     notes,
@@ -810,6 +990,55 @@ export const payrollRowPersonKey = (row: Partial<PayrollUploadFields>): string =
 
 export type PayrollRowIssue = { code: string; message: string };
 
+// Keys the parser and the upload routes add to a line's extra data. They are
+// notes about the line, not columns of the file.
+const PARSER_EXTRA_KEYS = new Set<string>([
+  "Variable incentive top-up",
+  "Top-up from sheet row",
+  "Notes in file",
+  "Adjusted to Total row",
+  "Event (2nd row)",
+  "Email column had",
+  "Email found in another column",
+  "Regular pay",
+  "Total Gross Pay",
+  "Email from employee account",
+  "Company email replaced",
+  "Payroll Summary name fits more than one employee",
+  SICK_FROM_REGULAR_KEY,
+  SHIFTED_FIXED_KEY,
+  REGISTER_KEY,
+  REGISTER_NAME_KEY,
+  REGISTER_PAID_KEY,
+  REGISTER_SIMILAR_KEY,
+  NOT_ON_REGISTER_KEY,
+]);
+
+// File columns the upload keeps on a line but doesn't read as pay, with a
+// nonzero amount on this line ("Ext pay", "Net Pay", or a pay column under a
+// name the upload doesn't know).
+export const unreadAmountColumns = (row: Pick<PayrollUploadRow, "extra">): Array<{ label: string; value: number }> => {
+  const out: Array<{ label: string; value: number }> = [];
+  Object.entries(row.extra || {}).forEach(([label, raw]) => {
+    if (PARSER_EXTRA_KEYS.has(label) || / \((2nd row|unreadable)\)$/.test(label)) return;
+    if (typeof raw === "boolean" || raw === null || raw === "") return;
+    const value = parsePayrollNumber(raw);
+    if (typeof value !== "number" || Math.abs(value) < 0.005) return;
+    out.push({ label, value: roundMoney(value) });
+  });
+  return out;
+};
+
+// Whether an unread column's name sounds like pay for the period (as opposed
+// to rates, taxes, net pay or Ext pay, which repeats Reg pay).
+export const looksLikePayColumn = (label: string): boolean => {
+  const h = normalizeHeader(label);
+  return (
+    /\b(premium|premiums|prem|holiday|vacation|pto|bonus|incentive|tip|tips|commission|differential|retro|severance|wage|wages|earning|earnings|bereavement|jury|penalty|pay|gross)\b/.test(h) &&
+    !/\b(net|ext|rate|ytd|deduction|deductions|tax|taxes|liability|expense|expenses|withheld|frequency|details|check)\b/.test(h)
+  );
+};
+
 export const payrollRowIssues = (
   row: PayrollUploadRow,
   opts?: { duplicate?: boolean; registerCheck?: { paid: number; total: number } }
@@ -825,9 +1054,14 @@ export const payrollRowIssues = (
     if (hasAnyGrossComponent(row)) {
       const diff = roundMoney(row.total_gross_pay - grossComponentSum(row));
       if (Math.abs(diff) > GROSS_MISMATCH_TOLERANCE) {
+        // A column the upload doesn't read that holds exactly the difference.
+        const explains = unreadAmountColumns(row).filter((c) => Math.abs(c.value - diff) <= GROSS_MISMATCH_TOLERANCE);
+        const hint = explains.length
+          ? `. The file's "${explains[0].label}" column has $${explains[0].value.toFixed(2)} on this line, and the upload doesn't read that column`
+          : "";
         issues.push({
           code: "total-mismatch",
-          message: `Total Gross Pay is ${diff > 0 ? "$" + diff.toFixed(2) + " more" : "$" + Math.abs(diff).toFixed(2) + " less"} than the sum of the pay columns (${grossComponentSum(row).toFixed(2)})`,
+          message: `Total Gross Pay is ${diff > 0 ? "$" + diff.toFixed(2) + " more" : "$" + Math.abs(diff).toFixed(2) + " less"} than the sum of the pay columns (${grossComponentSum(row).toFixed(2)})${hint}`,
         });
       }
     }
@@ -947,6 +1181,8 @@ export const sanitizePayrollExtra = (input: unknown): PayrollUploadRow["extra"] 
 // Column headers used when downloading uploaded payroll. They match the
 // Payroll tab's own "Export to Excel" ("Vendor Payments" sheet), and every one
 // is recognized by the parser above, so a download can be edited and re-uploaded.
+// The upload template (public/templates/payroll-upload-template.xlsx) uses the
+// same headers: rerun scripts/generate-payroll-upload-template.py after changing them.
 export const PAYROLL_EXPORT_HEADERS: Record<PayrollUploadFieldKey, string> = {
   first_name: "First Name",
   last_name: "Last Name",
@@ -970,6 +1206,7 @@ export const PAYROLL_EXPORT_HEADERS: Record<PayrollUploadFieldKey, string> = {
   variable_incentive: "Variable Incentive",
   tips: "Tips",
   rest_break: "Rest Break",
+  meal_premium: "Meal Premium",
   mileage_miles: "Mileage Miles",
   mileage_pay: "Mileage Pay",
   travel_pay: "Travel Pay",
@@ -1011,7 +1248,7 @@ export const buildPayrollExportRows = (
 
   const summable = new Set<PayrollUploadNumericKey>([
     "hours", "regular_hours", "regular_pay", "overtime_hours", "overtime_pay", "doubletime_hours", "doubletime_pay",
-    "commission_pay", "variable_incentive", "tips", "rest_break", "mileage_pay", "travel_pay", "reimbursement", "other", "bonus", "sick_pay", "total_gross_pay",
+    "commission_pay", "variable_incentive", "tips", "rest_break", "meal_premium", "mileage_pay", "travel_pay", "reimbursement", "other", "bonus", "sick_pay", "total_gross_pay",
   ]);
   if (rows.length > 0) {
     const total: Record<string, string | number | boolean | null> = {};
