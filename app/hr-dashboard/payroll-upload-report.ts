@@ -139,9 +139,25 @@ export function buildPayrollProblemsWorkbook(input: PayrollProblemsReportInput):
   const multiFile = new Set(rows.map((r) => r.source_file || "")).size > 1;
 
   const issueCounts = new Map<string, number>();
+  // Per problem, the employees it touches: name -> sheets and line count.
+  const issuePeople = new Map<string, Map<string, { name: string; lines: number; sheets: Set<string> }>>();
   problemRows.forEach((r) =>
-    (issuesByRow.get(r) || []).forEach((i) => issueCounts.set(i.code, (issueCounts.get(i.code) || 0) + 1))
+    (issuesByRow.get(r) || []).forEach((i) => {
+      issueCounts.set(i.code, (issueCounts.get(i.code) || 0) + 1);
+      const byPerson = issuePeople.get(i.code) || new Map();
+      const key = payrollNameKey(r);
+      const person = byPerson.get(key) || { name: payrollRowName(r) || r.email || "(no name)", lines: 0, sheets: new Set<string>() };
+      person.lines += 1;
+      if (r.source_sheet) person.sheets.add(r.source_sheet.trim());
+      byPerson.set(key, person);
+      issuePeople.set(i.code, byPerson);
+    })
   );
+  const issuePeopleText = (code: string): string =>
+    Array.from(issuePeople.get(code)?.values() || [])
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((p) => `${p.name} (${[Array.from(p.sheets).join(", "), `${p.lines} line${p.lines === 1 ? "" : "s"}`].filter(Boolean).join(", ")})`)
+      .join("; ");
   const unread = unreadColumnTotals(rows);
 
   // Rows of the chosen sheets that had amounts but did not become a line.
@@ -220,12 +236,12 @@ export function buildPayrollProblemsWorkbook(input: PayrollProblemsReportInput):
     ["Lines OK", rows.length - problemRows.length],
     ["Lines that need a look", problemRows.length],
     [],
-    ["Problems found", "Lines"],
+    ["Problems found", "Lines", "Employees"],
   ];
   if (issueCounts.size === 0) summary.push(["No problems found"]);
   Array.from(issueCounts.entries())
     .sort((a, b) => b[1] - a[1])
-    .forEach(([code, count]) => summary.push([ISSUE_LABELS[code] || code, count]));
+    .forEach(([code, count]) => summary.push([ISSUE_LABELS[code] || code, count, issuePeopleText(code)]));
   summary.push([]);
   summary.push(["Columns in the file that are not read as pay", "Lines with an amount", "Amount", "Sounds like pay"]);
   if (unread.length === 0) summary.push(["None"]);
@@ -265,7 +281,7 @@ export function buildPayrollProblemsWorkbook(input: PayrollProblemsReportInput):
   if (input.sheets) summary.push(["Rows Not Read", "Rows with amounts that did not become a line, such as subtotal rows or rows with no employee."]);
 
   const summaryWs = XLSX.utils.aoa_to_sheet(summary);
-  summaryWs["!cols"] = [{ wch: 62 }, { wch: 22 }, { wch: 16 }, { wch: 40 }];
+  summaryWs["!cols"] = [{ wch: 62 }, { wch: 22 }, { wch: 70 }, { wch: 40 }];
   summary.forEach((line, r) => {
     line.forEach((v, c) => {
       if (typeof v !== "number" || c === 0) return;

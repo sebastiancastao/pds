@@ -14,6 +14,7 @@ import { safeDecrypt } from "@/lib/encryption";
 import { getRestBreakPay } from "@/lib/rest-breaks";
 import { COUNT_IN_SETUP_FLAT_PAY, EVENT_TYPE_LABELS, isCountInFlatPayOn, normalizeEventType } from "@/lib/event-types";
 import ReimbursementsPanel from "./ReimbursementsPanel";
+import EquipmentReimbursementsPanel from "./EquipmentReimbursementsPanel";
 import PayrollUploadPanel, { type SystemPayrollTotal } from "./PayrollUploadPanel";
 import UploadedPayrollView from "./UploadedPayrollView";
 import PayrollCompareView from "./PayrollCompareView";
@@ -268,6 +269,8 @@ function HRDashboardContent() {
   const [showSickLeavePanels, setShowSickLeavePanels] = useState(false);
   // Toggle for the read-only Reimbursements visualization panel in the payroll tab
   const [showReimbursementsPanel, setShowReimbursementsPanel] = useState(false);
+  // Toggle for the Equipment Reimbursement queue (monthly off-cycle payment for active vendors and employees)
+  const [showEquipmentReimbursementsPanel, setShowEquipmentReimbursementsPanel] = useState(false);
   // Toggle for the Upload Payroll panel (upload, review and edit a period's payroll from Excel)
   const [showPayrollUploadPanel, setShowPayrollUploadPanel] = useState(false);
   // An uploaded payroll (payroll_period_uploads.is_active) replaces the system
@@ -5204,6 +5207,14 @@ function HRDashboardContent() {
                       >
                         {showReimbursementsPanel ? 'Hide Reimbursements' : 'Reimbursements'}
                       </button>
+                      <button
+                        onClick={() => setShowEquipmentReimbursementsPanel((prev) => !prev)}
+                        className={`apple-button ${showEquipmentReimbursementsPanel ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                        aria-expanded={showEquipmentReimbursementsPanel}
+                        title="Monthly off-cycle equipment reimbursement queue for active vendors and employees."
+                      >
+                        {showEquipmentReimbursementsPanel ? 'Hide Equipment Reimbursement' : 'Equipment Reimbursement'}
+                      </button>
                     </div>
                   </>
                 )}
@@ -5321,6 +5332,8 @@ function HRDashboardContent() {
                 payrollLoaded={paymentsByVenue.length > 0}
               />
             )}
+
+            {payrollLoadMode !== "cw" && showEquipmentReimbursementsPanel && <EquipmentReimbursementsPanel />}
 
             {payrollLoadMode !== "cw" && showSickLeavePanels && (
             <>
