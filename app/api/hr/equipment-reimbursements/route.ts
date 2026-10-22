@@ -6,19 +6,17 @@ import { safeDecrypt } from "@/lib/encryption";
 import {
   EQUIPMENT_REIMBURSEMENT_AMOUNT,
   EQUIPMENT_REIMBURSEMENT_DESCRIPTION,
-  lastCompletedPayPeriod,
-  payPeriodFromPayDate,
-  payPeriodFromStart,
-  payPeriodsInMonth,
-  type EquipmentPayPeriod,
+  EARLIEST_EQUIPMENT_PAY_DATE,
+  payPeriodForPayDate,
 } from "@/lib/equipment-reimbursement";
 
 // Equipment reimbursement for the HR dashboard Payroll tab: a flat $20 a month
-// for each checked onboarded vendor, paid on one of the month's pay dates.
+// for each checked onboarded vendor, paid on a pay date HR picks (any date).
 // GET lists the onboarded vendors and who is checked for a pay date; PUT saves
 // the checked list for that pay date. A person can be checked for only one pay
-// date per month (unique user_id + pay_month, pay_month = month of the pay
-// date). Each row also stores the bi-weekly work period the pay date pays.
+// date per month (unique user_id + pay_month, pay_month = month of pay_date).
+// Each row also stores the bi-weekly work period the pay date belongs to (the
+// latest one that ended before it), which the Payroll tab uses.
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,10 +82,6 @@ function safeDecryptName(value: string | null | undefined): string {
   } catch {
     return raw;
   }
-}
-
-function todayIso(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 }
 
 type ProfileShape = {
@@ -189,33 +183,25 @@ async function loadPeopleByIds(ids: string[]): Promise<Person[]> {
   return toPeople(users);
 }
 
-type MonthRow = { id: string; user_id: string; pay_period_start: string; pay_period_end: string; amount: number };
+type MonthRow = { id: string; user_id: string; pay_date: string; pay_period_start: string; pay_period_end: string; amount: number };
 
 async function loadMonthRows(month: string): Promise<MonthRow[]> {
   const { data, error } = await supabaseAdmin
     .from(TABLE)
-    .select("id, user_id, pay_period_start, pay_period_end, amount")
+    .select("id, user_id, pay_date, pay_period_start, pay_period_end, amount")
     .eq("pay_month", `${month}-01`);
   if (error) throw new Error(error.message || "Failed to load equipment reimbursements");
   return (data || []).map((r: any) => ({
     id: String(r.id),
     user_id: String(r.user_id),
+    pay_date: String(r.pay_date),
     pay_period_start: String(r.pay_period_start),
     pay_period_end: String(r.pay_period_end),
     amount: Number(r.amount || 0),
   }));
 }
 
-// A pay date (Friday) or, for older callers, the Monday its pay period starts.
-function periodParam(payDate: unknown, periodStart: unknown): EquipmentPayPeriod | null {
-  const date = String(payDate || "").trim();
-  if (date) return payPeriodFromPayDate(date);
-  const start = String(periodStart || "").trim();
-  if (start) return payPeriodFromStart(start);
-  return lastCompletedPayPeriod(todayIso());
-}
-
-const BAD_PAY_DATE = "pay_date must be one of the bi-weekly pay dates (YYYY-MM-DD)";
+const BAD_PAY_DATE = `pay_date must be a date (YYYY-MM-DD) on or after ${EARLIEST_EQUIPMENT_PAY_DATE}`;
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -224,7 +210,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 async function getForPayrollRange(rangeStart: string, rangeEnd: string) {
   const { data, error } = await supabaseAdmin
     .from(TABLE)
-    .select("id, user_id, pay_period_start, pay_period_end, amount")
+    .select("id, user_id, pay_date, pay_period_start, pay_period_end, amount")
     .gte("pay_period_start", rangeStart)
     .lte("pay_period_end", rangeEnd)
     .order("pay_period_start", { ascending: true });
@@ -244,15 +230,16 @@ async function getForPayrollRange(rangeStart: string, rangeEnd: string) {
         email: p?.email || "",
         state: p?.state || "",
         role: p?.role || "",
+        pay_date: String(r.pay_date),
         pay_period_start: String(r.pay_period_start),
         pay_period_end: String(r.pay_period_end),
         amount: Number(r.amount || 0),
       };
     })
-    .sort((a, b) => a.name.localeCompare(b.name) || a.pay_period_start.localeCompare(b.pay_period_start));
+    .sort((a, b) => a.name.localeCompare(b.name) || a.pay_date.localeCompare(b.pay_date));
 }
 
-// GET ?pay_date=YYYY-MM-DD (defaults to the pay date of the last completed pay period)
+// GET ?pay_date=YYYY-MM-DD (any date; required, nothing is preselected)
 // GET ?range_start=YYYY-MM-DD&range_end=YYYY-MM-DD -> { rows } for the payroll dates
 export async function GET(req: NextRequest) {
   try {
@@ -269,7 +256,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ rows: await getForPayrollRange(rangeStart, rangeEnd) });
     }
 
-    const period = periodParam(params.get("pay_date"), params.get("period_start"));
+    const period = payPeriodForPayDate(String(params.get("pay_date") || "").trim());
     if (!period) return NextResponse.json({ error: BAD_PAY_DATE }, { status: 400 });
 
     const [vendors, monthRows] = await Promise.all([loadOnboardedVendors(), loadMonthRows(period.month)]);
@@ -285,7 +272,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       amount: EQUIPMENT_REIMBURSEMENT_AMOUNT,
       period,
-      month_periods: payPeriodsInMonth(period.month),
       people,
       month_rows: monthRows,
     });
@@ -304,7 +290,7 @@ export async function PUT(req: NextRequest) {
     if (auth instanceof NextResponse) return auth;
 
     const body = await req.json().catch(() => ({}));
-    const period = body?.pay_date || body?.period_start ? periodParam(body?.pay_date, body?.period_start) : null;
+    const period = payPeriodForPayDate(String(body?.pay_date || "").trim());
     if (!period) return NextResponse.json({ error: BAD_PAY_DATE }, { status: 400 });
     const rawIds: unknown[] = Array.isArray(body?.user_ids) ? body.user_ids : [];
     const wanted = Array.from(new Set(rawIds.map((v) => String(v))));
@@ -313,9 +299,9 @@ export async function PUT(req: NextRequest) {
     }
 
     const monthRows = await loadMonthRows(period.month);
-    const thisPeriod = monthRows.filter((r) => r.pay_period_start === period.start);
+    const thisPeriod = monthRows.filter((r) => r.pay_date === period.payDate);
     const otherPeriod = new Map(
-      monthRows.filter((r) => r.pay_period_start !== period.start).map((r) => [r.user_id, r] as const),
+      monthRows.filter((r) => r.pay_date !== period.payDate).map((r) => [r.user_id, r] as const),
     );
     const wantedSet = new Set(wanted);
     const current = new Set(thisPeriod.map((r) => r.user_id));
@@ -354,6 +340,7 @@ export async function PUT(req: NextRequest) {
           chunk.map((userId) => ({
             user_id: userId,
             pay_month: `${period.month}-01`,
+            pay_date: period.payDate,
             pay_period_start: period.start,
             pay_period_end: period.end,
             amount: EQUIPMENT_REIMBURSEMENT_AMOUNT,

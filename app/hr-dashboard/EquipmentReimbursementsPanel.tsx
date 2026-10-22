@@ -1,24 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { money } from "./reimbursements-export";
 import { downloadExcelSheets, roundCents } from "./equipment-reimbursement-export";
 import {
+  EARLIEST_EQUIPMENT_PAY_DATE,
   EQUIPMENT_REIMBURSEMENT_AMOUNT,
   formatPayDate,
   formatPayMonth,
-  lastCompletedPayPeriod,
-  listEquipmentPayPeriods,
-  payDateOf,
+  payPeriodForPayDate,
   type EquipmentPayPeriod,
 } from "@/lib/equipment-reimbursement";
 
-// Equipment reimbursement for the HR dashboard Payroll tab: pick a pay date,
-// then check the onboarded vendors who get the $20 monthly equipment
-// reimbursement on it. Each person can be checked for only one pay date per
-// month (the month the pay date falls in). Data: equipment_reimbursement_queue
-// via /api/hr/equipment-reimbursements.
+// Equipment reimbursement for the HR dashboard Payroll tab: type or pick a pay
+// date (any date, nothing preselected), then check the onboarded vendors who
+// get the $20 monthly equipment reimbursement on it. Each person can be checked
+// for only one pay date per month (the month the pay date falls in). Data:
+// equipment_reimbursement_queue via /api/hr/equipment-reimbursements.
 
 type Person = {
   user_id: string;
@@ -32,6 +31,7 @@ type Person = {
 type MonthRow = {
   id: string;
   user_id: string;
+  pay_date: string;
   pay_period_start: string;
   pay_period_end: string;
   amount: number;
@@ -40,8 +40,6 @@ type MonthRow = {
 type ShowFilter = "all" | "checked" | "unchecked";
 
 const API = "/api/hr/equipment-reimbursements";
-
-const todayIso = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
 const roleLabel = (role: string) => {
   const r = role.trim().toLowerCase();
@@ -56,16 +54,11 @@ async function authHeaders(): Promise<Record<string, string>> {
 
 // onSaved lets the Payroll tab refresh the equipment rows it shows for the loaded dates.
 export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: () => void } = {}) {
-  const today = useMemo(todayIso, []);
-  const payDateOptions = useMemo(() => listEquipmentPayPeriods(today, 2), [today]);
-  const nextPayDate = useMemo(
-    () => payDateOptions.filter((p) => p.payDate >= today).map((p) => p.payDate).sort()[0] || "",
-    [payDateOptions, today],
-  );
-  const [payDate, setPayDate] = useState(() => lastCompletedPayPeriod(today).payDate);
+  // dateInput is what the date field shows; payDate is the date the list is loaded for.
+  const [dateInput, setDateInput] = useState("");
+  const [payDate, setPayDate] = useState("");
 
   const [period, setPeriod] = useState<EquipmentPayPeriod | null>(null);
-  const [monthPeriods, setMonthPeriods] = useState<EquipmentPayPeriod[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [monthRows, setMonthRows] = useState<MonthRow[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -76,24 +69,34 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
   const [show, setShow] = useState<ShowFilter>("all");
+  const requestRef = useRef(0);
 
   const load = useCallback(async (date: string) => {
-    setLoading(true);
+    const requestId = ++requestRef.current;
     setError("");
+    if (!date) {
+      setPeriod(null);
+      setPeople([]);
+      setMonthRows([]);
+      setChecked(new Set());
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const res = await fetch(`${API}?pay_date=${encodeURIComponent(date)}`, { headers: await authHeaders(), cache: "no-store" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Failed to load equipment reimbursements");
+      if (requestId !== requestRef.current) return; // a newer date was picked meanwhile
       const rows: MonthRow[] = Array.isArray(json.month_rows) ? json.month_rows : [];
       setPeriod(json.period || null);
-      setMonthPeriods(Array.isArray(json.month_periods) ? json.month_periods : []);
       setPeople(Array.isArray(json.people) ? json.people : []);
       setMonthRows(rows);
-      setChecked(new Set(rows.filter((r) => payDateOf(r) === date).map((r) => r.user_id)));
+      setChecked(new Set(rows.filter((r) => r.pay_date === date).map((r) => r.user_id)));
     } catch (err: any) {
-      setError(err?.message || "Failed to load equipment reimbursements");
+      if (requestId === requestRef.current) setError(err?.message || "Failed to load equipment reimbursements");
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current) setLoading(false);
     }
   }, []);
 
@@ -104,12 +107,12 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   // Saved state for the selected pay date, and who is already checked for
   // another pay date of the same month.
   const saved = useMemo(
-    () => new Set(monthRows.filter((r) => payDateOf(r) === payDate).map((r) => r.user_id)),
+    () => new Set(monthRows.filter((r) => r.pay_date === payDate).map((r) => r.user_id)),
     [monthRows, payDate],
   );
   const otherPayDateByUser = useMemo(() => {
     const map = new Map<string, MonthRow>();
-    for (const r of monthRows) if (payDateOf(r) !== payDate) map.set(r.user_id, r);
+    for (const r of monthRows) if (r.pay_date !== payDate) map.set(r.user_id, r);
     return map;
   }, [monthRows, payDate]);
 
@@ -133,11 +136,36 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const shownSelectable = visiblePeople.filter((p) => canCheck(p) || checked.has(p.user_id));
   const allShownChecked = shownSelectable.length > 0 && shownSelectable.every((p) => checked.has(p.user_id));
 
+  // The loaded data matches the date in the field.
+  const ready = Boolean(payDate && period && period.payDate === payDate);
+
+  // Pay dates of this month that already have people saved, plus the selected one.
+  const monthPayDates = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of monthRows) counts.set(r.pay_date, (counts.get(r.pay_date) || 0) + 1);
+    if (payDate && !counts.has(payDate)) counts.set(payDate, 0);
+    return Array.from(counts.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [monthRows, payDate]);
+
   const changePayDate = (date: string) => {
-    if (date === payDate) return;
-    if (dirty && !window.confirm("You have unsaved changes for this pay date. Discard them?")) return;
+    if (date === payDate) {
+      setDateInput(date);
+      return;
+    }
+    if (dirty && !window.confirm("You have unsaved changes for this pay date. Discard them?")) {
+      setDateInput(payDate);
+      return;
+    }
     setNotice("");
+    setDateInput(date);
     setPayDate(date);
+  };
+
+  // The date field reports partial or out-of-range dates while someone types;
+  // only a full date from the first pay period on loads the list.
+  const onDateInput = (value: string) => {
+    setDateInput(value);
+    if (value && payPeriodForPayDate(value)) changePayDate(value);
   };
 
   const toggle = (p: Person) => {
@@ -163,6 +191,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   };
 
   const save = async () => {
+    if (!ready) return;
     setSaving(true);
     setError("");
     setNotice("");
@@ -194,13 +223,13 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   // Two sheets from the saved data: who is paid on this pay date, and every
   // vendor in the list with the pay date they are checked for this month.
   const exportToExcel = () => {
-    if (!period) return;
+    if (!ready || !period) return;
     if (dirty && !window.confirm("You have unsaved changes. The Excel file only has the saved list. Download it anyway?")) return;
     const thisDate = formatPayDate(period.payDate);
     const rowByUser = new Map(monthRows.map((r) => [r.user_id, r] as const));
 
     const paidHere = people
-      .filter((p) => rowByUser.get(p.user_id) && payDateOf(rowByUser.get(p.user_id)!) === period.payDate)
+      .filter((p) => rowByUser.get(p.user_id)?.pay_date === period.payDate)
       .map((p) => ({ person: p, row: rowByUser.get(p.user_id)! }));
     const payDateRows: Array<Record<string, string | number>> = paidHere.map(({ person, row }) => ({
       Name: person.name,
@@ -234,7 +263,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         State: p.state,
         Role: roleLabel(p.role),
         Status: row ? "Checked" : p.eligible ? "Not checked" : "No longer active or onboarded",
-        "Pay Date": row ? formatPayDate(payDateOf(row)) : "",
+        "Pay Date": row ? formatPayDate(row.pay_date) : "",
         Amount: row ? roundCents(row.amount) : "",
       };
     });
@@ -255,17 +284,6 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     ]);
   };
 
-  // Pay date dropdown grouped by the month each pay date falls in.
-  const payDateGroups = useMemo(() => {
-    const groups: Array<{ month: string; periods: EquipmentPayPeriod[] }> = [];
-    for (const p of payDateOptions) {
-      const last = groups[groups.length - 1];
-      if (last && last.month === p.month) last.periods.push(p);
-      else groups.push({ month: p.month, periods: [p] });
-    }
-    return groups;
-  }, [payDateOptions]);
-
   const busy = loading || saving;
   const savedCount = saved.size;
 
@@ -275,19 +293,19 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         <div>
           <h2 className="text-xl font-semibold">Equipment Reimbursement</h2>
           <p className="text-sm text-gray-500">
-            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked vendor, paid on one of the month&apos;s pay dates.
+            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked vendor, paid on the pay date you choose.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={exportToExcel}
-            disabled={busy || !period}
-            className={`apple-button ${busy || !period ? "apple-button-disabled" : "apple-button-secondary"}`}
-            title="Download the saved list for this pay date, plus every vendor with the pay date they are checked for this month."
+            disabled={busy || !ready}
+            className={`apple-button ${busy || !ready ? "apple-button-disabled" : "apple-button-secondary"}`}
+            title={ready ? "Download the saved list for this pay date, plus every vendor with the pay date they are checked for this month." : "Choose a pay date first."}
           >
-            Export to Excel ({savedCount})
+            Export to Excel{ready ? ` (${savedCount})` : ""}
           </button>
-          <button onClick={() => void load(payDate)} disabled={busy} className="apple-button apple-button-secondary">
+          <button onClick={() => void load(payDate)} disabled={busy || !payDate} className="apple-button apple-button-secondary">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
@@ -297,165 +315,162 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       <div className="flex flex-wrap items-end gap-4 mb-4">
         <div>
           <label className="apple-label" htmlFor="equip-pay-date">Pay date</label>
-          <select
+          <input
             id="equip-pay-date"
-            value={payDate}
-            onChange={(e) => changePayDate(e.target.value)}
+            type="date"
+            value={dateInput}
+            min={EARLIEST_EQUIPMENT_PAY_DATE}
+            onChange={(e) => onDateInput(e.target.value)}
             disabled={saving}
             className="apple-select"
-          >
-            {payDateGroups.map((g) => (
-              <optgroup key={g.month} label={formatPayMonth(g.month)}>
-                {g.periods.map((p) => (
-                  <option key={p.payDate} value={p.payDate}>
-                    {formatPayDate(p.payDate, { weekday: true })}
-                    {p.payDate === nextPayDate ? " (next pay date)" : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          />
         </div>
-        {period && (
+        {ready && period ? (
           <div className="pb-2 text-sm text-gray-600">
             <span className="font-medium text-gray-900">{formatPayMonth(period.month)}</span> pay dates:{" "}
-            {monthPeriods.map((p, i) => {
-              const count = monthRows.filter((r) => payDateOf(r) === p.payDate).length;
-              const selected = p.payDate === payDate;
-              return (
-                <span key={p.payDate}>
-                  {i > 0 && " · "}
-                  {selected ? (
-                    <span className="font-medium text-gray-900">{formatPayDate(p.payDate, { year: false })} (this one, {count} saved)</span>
-                  ) : (
-                    <button type="button" onClick={() => changePayDate(p.payDate)} className="text-blue-600 hover:text-blue-800">
-                      {formatPayDate(p.payDate, { year: false })} ({count} saved)
-                    </button>
-                  )}
-                </span>
-              );
-            })}
+            {monthPayDates.map(([date, count], i) => (
+              <span key={date}>
+                {i > 0 && " · "}
+                {date === payDate ? (
+                  <span className="font-medium text-gray-900">{formatPayDate(date, { year: false, weekday: true })} (this one, {count} saved)</span>
+                ) : (
+                  <button type="button" onClick={() => changePayDate(date)} className="text-blue-600 hover:text-blue-800">
+                    {formatPayDate(date, { year: false, weekday: true })} ({count} saved)
+                  </button>
+                )}
+              </span>
+            ))}
           </div>
+        ) : (
+          <div className="pb-2 text-sm text-gray-500">Any date. Each vendor can be paid once per month.</div>
         )}
       </div>
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
       {notice && <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">{notice}</div>}
 
-      {/* Totals + actions */}
-      <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[14rem]">
-            <label className="apple-label" htmlFor="equip-search">Search</label>
-            <input
-              id="equip-search"
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Name, email, state…"
-              className="apple-select w-full"
-            />
-          </div>
-          <div>
-            <label className="apple-label" htmlFor="equip-show">Show</label>
-            <select id="equip-show" value={show} onChange={(e) => setShow(e.target.value as ShowFilter)} className="apple-select">
-              <option value="all">All</option>
-              <option value="checked">Checked</option>
-              <option value="unchecked">Not checked</option>
-            </select>
-          </div>
+      {!payDate ? (
+        <div className="rounded-xl border border-dashed border-gray-300 py-8 text-center text-sm text-gray-500">
+          Choose a pay date to see the onboarded vendors.
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm text-gray-700 tabular-nums">
-            <span className="font-semibold">{checked.size}</span> checked · {money(checked.size * EQUIPMENT_REIMBURSEMENT_AMOUNT)}
-          </span>
-          {dirty && (
-            <button onClick={() => { setChecked(new Set(saved)); setNotice(""); }} disabled={busy} className="apple-button apple-button-secondary">
-              Undo changes
-            </button>
-          )}
-          <button
-            onClick={() => void save()}
-            disabled={busy || !dirty}
-            className={`apple-button ${busy || !dirty ? "apple-button-disabled" : "apple-button-primary"}`}
-          >
-            {saving ? "Saving…" : dirty ? `Save (${toAdd.length} checked, ${toRemove.length} unchecked)` : "Saved"}
-          </button>
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* Totals + actions */}
+          <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-[14rem]">
+                <label className="apple-label" htmlFor="equip-search">Search</label>
+                <input
+                  id="equip-search"
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Name, email, state…"
+                  className="apple-select w-full"
+                />
+              </div>
+              <div>
+                <label className="apple-label" htmlFor="equip-show">Show</label>
+                <select id="equip-show" value={show} onChange={(e) => setShow(e.target.value as ShowFilter)} className="apple-select">
+                  <option value="all">All</option>
+                  <option value="checked">Checked</option>
+                  <option value="unchecked">Not checked</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-gray-700 tabular-nums">
+                <span className="font-semibold">{checked.size}</span> checked · {money(checked.size * EQUIPMENT_REIMBURSEMENT_AMOUNT)}
+              </span>
+              {dirty && (
+                <button onClick={() => { setChecked(new Set(saved)); setNotice(""); }} disabled={busy} className="apple-button apple-button-secondary">
+                  Undo changes
+                </button>
+              )}
+              <button
+                onClick={() => void save()}
+                disabled={busy || !dirty || !ready}
+                className={`apple-button ${busy || !dirty || !ready ? "apple-button-disabled" : "apple-button-primary"}`}
+              >
+                {saving ? "Saving…" : dirty ? `Save (${toAdd.length} checked, ${toRemove.length} unchecked)` : "Saved"}
+              </button>
+            </div>
+          </div>
 
-      {/* Vendor list */}
-      <div className="max-h-[36rem] overflow-y-auto rounded-xl border border-gray-200">
-        {loading && people.length === 0 ? (
-          <div className="text-center py-6 text-sm text-gray-400">Loading onboarded vendors…</div>
-        ) : visiblePeople.length === 0 ? (
-          <div className="text-center py-6 text-sm text-gray-400">No vendors match these filters.</div>
-        ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50 sticky top-0 z-10">
-              <tr>
-                <th className="px-3 py-2 text-left w-10">
-                  <input
-                    type="checkbox"
-                    checked={allShownChecked}
-                    onChange={() => setShown(!allShownChecked)}
-                    disabled={busy || shownSelectable.length === 0}
-                    aria-label="Check or uncheck everyone shown"
-                  />
-                </th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Vendor</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
-                <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Note</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {visiblePeople.map((p) => {
-                const isChecked = checked.has(p.user_id);
-                const other = otherPayDateByUser.get(p.user_id);
-                const disabled = busy || (!isChecked && !canCheck(p));
-                let note: { text: string; className: string } | null = null;
-                if (other) note = { text: `Checked for ${formatPayDate(payDateOf(other), { year: false })}`, className: "text-gray-500" };
-                else if (!p.eligible) note = { text: "No longer active or onboarded", className: "text-red-600" };
-                else if (isChecked && !saved.has(p.user_id)) note = { text: "Not saved yet", className: "text-green-700" };
-                else if (!isChecked && saved.has(p.user_id)) note = { text: "Will be unchecked", className: "text-red-600" };
-                return (
-                  <tr
-                    key={p.user_id}
-                    className={`${isChecked ? "bg-blue-50/50" : "hover:bg-gray-50"} ${disabled ? "" : "cursor-pointer"}`}
-                    onClick={() => { if (!disabled) toggle(p); }}
-                  >
-                    <td className="px-3 py-2">
+          {/* Vendor list */}
+          <div className="max-h-[36rem] overflow-y-auto rounded-xl border border-gray-200">
+            {loading && !ready ? (
+              <div className="text-center py-6 text-sm text-gray-400">Loading onboarded vendors…</div>
+            ) : visiblePeople.length === 0 ? (
+              <div className="text-center py-6 text-sm text-gray-400">No vendors match these filters.</div>
+            ) : (
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-3 py-2 text-left w-10">
                       <input
                         type="checkbox"
-                        checked={isChecked}
-                        disabled={disabled}
-                        onChange={() => toggle(p)}
-                        onClick={(e) => e.stopPropagation()}
-                        aria-label={`Equipment reimbursement for ${p.name}`}
+                        checked={allShownChecked}
+                        onChange={() => setShown(!allShownChecked)}
+                        disabled={busy || shownSelectable.length === 0}
+                        aria-label="Check or uncheck everyone shown"
                       />
-                    </td>
-                    <td className="px-3 py-2 text-sm text-gray-900">
-                      <div className="font-medium">{p.name}</div>
-                      {p.email && <div className="text-xs text-gray-400">{p.email}</div>}
-                    </td>
-                    <td className="px-3 py-2 text-sm text-gray-700">{p.state || "—"}</td>
-                    <td className="px-3 py-2 text-sm text-gray-700">{roleLabel(p.role)}</td>
-                    <td className="px-3 py-2 text-sm text-right tabular-nums text-gray-900">
-                      {isChecked ? money(EQUIPMENT_REIMBURSEMENT_AMOUNT) : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className={`px-3 py-2 text-xs ${note?.className || ""}`}>{note?.text || ""}</td>
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Vendor</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
+                    <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Note</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-      <div className="mt-2 text-xs text-gray-500">
-        {eligibleCount} onboarded vendors · showing {visiblePeople.length}
-      </div>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {visiblePeople.map((p) => {
+                    const isChecked = checked.has(p.user_id);
+                    const other = otherPayDateByUser.get(p.user_id);
+                    const disabled = busy || (!isChecked && !canCheck(p));
+                    let note: { text: string; className: string } | null = null;
+                    if (other) note = { text: `Checked for ${formatPayDate(other.pay_date, { year: false })}`, className: "text-gray-500" };
+                    else if (!p.eligible) note = { text: "No longer active or onboarded", className: "text-red-600" };
+                    else if (isChecked && !saved.has(p.user_id)) note = { text: "Not saved yet", className: "text-green-700" };
+                    else if (!isChecked && saved.has(p.user_id)) note = { text: "Will be unchecked", className: "text-red-600" };
+                    return (
+                      <tr
+                        key={p.user_id}
+                        className={`${isChecked ? "bg-blue-50/50" : "hover:bg-gray-50"} ${disabled ? "" : "cursor-pointer"}`}
+                        onClick={() => { if (!disabled) toggle(p); }}
+                      >
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={disabled}
+                            onChange={() => toggle(p)}
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label={`Equipment reimbursement for ${p.name}`}
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-sm text-gray-900">
+                          <div className="font-medium">{p.name}</div>
+                          {p.email && <div className="text-xs text-gray-400">{p.email}</div>}
+                        </td>
+                        <td className="px-3 py-2 text-sm text-gray-700">{p.state || "—"}</td>
+                        <td className="px-3 py-2 text-sm text-gray-700">{roleLabel(p.role)}</td>
+                        <td className="px-3 py-2 text-sm text-right tabular-nums text-gray-900">
+                          {isChecked ? money(EQUIPMENT_REIMBURSEMENT_AMOUNT) : <span className="text-gray-300">—</span>}
+                        </td>
+                        <td className={`px-3 py-2 text-xs ${note?.className || ""}`}>{note?.text || ""}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div className="mt-2 text-xs text-gray-500">
+            {eligibleCount} onboarded vendors · showing {visiblePeople.length}
+          </div>
+        </>
+      )}
     </div>
   );
 }
