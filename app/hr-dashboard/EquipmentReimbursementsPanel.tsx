@@ -1,22 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 import { money } from "./reimbursements-export";
+import { downloadExcelSheets, roundCents } from "./equipment-reimbursement-export";
 import {
   EQUIPMENT_REIMBURSEMENT_AMOUNT,
+  formatPayDate,
   formatPayMonth,
-  formatPayPeriod,
   lastCompletedPayPeriod,
   listEquipmentPayPeriods,
+  payDateOf,
   type EquipmentPayPeriod,
 } from "@/lib/equipment-reimbursement";
 
-// Equipment reimbursement for the HR dashboard Payroll tab: pick a bi-weekly pay
-// period, then check the onboarded vendors who get the $20 monthly equipment
-// reimbursement in it. Each person can be checked in only one pay period per
-// month. Data: equipment_reimbursement_queue via /api/hr/equipment-reimbursements.
+// Equipment reimbursement for the HR dashboard Payroll tab: pick a pay date,
+// then check the onboarded vendors who get the $20 monthly equipment
+// reimbursement on it. Each person can be checked for only one pay date per
+// month (the month the pay date falls in). Data: equipment_reimbursement_queue
+// via /api/hr/equipment-reimbursements.
 
 type Person = {
   user_id: string;
@@ -41,9 +43,6 @@ const API = "/api/hr/equipment-reimbursements";
 
 const todayIso = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
-const formatDate = (iso: string) =>
-  new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
-
 const roleLabel = (role: string) => {
   const r = role.trim().toLowerCase();
   if (!r || r === "worker" || r === "vendor") return "Vendor";
@@ -58,8 +57,12 @@ async function authHeaders(): Promise<Record<string, string>> {
 // onSaved lets the Payroll tab refresh the equipment rows it shows for the loaded dates.
 export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: () => void } = {}) {
   const today = useMemo(todayIso, []);
-  const periodOptions = useMemo(() => listEquipmentPayPeriods(today, 2), [today]);
-  const [periodStart, setPeriodStart] = useState(() => lastCompletedPayPeriod(today).start);
+  const payDateOptions = useMemo(() => listEquipmentPayPeriods(today, 2), [today]);
+  const nextPayDate = useMemo(
+    () => payDateOptions.filter((p) => p.payDate >= today).map((p) => p.payDate).sort()[0] || "",
+    [payDateOptions, today],
+  );
+  const [payDate, setPayDate] = useState(() => lastCompletedPayPeriod(today).payDate);
 
   const [period, setPeriod] = useState<EquipmentPayPeriod | null>(null);
   const [monthPeriods, setMonthPeriods] = useState<EquipmentPayPeriod[]>([]);
@@ -74,11 +77,11 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const [search, setSearch] = useState("");
   const [show, setShow] = useState<ShowFilter>("all");
 
-  const load = useCallback(async (start: string) => {
+  const load = useCallback(async (date: string) => {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`${API}?period_start=${encodeURIComponent(start)}`, { headers: await authHeaders(), cache: "no-store" });
+      const res = await fetch(`${API}?pay_date=${encodeURIComponent(date)}`, { headers: await authHeaders(), cache: "no-store" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Failed to load equipment reimbursements");
       const rows: MonthRow[] = Array.isArray(json.month_rows) ? json.month_rows : [];
@@ -86,7 +89,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       setMonthPeriods(Array.isArray(json.month_periods) ? json.month_periods : []);
       setPeople(Array.isArray(json.people) ? json.people : []);
       setMonthRows(rows);
-      setChecked(new Set(rows.filter((r) => r.pay_period_start === start).map((r) => r.user_id)));
+      setChecked(new Set(rows.filter((r) => payDateOf(r) === date).map((r) => r.user_id)));
     } catch (err: any) {
       setError(err?.message || "Failed to load equipment reimbursements");
     } finally {
@@ -95,26 +98,26 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   }, []);
 
   useEffect(() => {
-    void load(periodStart);
-  }, [periodStart, load]);
+    void load(payDate);
+  }, [payDate, load]);
 
-  // Saved state for the selected pay period, and who is already checked in
-  // another pay period of the same month.
+  // Saved state for the selected pay date, and who is already checked for
+  // another pay date of the same month.
   const saved = useMemo(
-    () => new Set(monthRows.filter((r) => r.pay_period_start === periodStart).map((r) => r.user_id)),
-    [monthRows, periodStart],
+    () => new Set(monthRows.filter((r) => payDateOf(r) === payDate).map((r) => r.user_id)),
+    [monthRows, payDate],
   );
-  const otherPeriodByUser = useMemo(() => {
+  const otherPayDateByUser = useMemo(() => {
     const map = new Map<string, MonthRow>();
-    for (const r of monthRows) if (r.pay_period_start !== periodStart) map.set(r.user_id, r);
+    for (const r of monthRows) if (payDateOf(r) !== payDate) map.set(r.user_id, r);
     return map;
-  }, [monthRows, periodStart]);
+  }, [monthRows, payDate]);
 
   const toAdd = useMemo(() => Array.from(checked).filter((id) => !saved.has(id)), [checked, saved]);
   const toRemove = useMemo(() => Array.from(saved).filter((id) => !checked.has(id)), [checked, saved]);
   const dirty = toAdd.length + toRemove.length > 0;
 
-  const canCheck = (p: Person) => p.eligible && !otherPeriodByUser.has(p.user_id);
+  const canCheck = (p: Person) => p.eligible && !otherPayDateByUser.has(p.user_id);
 
   const visiblePeople = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -130,11 +133,11 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const shownSelectable = visiblePeople.filter((p) => canCheck(p) || checked.has(p.user_id));
   const allShownChecked = shownSelectable.length > 0 && shownSelectable.every((p) => checked.has(p.user_id));
 
-  const changePeriod = (start: string) => {
-    if (start === periodStart) return;
-    if (dirty && !window.confirm("You have unsaved changes for this pay period. Discard them?")) return;
+  const changePayDate = (date: string) => {
+    if (date === payDate) return;
+    if (dirty && !window.confirm("You have unsaved changes for this pay date. Discard them?")) return;
     setNotice("");
-    setPeriodStart(start);
+    setPayDate(date);
   };
 
   const toggle = (p: Person) => {
@@ -167,7 +170,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       const res = await fetch(API, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ period_start: periodStart, user_ids: Array.from(checked) }),
+        body: JSON.stringify({ pay_date: payDate, user_ids: Array.from(checked) }),
         cache: "no-store",
       });
       const json = await res.json().catch(() => ({}));
@@ -175,62 +178,93 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       const parts = [`Saved. ${json.added} checked, ${json.removed} unchecked.`];
       const other: string[] = Array.isArray(json.skipped_other_period) ? json.skipped_other_period : [];
       const ineligible: string[] = Array.isArray(json.skipped_ineligible) ? json.skipped_ineligible : [];
-      if (other.length) parts.push(`Skipped ${other.length} already checked in the other pay period this month: ${other.join(", ")}.`);
+      if (other.length) parts.push(`Skipped ${other.length} already checked for another pay date this month: ${other.join(", ")}.`);
       if (ineligible.length) parts.push(`Skipped ${ineligible.length} no longer active or onboarded: ${ineligible.join(", ")}.`);
       setNotice(parts.join(" "));
       onSaved?.();
-      await load(periodStart);
+      await load(payDate);
     } catch (err: any) {
       setError(err?.message || "Failed to save");
-      await load(periodStart);
+      await load(payDate);
     } finally {
       setSaving(false);
     }
   };
 
+  // Two sheets from the saved data: who is paid on this pay date, and every
+  // vendor in the list with the pay date they are checked for this month.
   const exportToExcel = () => {
     if (!period) return;
-    const byId = new Map(people.map((p) => [p.user_id, p] as const));
-    const rows = monthRows
-      .filter((r) => r.pay_period_start === periodStart)
-      .map((r) => ({ row: r, person: byId.get(r.user_id) }))
-      .sort((a, b) => (a.person?.name || "").localeCompare(b.person?.name || ""));
-    if (rows.length === 0) return;
-    const headers = ["Name", "Email", "State", "Role", "Pay Period", "Pay Date", "Amount"];
-    const data: Record<string, string | number>[] = rows.map(({ row, person }) => ({
-      Name: person?.name || "Unknown",
-      Email: person?.email || "",
-      State: person?.state || "",
-      Role: roleLabel(person?.role || ""),
-      "Pay Period": formatPayPeriod(period),
-      "Pay Date": formatDate(period.payDate),
-      Amount: row.amount,
+    if (dirty && !window.confirm("You have unsaved changes. The Excel file only has the saved list. Download it anyway?")) return;
+    const thisDate = formatPayDate(period.payDate);
+    const rowByUser = new Map(monthRows.map((r) => [r.user_id, r] as const));
+
+    const paidHere = people
+      .filter((p) => rowByUser.get(p.user_id) && payDateOf(rowByUser.get(p.user_id)!) === period.payDate)
+      .map((p) => ({ person: p, row: rowByUser.get(p.user_id)! }));
+    const payDateRows: Array<Record<string, string | number>> = paidHere.map(({ person, row }) => ({
+      Name: person.name,
+      Email: person.email,
+      State: person.state,
+      Role: roleLabel(person.role),
+      "Pay Date": thisDate,
+      Amount: roundCents(row.amount),
     }));
-    const total = rows.reduce((sum, { row }) => sum + row.amount, 0);
-    data.push({ Name: "Total", Email: `${rows.length} people`, State: "", Role: "", "Pay Period": "", "Pay Date": "", Amount: Math.round(total * 100) / 100 });
-    const ws = XLSX.utils.json_to_sheet(data, { header: headers });
-    const amountCol = headers.indexOf("Amount");
-    const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
-    for (let r = 1; r <= range.e.r; r++) {
-      const cell = ws[XLSX.utils.encode_cell({ r, c: amountCol })];
-      if (cell && typeof cell.v === "number") cell.z = '"$"#,##0.00';
-    }
-    ws["!cols"] = headers.map((h) => ({ wch: h === "Email" ? 32 : h === "Name" ? 26 : h === "Pay Period" ? 24 : 12 }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Equipment Reimbursement");
-    XLSX.writeFile(wb, `equipment_reimbursement_${period.start}_to_${period.end}.xlsx`);
+    payDateRows.push({
+      Name: "Total",
+      Email: `${paidHere.length} ${paidHere.length === 1 ? "person" : "people"}`,
+      State: "",
+      Role: "",
+      "Pay Date": "",
+      Amount: roundCents(paidHere.reduce((s, { row }) => s + row.amount, 0)),
+    });
+
+    const monthLabel = formatPayMonth(period.month);
+    let monthCount = 0;
+    let monthTotal = 0;
+    const vendorRows: Array<Record<string, string | number>> = people.map((p) => {
+      const row = rowByUser.get(p.user_id);
+      if (row) {
+        monthCount += 1;
+        monthTotal += row.amount;
+      }
+      return {
+        Name: p.name,
+        Email: p.email,
+        State: p.state,
+        Role: roleLabel(p.role),
+        Status: row ? "Checked" : p.eligible ? "Not checked" : "No longer active or onboarded",
+        "Pay Date": row ? formatPayDate(payDateOf(row)) : "",
+        Amount: row ? roundCents(row.amount) : "",
+      };
+    });
+    vendorRows.push({
+      Name: "Total",
+      Email: `${monthCount} checked in ${monthLabel}`,
+      State: "",
+      Role: "",
+      Status: "",
+      "Pay Date": "",
+      Amount: roundCents(monthTotal),
+    });
+
+    const widths = { Name: 26, Email: 32, State: 8, Role: 12, Status: 28, "Pay Date": 14, Amount: 12 };
+    downloadExcelSheets(`equipment_reimbursement_paid_${period.payDate}.xlsx`, [
+      { name: `Paid ${formatPayDate(period.payDate)}`.replace(/,/g, ""), headers: ["Name", "Email", "State", "Role", "Pay Date", "Amount"], rows: payDateRows, widths },
+      { name: `All Vendors ${monthLabel}`, headers: ["Name", "Email", "State", "Role", "Status", "Pay Date", "Amount"], rows: vendorRows, widths },
+    ]);
   };
 
-  // Pay period dropdown grouped by month (the month each period ends in).
-  const periodGroups = useMemo(() => {
+  // Pay date dropdown grouped by the month each pay date falls in.
+  const payDateGroups = useMemo(() => {
     const groups: Array<{ month: string; periods: EquipmentPayPeriod[] }> = [];
-    for (const p of periodOptions) {
+    for (const p of payDateOptions) {
       const last = groups[groups.length - 1];
       if (last && last.month === p.month) last.periods.push(p);
       else groups.push({ month: p.month, periods: [p] });
     }
     return groups;
-  }, [periodOptions]);
+  }, [payDateOptions]);
 
   const busy = loading || saving;
   const savedCount = saved.size;
@@ -241,41 +275,41 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         <div>
           <h2 className="text-xl font-semibold">Equipment Reimbursement</h2>
           <p className="text-sm text-gray-500">
-            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked vendor, paid in one of the month&apos;s pay periods.
+            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked vendor, paid on one of the month&apos;s pay dates.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={exportToExcel}
-            disabled={busy || dirty || savedCount === 0}
-            className={`apple-button ${busy || dirty || savedCount === 0 ? "apple-button-disabled" : "apple-button-secondary"}`}
-            title={dirty ? "Save your changes first." : "Download the saved list for this pay period as an Excel file."}
+            disabled={busy || !period}
+            className={`apple-button ${busy || !period ? "apple-button-disabled" : "apple-button-secondary"}`}
+            title="Download the saved list for this pay date, plus every vendor with the pay date they are checked for this month."
           >
             Export to Excel ({savedCount})
           </button>
-          <button onClick={() => void load(periodStart)} disabled={busy} className="apple-button apple-button-secondary">
+          <button onClick={() => void load(payDate)} disabled={busy} className="apple-button apple-button-secondary">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
       </div>
 
-      {/* Pay period */}
+      {/* Pay date */}
       <div className="flex flex-wrap items-end gap-4 mb-4">
         <div>
-          <label className="apple-label" htmlFor="equip-period">Pay period</label>
+          <label className="apple-label" htmlFor="equip-pay-date">Pay date</label>
           <select
-            id="equip-period"
-            value={periodStart}
-            onChange={(e) => changePeriod(e.target.value)}
+            id="equip-pay-date"
+            value={payDate}
+            onChange={(e) => changePayDate(e.target.value)}
             disabled={saving}
             className="apple-select"
           >
-            {periodGroups.map((g) => (
+            {payDateGroups.map((g) => (
               <optgroup key={g.month} label={formatPayMonth(g.month)}>
                 {g.periods.map((p) => (
-                  <option key={p.start} value={p.start}>
-                    {formatPayPeriod(p)} · paid {formatDate(p.payDate)}
-                    {p.start <= today && today <= p.end ? " (current)" : ""}
+                  <option key={p.payDate} value={p.payDate}>
+                    {formatPayDate(p.payDate, { weekday: true })}
+                    {p.payDate === nextPayDate ? " (next pay date)" : ""}
                   </option>
                 ))}
               </optgroup>
@@ -284,18 +318,18 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         </div>
         {period && (
           <div className="pb-2 text-sm text-gray-600">
-            <span className="font-medium text-gray-900">{formatPayMonth(period.month)}</span> pay periods:{" "}
+            <span className="font-medium text-gray-900">{formatPayMonth(period.month)}</span> pay dates:{" "}
             {monthPeriods.map((p, i) => {
-              const count = monthRows.filter((r) => r.pay_period_start === p.start).length;
-              const selected = p.start === periodStart;
+              const count = monthRows.filter((r) => payDateOf(r) === p.payDate).length;
+              const selected = p.payDate === payDate;
               return (
-                <span key={p.start}>
+                <span key={p.payDate}>
                   {i > 0 && " · "}
                   {selected ? (
-                    <span className="font-medium text-gray-900">{formatPayPeriod(p, false)} (this one, {count} saved)</span>
+                    <span className="font-medium text-gray-900">{formatPayDate(p.payDate, { year: false })} (this one, {count} saved)</span>
                   ) : (
-                    <button type="button" onClick={() => changePeriod(p.start)} className="text-blue-600 hover:text-blue-800">
-                      {formatPayPeriod(p, false)} ({count} saved)
+                    <button type="button" onClick={() => changePayDate(p.payDate)} className="text-blue-600 hover:text-blue-800">
+                      {formatPayDate(p.payDate, { year: false })} ({count} saved)
                     </button>
                   )}
                 </span>
@@ -379,10 +413,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
             <tbody className="divide-y divide-gray-100">
               {visiblePeople.map((p) => {
                 const isChecked = checked.has(p.user_id);
-                const other = otherPeriodByUser.get(p.user_id);
+                const other = otherPayDateByUser.get(p.user_id);
                 const disabled = busy || (!isChecked && !canCheck(p));
                 let note: { text: string; className: string } | null = null;
-                if (other) note = { text: `Checked in ${formatPayPeriod({ start: other.pay_period_start, end: other.pay_period_end }, false)}`, className: "text-gray-500" };
+                if (other) note = { text: `Checked for ${formatPayDate(payDateOf(other), { year: false })}`, className: "text-gray-500" };
                 else if (!p.eligible) note = { text: "No longer active or onboarded", className: "text-red-600" };
                 else if (isChecked && !saved.has(p.user_id)) note = { text: "Not saved yet", className: "text-green-700" };
                 else if (!isChecked && saved.has(p.user_id)) note = { text: "Will be unchecked", className: "text-red-600" };

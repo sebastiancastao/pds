@@ -15,7 +15,8 @@ import { getRestBreakPay } from "@/lib/rest-breaks";
 import { COUNT_IN_SETUP_FLAT_PAY, EVENT_TYPE_LABELS, isCountInFlatPayOn, normalizeEventType } from "@/lib/event-types";
 import ReimbursementsPanel from "./ReimbursementsPanel";
 import EquipmentReimbursementsPanel from "./EquipmentReimbursementsPanel";
-import { formatPayPeriod, formatPayPeriodsOf, payPeriodFromStart, type PayrollEquipmentRow } from "@/lib/equipment-reimbursement";
+import { formatPayDate, formatPayDatesOf, payDateOf, type PayrollEquipmentRow } from "@/lib/equipment-reimbursement";
+import { downloadExcelSheets, roundCents } from "./equipment-reimbursement-export";
 import PayrollUploadPanel, { type SystemPayrollTotal } from "./PayrollUploadPanel";
 import UploadedPayrollView from "./UploadedPayrollView";
 import PayrollCompareView from "./PayrollCompareView";
@@ -2997,7 +2998,7 @@ function HRDashboardContent() {
         'Venue': '',
         'City': '',
         'State': row.state || '',
-        'Event Name': `Equipment Reimbursement (${formatPayPeriod({ start: row.pay_period_start, end: row.pay_period_end })})`,
+        'Event Name': `Equipment Reimbursement (paid ${formatPayDate(payDateOf(row))})`,
         'Event Date': row.pay_period_end,
         'Reg Rate': '',
         'Rate in Effect': '',
@@ -3328,7 +3329,7 @@ function HRDashboardContent() {
         'Venue': 'Equipment Reimbursement',
         'City': '',
         'State': r.state || '',
-        'Event Name': formatPayPeriod({ start: r.pay_period_start, end: r.pay_period_end }),
+        'Event Name': `Paid ${formatPayDate(payDateOf(r))}`,
         'Event Date': r.pay_period_end,
         'First Name': vendor ? vendor.firstName || '' : r.first_name || r.name,
         'Last Name': vendor ? vendor.lastName || '' : r.last_name,
@@ -3392,7 +3393,7 @@ function HRDashboardContent() {
     // One line per person with an equipment reimbursement in these dates.
     // Upload Payroll reads only "Vendor Payments", so this sheet is never double counted.
     if ((payrollEquipment?.rows.length ?? 0) > 0) {
-      const equipmentHeader = ['First Name', 'Last Name', 'Email', 'State', 'Pay Period', 'Pay Date', 'Amount', 'In This Payroll'];
+      const equipmentHeader = ['First Name', 'Last Name', 'Email', 'State', 'Pay Date', 'Amount', 'In This Payroll'];
       const equipmentSheetRows: any[] = (payrollEquipment?.rows || []).map((r) => {
         const vendor = vendorNameById.get(r.user_id);
         return {
@@ -3400,8 +3401,7 @@ function HRDashboardContent() {
           'Last Name': vendor ? vendor.lastName || '' : r.last_name,
           'Email': vendor?.email || r.email,
           'State': r.state || '',
-          'Pay Period': formatPayPeriod({ start: r.pay_period_start, end: r.pay_period_end }),
-          'Pay Date': payPeriodFromStart(r.pay_period_start)?.payDate || '',
+          'Pay Date': formatPayDate(payDateOf(r)),
           'Amount': Number(Number(r.amount || 0).toFixed(2)),
           'In This Payroll': vendor ? 'Yes, with events' : 'Equipment only',
         };
@@ -3409,10 +3409,10 @@ function HRDashboardContent() {
       const equipmentTotal = equipmentSheetRows.reduce((s, row) => s + Number(row['Amount'] || 0), 0);
       equipmentSheetRows.push({
         'First Name': 'TOTAL', 'Last Name': '', 'Email': `${equipmentSheetRows.length} people`, 'State': '',
-        'Pay Period': '', 'Pay Date': '', 'Amount': Number(equipmentTotal.toFixed(2)), 'In This Payroll': '',
+        'Pay Date': '', 'Amount': Number(equipmentTotal.toFixed(2)), 'In This Payroll': '',
       });
       const equipmentSheet = XLSX.utils.json_to_sheet(equipmentSheetRows, { header: equipmentHeader });
-      equipmentSheet['!cols'] = [{ wch: 18 }, { wch: 18 }, { wch: 32 }, { wch: 8 }, { wch: 24 }, { wch: 12 }, { wch: 10 }, { wch: 18 }];
+      equipmentSheet['!cols'] = [{ wch: 18 }, { wch: 18 }, { wch: 32 }, { wch: 8 }, { wch: 14 }, { wch: 10 }, { wch: 18 }];
       XLSX.utils.book_append_sheet(workbook, equipmentSheet, 'Equipment Reimbursement');
     }
 
@@ -6029,13 +6029,36 @@ function HRDashboardContent() {
               const equipmentTotal = equipmentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
               const payrollVendorIds = new Set(paymentsByVendor.map((vendor) => vendor.userId).filter(Boolean));
               const equipmentOnlyCount = equipmentRows.filter((r) => !payrollVendorIds.has(r.user_id)).length;
+              const exportEquipmentToExcel = () => {
+                const payDates = Array.from(new Set(equipmentRows.map((r) => payDateOf(r)).filter(Boolean))).sort();
+                const sheetRows: Array<Record<string, string | number>> = equipmentRows.map((r) => ({
+                  'First Name': r.first_name || r.name,
+                  'Last Name': r.last_name,
+                  'Email': r.email,
+                  'State': r.state || '',
+                  'Pay Date': formatPayDate(payDateOf(r)),
+                  'In This Payroll': payrollVendorIds.has(r.user_id) ? 'Yes, with events' : 'Equipment only',
+                  'Amount': roundCents(Number(r.amount || 0)),
+                }));
+                sheetRows.push({
+                  'First Name': 'TOTAL', 'Last Name': '', 'Email': `${equipmentRows.length} ${equipmentRows.length === 1 ? 'person' : 'people'}`,
+                  'State': '', 'Pay Date': '', 'In This Payroll': '', 'Amount': roundCents(equipmentTotal),
+                });
+                const fileDates = payDates.length > 1 ? `${payDates[0]}_to_${payDates[payDates.length - 1]}` : payDates[0] || 'none';
+                downloadExcelSheets(`equipment_reimbursement_paid_${fileDates}.xlsx`, [{
+                  name: 'Equipment Reimbursement',
+                  headers: ['First Name', 'Last Name', 'Email', 'State', 'Pay Date', 'In This Payroll', 'Amount'],
+                  rows: sheetRows,
+                  widths: { 'First Name': 18, 'Last Name': 18, 'Email': 32, 'State': 8, 'Pay Date': 14, 'In This Payroll': 18, 'Amount': 12 },
+                }]);
+              };
               return (
                 <div className="apple-card mb-6 border-l-4 border-l-emerald-500">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h3 className="text-lg font-semibold text-gray-900">Equipment Reimbursement</h3>
                       <p className="text-sm text-gray-600">
-                        {formatPayPeriodsOf(equipmentRows)} · {equipmentRows.length} {equipmentRows.length === 1 ? 'person' : 'people'} · ${formatExactMoney(equipmentTotal)}
+                        {formatPayDatesOf(equipmentRows)} · {equipmentRows.length} {equipmentRows.length === 1 ? 'person' : 'people'} · ${formatExactMoney(equipmentTotal)}
                         {equipmentOnlyCount > 0 && ` · ${equipmentOnlyCount} with no events in this payroll`}
                       </p>
                       <p className="text-xs text-gray-500 mt-1">
@@ -6044,14 +6067,24 @@ function HRDashboardContent() {
                           : 'Included in View by Vendor (Reimbursement column) and in Export to Excel.'}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowPayrollEquipmentList((prev) => !prev)}
-                      className="apple-button apple-button-secondary"
-                      aria-expanded={showPayrollEquipmentList}
-                    >
-                      {showPayrollEquipmentList ? 'Hide list' : 'Show list'}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={exportEquipmentToExcel}
+                        className="apple-button apple-button-secondary"
+                        title="Download everyone with an equipment reimbursement in these payroll dates as an Excel file."
+                      >
+                        Export to Excel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowPayrollEquipmentList((prev) => !prev)}
+                        className="apple-button apple-button-secondary"
+                        aria-expanded={showPayrollEquipmentList}
+                      >
+                        {showPayrollEquipmentList ? 'Hide list' : 'Show list'}
+                      </button>
+                    </div>
                   </div>
                   {showPayrollEquipmentList && (
                     <div className="mt-4 max-h-96 overflow-y-auto rounded-lg border border-gray-200">
@@ -6060,7 +6093,7 @@ function HRDashboardContent() {
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Pay Period</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Pay Date</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">In This Payroll</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
                           </tr>
@@ -6073,7 +6106,7 @@ function HRDashboardContent() {
                                 {r.email && <div className="text-xs text-gray-400">{r.email}</div>}
                               </td>
                               <td className="px-4 py-2 text-sm text-gray-700">{r.state || '—'}</td>
-                              <td className="px-4 py-2 text-sm text-gray-700">{formatPayPeriod({ start: r.pay_period_start, end: r.pay_period_end })}</td>
+                              <td className="px-4 py-2 text-sm text-gray-700">{formatPayDate(payDateOf(r))}</td>
                               <td className="px-4 py-2 text-sm text-gray-700">{payrollVendorIds.has(r.user_id) ? 'Yes, with events' : 'Equipment only'}</td>
                               <td className="px-4 py-2 text-sm text-right tabular-nums">${formatExactMoney(Number(r.amount || 0))}</td>
                             </tr>
@@ -6406,7 +6439,7 @@ function HRDashboardContent() {
                               <tr className="text-sm bg-emerald-50 border-t border-emerald-200">
                                 <td className="px-4 py-2 text-emerald-800" colSpan={3}>
                                   <span className="font-medium">Equipment Reimbursement</span>
-                                  <span className="ml-2 text-xs text-emerald-600">{formatPayPeriodsOf(vendorEquipment.rows)}</span>
+                                  <span className="ml-2 text-xs text-emerald-600">{formatPayDatesOf(vendorEquipment.rows)}</span>
                                 </td>
                                 <td className="px-4 py-2 text-right"></td>
                                 {showVendorHourlyColumns && (
@@ -6488,7 +6521,7 @@ function HRDashboardContent() {
                       <div className="flex items-center justify-between mb-3">
                         <div>
                           <h3 className="text-lg font-semibold text-gray-900">Equipment Reimbursement only</h3>
-                          <p className="text-sm text-gray-500">No events in this payroll, but checked for equipment reimbursement in {formatPayPeriodsOf(onlyRows)}.</p>
+                          <p className="text-sm text-gray-500">No events in this payroll, but checked for equipment reimbursement · {formatPayDatesOf(onlyRows)}.</p>
                         </div>
                         <div className="text-right">
                           <div className="text-2xl font-bold text-gray-900">${formatExactMoney(onlyTotal)}</div>
@@ -6501,7 +6534,7 @@ function HRDashboardContent() {
                             <tr>
                               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
-                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Pay Period</th>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Pay Date</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
                             </tr>
@@ -6514,7 +6547,7 @@ function HRDashboardContent() {
                                   {r.email && <div className="text-xs text-gray-400">{r.email}</div>}
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-700">{r.state || '—'}</td>
-                                <td className="px-4 py-2 text-sm text-gray-700">{formatPayPeriod({ start: r.pay_period_start, end: r.pay_period_end })}</td>
+                                <td className="px-4 py-2 text-sm text-gray-700">{formatPayDate(payDateOf(r))}</td>
                                 <td className="px-4 py-2 text-sm text-right text-emerald-700">${formatExactMoney(Number(r.amount || 0))}</td>
                                 <td className="px-4 py-2 text-sm text-right font-semibold">${formatExactMoney(Number(r.amount || 0))}</td>
                               </tr>

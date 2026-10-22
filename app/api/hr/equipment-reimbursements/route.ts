@@ -7,16 +7,18 @@ import {
   EQUIPMENT_REIMBURSEMENT_AMOUNT,
   EQUIPMENT_REIMBURSEMENT_DESCRIPTION,
   lastCompletedPayPeriod,
+  payPeriodFromPayDate,
   payPeriodFromStart,
   payPeriodsInMonth,
   type EquipmentPayPeriod,
 } from "@/lib/equipment-reimbursement";
 
 // Equipment reimbursement for the HR dashboard Payroll tab: a flat $20 a month
-// for each checked onboarded vendor, booked in one of the month's bi-weekly pay
-// periods. GET lists the onboarded vendors and who is checked for a pay period;
-// PUT saves the checked list for that pay period. A person can be checked in
-// only one pay period per month (unique user_id + pay_month in the table).
+// for each checked onboarded vendor, paid on one of the month's pay dates.
+// GET lists the onboarded vendors and who is checked for a pay date; PUT saves
+// the checked list for that pay date. A person can be checked for only one pay
+// date per month (unique user_id + pay_month, pay_month = month of the pay
+// date). Each row also stores the bi-weekly work period the pay date pays.
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -204,11 +206,16 @@ async function loadMonthRows(month: string): Promise<MonthRow[]> {
   }));
 }
 
-function periodParam(value: unknown): EquipmentPayPeriod | null {
-  const raw = String(value || "").trim();
-  if (!raw) return lastCompletedPayPeriod(todayIso());
-  return payPeriodFromStart(raw);
+// A pay date (Friday) or, for older callers, the Monday its pay period starts.
+function periodParam(payDate: unknown, periodStart: unknown): EquipmentPayPeriod | null {
+  const date = String(payDate || "").trim();
+  if (date) return payPeriodFromPayDate(date);
+  const start = String(periodStart || "").trim();
+  if (start) return payPeriodFromStart(start);
+  return lastCompletedPayPeriod(todayIso());
 }
+
+const BAD_PAY_DATE = "pay_date must be one of the bi-weekly pay dates (YYYY-MM-DD)";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -245,7 +252,7 @@ async function getForPayrollRange(rangeStart: string, rangeEnd: string) {
     .sort((a, b) => a.name.localeCompare(b.name) || a.pay_period_start.localeCompare(b.pay_period_start));
 }
 
-// GET ?period_start=YYYY-MM-DD (defaults to the last completed pay period)
+// GET ?pay_date=YYYY-MM-DD (defaults to the pay date of the last completed pay period)
 // GET ?range_start=YYYY-MM-DD&range_end=YYYY-MM-DD -> { rows } for the payroll dates
 export async function GET(req: NextRequest) {
   try {
@@ -262,10 +269,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ rows: await getForPayrollRange(rangeStart, rangeEnd) });
     }
 
-    const period = periodParam(params.get("period_start"));
-    if (!period) {
-      return NextResponse.json({ error: "period_start must be the Monday a bi-weekly pay period starts on" }, { status: 400 });
-    }
+    const period = periodParam(params.get("pay_date"), params.get("period_start"));
+    if (!period) return NextResponse.json({ error: BAD_PAY_DATE }, { status: 400 });
 
     const [vendors, monthRows] = await Promise.all([loadOnboardedVendors(), loadMonthRows(period.month)]);
 
@@ -290,19 +295,17 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// PUT { period_start, user_ids: [...] } saves who is checked for that pay period.
-// Newly checked people get a $20 row; unchecked people lose this period's row.
-// People already checked in another pay period of the same month are skipped.
+// PUT { pay_date, user_ids: [...] } saves who is checked for that pay date.
+// Newly checked people get a $20 row; unchecked people lose this pay date's row.
+// People already checked for another pay date of the same month are skipped.
 export async function PUT(req: NextRequest) {
   try {
     const auth = await requireHr(req);
     if (auth instanceof NextResponse) return auth;
 
     const body = await req.json().catch(() => ({}));
-    const period = payPeriodFromStart(String(body?.period_start || ""));
-    if (!period) {
-      return NextResponse.json({ error: "period_start must be the Monday a bi-weekly pay period starts on" }, { status: 400 });
-    }
+    const period = body?.pay_date || body?.period_start ? periodParam(body?.pay_date, body?.period_start) : null;
+    if (!period) return NextResponse.json({ error: BAD_PAY_DATE }, { status: 400 });
     const rawIds: unknown[] = Array.isArray(body?.user_ids) ? body.user_ids : [];
     const wanted = Array.from(new Set(rawIds.map((v) => String(v))));
     if (wanted.some((id) => !UUID_PATTERN.test(id))) {
@@ -365,7 +368,7 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json(
           {
             error: duplicate
-              ? "Someone in the list was already checked in another pay period this month. Refresh and try again."
+              ? "Someone in the list was already checked for another pay date this month. Refresh and try again."
               : error.message || "Failed to check vendors",
             added,
             removed,

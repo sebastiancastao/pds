@@ -1,10 +1,12 @@
 import { TIMESHEET_PAY_DATE_OFFSET_DAYS, TIMESHEET_PAY_PERIOD_ANCHOR } from "./timesheet-pay-periods";
 
-// Equipment reimbursement: a flat $20 a month for each checked vendor, booked in
-// one of that month's bi-weekly pay periods. Pay periods follow the same
-// Monday-to-Sunday cadence as the timesheet pay periods (anchor Feb 2, 2026,
-// e.g. Sep 28 - Oct 11, 2026, paid Oct 16). A period belongs to the month its
-// last day falls in, so October 2026 has Sep 28 - Oct 11 and Oct 12 - Oct 25.
+// Equipment reimbursement: a flat $20 a month for each checked vendor, paid on
+// one of that month's pay dates. Pay dates follow the bi-weekly timesheet pay
+// periods (Monday to Sunday, anchor Feb 2, 2026, paid 5 days after the period
+// ends), e.g. Sep 28 - Oct 11, 2026 is paid Fri Oct 16. HR picks the pay date;
+// the work period behind it is still stored so the Payroll tab can find the
+// rows for the dates it loads. A reimbursement belongs to the month of its pay
+// date, so October 2026 has three pay dates: Oct 2, Oct 16 and Oct 30.
 
 export const EQUIPMENT_REIMBURSEMENT_AMOUNT = 20;
 export const EQUIPMENT_REIMBURSEMENT_DESCRIPTION = "Equipment reimbursement";
@@ -12,8 +14,8 @@ export const EQUIPMENT_REIMBURSEMENT_DESCRIPTION = "Equipment reimbursement";
 export type EquipmentPayPeriod = {
   start: string; // YYYY-MM-DD, Monday
   end: string; // YYYY-MM-DD, Sunday 13 days later
-  payDate: string; // YYYY-MM-DD
-  month: string; // YYYY-MM of `end`
+  payDate: string; // YYYY-MM-DD, `end` + 5 days
+  month: string; // YYYY-MM of `payDate`
 };
 
 const DAY_MS = 86_400_000;
@@ -33,12 +35,12 @@ const ANCHOR_MS = toMs(TIMESHEET_PAY_PERIOD_ANCHOR) as number;
 function periodAt(index: number): EquipmentPayPeriod {
   const startMs = ANCHOR_MS + index * PERIOD_DAYS * DAY_MS;
   const endMs = startMs + (PERIOD_DAYS - 1) * DAY_MS;
-  const end = toIso(endMs);
+  const payDate = toIso(endMs + TIMESHEET_PAY_DATE_OFFSET_DAYS * DAY_MS);
   return {
     start: toIso(startMs),
-    end,
-    payDate: toIso(endMs + TIMESHEET_PAY_DATE_OFFSET_DAYS * DAY_MS),
-    month: end.slice(0, 7),
+    end: toIso(endMs),
+    payDate,
+    month: payDate.slice(0, 7),
   };
 }
 
@@ -57,13 +59,27 @@ export function payPeriodFromStart(start: string): EquipmentPayPeriod | null {
   return periodAt(days / PERIOD_DAYS);
 }
 
-/** Every pay period whose last day falls in `month` (YYYY-MM), oldest first. */
+/** The pay period paid on `payDate`, or null when `payDate` is not a pay date. */
+export function payPeriodFromPayDate(payDate: string): EquipmentPayPeriod | null {
+  const ms = toMs(payDate);
+  if (ms == null) return null;
+  return payPeriodFromStart(toIso(ms - (PERIOD_DAYS - 1 + TIMESHEET_PAY_DATE_OFFSET_DAYS) * DAY_MS));
+}
+
+/** The pay date of a stored row, from the last day of its pay period. */
+export function payDateOf(row: { pay_period_end: string }): string {
+  const ms = toMs(String(row.pay_period_end || "").slice(0, 10));
+  return ms == null ? "" : toIso(ms + TIMESHEET_PAY_DATE_OFFSET_DAYS * DAY_MS);
+}
+
+/** Every pay period paid in `month` (YYYY-MM), oldest first. */
 export function payPeriodsInMonth(month: string): EquipmentPayPeriod[] {
   const out: EquipmentPayPeriod[] = [];
   const firstDay = `${month}-01`;
   if (toMs(firstDay) == null) return out;
-  // Start one period back so a period that began last month but ends this month is included.
-  for (let i = Math.max(0, indexContaining(firstDay) - 1), guard = 0; guard < 6; i++, guard++) {
+  // A period is paid 18 days after it starts, so start two periods back to
+  // catch one that began last month but is paid this month.
+  for (let i = Math.max(0, indexContaining(firstDay) - 2), guard = 0; guard < 8; i++, guard++) {
     const p = periodAt(i);
     if (p.month === month) out.push(p);
     else if (p.month > month) break;
@@ -85,12 +101,17 @@ export function listEquipmentPayPeriods(today: string, forward = 2): EquipmentPa
   return out;
 }
 
-const SHORT: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", timeZone: "UTC" };
-
-export function formatPayPeriod(p: Pick<EquipmentPayPeriod, "start" | "end">, withYear = true): string {
-  const s = new Date(`${p.start}T00:00:00Z`).toLocaleDateString("en-US", SHORT);
-  const e = new Date(`${p.end}T00:00:00Z`).toLocaleDateString("en-US", withYear ? { ...SHORT, year: "numeric" } : SHORT);
-  return `${s} – ${e}`;
+/** "Oct 16, 2026", or "Oct 16" without the year, or "Fri, Oct 16, 2026" with the weekday. */
+export function formatPayDate(iso: string, opts: { year?: boolean; weekday?: boolean } = {}): string {
+  const ms = toMs(String(iso || "").slice(0, 10));
+  if (ms == null) return String(iso || "");
+  return new Date(ms).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(opts.year === false ? {} : { year: "numeric" }),
+    ...(opts.weekday ? { weekday: "short" } : {}),
+    timeZone: "UTC",
+  });
 }
 
 export function formatPayMonth(month: string): string {
@@ -114,14 +135,8 @@ export type PayrollEquipmentRow = {
   amount: number;
 };
 
-/** "Sep 28 – Oct 11, 2026" for one period, or each distinct period joined. */
-export function formatPayPeriodsOf(rows: Array<Pick<PayrollEquipmentRow, "pay_period_start" | "pay_period_end">>): string {
-  const seen = new Map<string, string>();
-  for (const r of rows) {
-    if (!seen.has(r.pay_period_start)) seen.set(r.pay_period_start, formatPayPeriod({ start: r.pay_period_start, end: r.pay_period_end }));
-  }
-  return Array.from(seen.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, label]) => label)
-    .join(", ");
+/** "Paid Oct 16, 2026" for one pay date, or each distinct pay date joined. */
+export function formatPayDatesOf(rows: Array<Pick<PayrollEquipmentRow, "pay_period_end">>): string {
+  const dates = Array.from(new Set(rows.map((r) => payDateOf(r)).filter(Boolean))).sort();
+  return dates.length ? `Paid ${dates.map((d) => formatPayDate(d)).join(", ")}` : "";
 }
