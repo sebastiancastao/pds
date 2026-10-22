@@ -8,6 +8,7 @@ import { geocodeAddress } from "@/lib/geocoding";
 import { findSameDayConflicts, type SameDayConflict } from "@/lib/team-conflicts";
 import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 import { getPendingCustomFormsByUser, describePendingForms } from "@/lib/vendor-forms-status";
+import { toAvailabilityAnswer } from "@/lib/availabilityTimeFrame";
 
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
@@ -441,12 +442,18 @@ export async function GET(
     // Overlay any approved availability corrections for this date — they always
     // win over the raw vendor_invitations submission, regardless of recency,
     // matching lib/vendorAvailability.ts's getMergedVendorAvailability contract.
+    // A correction can carry a time frame (all_day = false + start/end, filed
+    // from the /employees availability change request); it's matched against
+    // the event hours exactly like a time frame from the vendor's own form, so
+    // the /dashboard, /global-calendar and /event-dashboard pickers show it as
+    // a partial-availability badge. all_day NULL = legacy correction from
+    // before time frames: keep the old rule (never clears a submitted window).
     if (!isNonEventTimesheet) {
       for (let i = 0; i < vendorIds.length; i += BATCH_SIZE) {
         const batch = vendorIds.slice(i, i + BATCH_SIZE);
         const { data: correctionsBatch, error: correctionsError } = await supabaseAdmin
           .from('vendor_availability_corrections')
-          .select('vendor_id, available')
+          .select('vendor_id, available, all_day, start_time, end_time')
           .eq('date', eventDateKey)
           .in('vendor_id', batch);
 
@@ -458,11 +465,32 @@ export async function GET(
         for (const correction of correctionsBatch || []) {
           const vendorId = String((correction as any)?.vendor_id || '').trim();
           if (!vendorId) continue;
-          if ((correction as any).available === true) {
+          if ((correction as any).available !== true) {
+            vendorMetaMap.delete(vendorId);
+            continue;
+          }
+
+          const allDayFlag = (correction as any).all_day as boolean | null | undefined;
+          const answer = toAvailabilityAnswer({
+            available: true,
+            allDay: allDayFlag === false ? false : true,
+            startTime: (correction as any).start_time,
+            endTime: (correction as any).end_time,
+          });
+
+          if (allDayFlag === null || allDayFlag === undefined) {
             if (!vendorMetaMap.has(vendorId)) {
               vendorMetaMap.set(vendorId, { isPartial: false });
             }
+          } else if (answer.allDay || !answer.startTime || !answer.endTime) {
+            vendorMetaMap.set(vendorId, { isPartial: false });
+          } else if (!eventStart || !eventEnd) {
+            // No event hours to compare against: keep the vendor and show the window.
+            vendorMetaMap.set(vendorId, { isPartial: true, startTime: answer.startTime, endTime: answer.endTime });
+          } else if (overlapMinutes(answer.startTime, answer.endTime, eventStart, eventEnd) >= MIN_OVERLAP_MINUTES) {
+            vendorMetaMap.set(vendorId, { isPartial: true, startTime: answer.startTime, endTime: answer.endTime });
           } else {
+            // Approved time frame doesn't touch the event hours.
             vendorMetaMap.delete(vendorId);
           }
         }

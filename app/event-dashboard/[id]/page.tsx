@@ -1919,6 +1919,9 @@ export default function EventDashboardPage() {
       pendingForms: Boolean(member?.pendingForms),
       pendingFormsCount: member?.pendingFormsCount ?? 0,
       pendingFormTitles: member?.pendingFormTitles ?? [],
+      partialAvailability: Boolean(member?.partialAvailability),
+      availableFrom: member?.availableFrom ?? null,
+      availableTo: member?.availableTo ?? null,
       profiles: {
         first_name: String(member?.users?.profiles?.first_name || ""),
         last_name: String(member?.users?.profiles?.last_name || ""),
@@ -7872,6 +7875,14 @@ export default function EventDashboardPage() {
                                           Event Supervisor
                                         </span>
                                       )}
+                                      {member?.partialAvailability && (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-200 flex items-center gap-1" title="Available only during this time frame on the event date">
+                                          <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                          </svg>
+                                          Partial: {formatCallTimeLabel(member.availableFrom)}–{formatCallTimeLabel(member.availableTo)}
+                                        </span>
+                                      )}
                                       {distanceFromVenue !== null && (
                                         <span
                                           className={`px-2 py-0.5 rounded text-xs font-medium ${
@@ -11265,6 +11276,14 @@ export default function EventDashboardPage() {
                                 {vendor.isOutOfVenue && (
                                   <span className="px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700">
                                     Out of Venue
+                                  </span>
+                                )}
+                                {vendor.partialAvailability && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 flex items-center gap-1" title="Available only during this time frame on the event date">
+                                    <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {formatCallTimeLabel(vendor.availableFrom)}–{formatCallTimeLabel(vendor.availableTo)}
                                   </span>
                                 )}
                               </div>

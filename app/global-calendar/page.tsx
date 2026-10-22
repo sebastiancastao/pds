@@ -1371,6 +1371,10 @@ export default function DashboardPage() {
           pendingForms: Boolean(member.pendingForms),
           pendingFormsCount: member.pendingFormsCount ?? 0,
           pendingFormTitles: member.pendingFormTitles ?? [],
+          // Time frame on the event date from the team API (partial-availability badge).
+          partialAvailability: Boolean(member.partialAvailability),
+          availableFrom: member.availableFrom ?? null,
+          availableTo: member.availableTo ?? null,
           isExistingMember: true // Flag to show they're already on the team
         }));
 
@@ -1450,6 +1454,10 @@ export default function DashboardPage() {
             pendingForms: Boolean(member.pendingForms),
             pendingFormsCount: member.pendingFormsCount ?? 0,
             pendingFormTitles: member.pendingFormTitles ?? [],
+            // Time frame on the event date from the team API (partial-availability badge).
+            partialAvailability: Boolean(member.partialAvailability),
+            availableFrom: member.availableFrom ?? null,
+            availableTo: member.availableTo ?? null,
             isExistingMember: true,
           }));
 
