@@ -3,11 +3,20 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
+import {
+  EQUIPMENT_REIMBURSEMENT_AMOUNT,
+  EQUIPMENT_REIMBURSEMENT_DESCRIPTION,
+  lastCompletedPayPeriod,
+  payPeriodFromStart,
+  payPeriodsInMonth,
+  type EquipmentPayPeriod,
+} from "@/lib/equipment-reimbursement";
 
-// Equipment reimbursement queue for the HR dashboard Payroll tab.
-// Equipment reimbursement is paid once a month as an off-cycle payment to
-// active vendors and employees. Each row is one person's reimbursement for one
-// pay month (first day of the month), queued until HR marks it paid.
+// Equipment reimbursement for the HR dashboard Payroll tab: a flat $20 a month
+// for each checked onboarded vendor, booked in one of the month's bi-weekly pay
+// periods. GET lists the onboarded vendors and who is checked for a pay period;
+// PUT saves the checked list for that pay period. A person can be checked in
+// only one pay period per month (unique user_id + pay_month in the table).
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,27 +34,11 @@ const supabaseAnon = createClient(
 
 const TABLE = "equipment_reimbursement_queue";
 const HR_ROLES = new Set(["hr", "exec", "admin"]);
+const VENDOR_DIVISIONS = ["vendor", "both", "trailers"];
 const QUERY_CHUNK_SIZE = 150;
 const INSERT_CHUNK_SIZE = 500;
 const PAGE_SIZE = 1000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Vendors are event workers. Employees are staff roles. Execs and admins are
-// kept apart so the "queue everyone" action can leave them out by default.
-type PersonType = "vendor" | "employee" | "exec" | "other";
-const EMPLOYEE_ROLES = new Set([
-  "employee", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4",
-  "supervisor5", "supervisor6", "hr", "finance",
-]);
-const EXEC_ROLES = new Set(["exec", "admin"]);
-
-function personTypeOf(role: string | null | undefined): PersonType {
-  const r = String(role || "").trim().toLowerCase();
-  if (r === "worker" || r === "vendor") return "vendor";
-  if (EMPLOYEE_ROLES.has(r)) return "employee";
-  if (EXEC_ROLES.has(r)) return "exec";
-  return "other";
-}
 
 async function getAuthenticatedUserId(req: NextRequest): Promise<string | null> {
   const supabase = createRouteHandlerClient({ cookies });
@@ -65,16 +58,13 @@ async function getAuthenticatedUserId(req: NextRequest): Promise<string | null> 
   return user?.id || null;
 }
 
-async function hasHrAccess(userId: string): Promise<boolean> {
-  const { data, error } = await supabaseAdmin.from("users").select("role").eq("id", userId).single();
-  if (error) return false;
-  return HR_ROLES.has(String(data?.role || "").toLowerCase());
-}
-
 async function requireHr(req: NextRequest): Promise<{ userId: string } | NextResponse> {
   const userId = await getAuthenticatedUserId(req);
   if (!userId) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  if (!(await hasHrAccess(userId))) return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  const { data, error } = await supabaseAdmin.from("users").select("role").eq("id", userId).single();
+  if (error || !HR_ROLES.has(String(data?.role || "").toLowerCase())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
   return { userId };
 }
 
@@ -94,11 +84,22 @@ function safeDecryptName(value: string | null | undefined): string {
   }
 }
 
-type ProfileShape = { first_name?: string | null; last_name?: string | null; state?: string | null; city?: string | null };
+function todayIso(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
+type ProfileShape = {
+  id?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  state?: string | null;
+  onboarding_completed_at?: string | null;
+};
 type UserRow = {
   id: string;
   email?: string | null;
   role?: string | null;
+  division?: string | null;
   is_active?: boolean | null;
   profiles?: ProfileShape | ProfileShape[] | null;
 };
@@ -106,383 +107,284 @@ type UserRow = {
 type Person = {
   user_id: string;
   name: string;
+  first_name: string;
+  last_name: string;
   email: string;
   role: string;
-  type: PersonType;
   state: string;
-  is_active: boolean;
+  // Active and onboarded: may be checked. Others only appear when already
+  // checked this month, so HR can see and uncheck them.
+  eligible: boolean;
 };
 
-function toPerson(u: UserRow): Person {
-  const profile = Array.isArray(u.profiles) ? u.profiles[0] : u.profiles;
-  const first = safeDecryptName(profile?.first_name);
-  const last = safeDecryptName(profile?.last_name);
-  return {
-    user_id: u.id,
-    name: `${first} ${last}`.trim() || String(u.email || "Unknown"),
-    email: String(u.email || ""),
-    role: String(u.role || ""),
-    type: personTypeOf(u.role),
-    state: String(profile?.state || "").trim().toUpperCase(),
-    is_active: u.is_active !== false,
-  };
-}
+const USER_SELECT = "id, email, role, division, is_active, profiles ( id, first_name, last_name, state, onboarding_completed_at )";
 
-// "2026-10" or "2026-10-15" -> "2026-10-01"; anything else -> null.
-function parseMonth(value: unknown): string | null {
-  const raw = String(value || "").trim();
-  const m = raw.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
-  if (!m) return null;
-  const month = Number(m[2]);
-  if (month < 1 || month > 12) return null;
-  return `${m[1]}-${m[2]}-01`;
-}
+const profileOf = (u: UserRow): ProfileShape | null => (Array.isArray(u.profiles) ? u.profiles[0] || null : u.profiles || null);
 
-function parseIsoDate(value: unknown): string | null {
-  const raw = String(value || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
-  const parsed = new Date(`${raw}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw) return null;
-  return raw;
-}
-
-// Until the migration is run the table does not exist; say so plainly.
-const MISSING_TABLE_MESSAGE =
-  "The equipment reimbursement table is not in the database yet. Run supabase/migrations/20261021000001_create_equipment_reimbursement_queue.sql in Supabase.";
-
-function tableErrorMessage(error: { code?: string; message?: string } | null, fallback: string): string {
-  const code = String(error?.code || "");
-  const message = String(error?.message || "");
-  if (code === "42P01" || code === "PGRST205" || (/equipment_reimbursement_queue/.test(message) && /does not exist|schema cache/i.test(message))) {
-    return MISSING_TABLE_MESSAGE;
+// Profiles an admin marked onboarding-complete in vendor_onboarding_status.
+async function loadAdminCompletedProfileIds(profileIds: string[]): Promise<Set<string>> {
+  const done = new Set<string>();
+  for (const chunk of chunkArray(profileIds, QUERY_CHUNK_SIZE)) {
+    const { data, error } = await supabaseAdmin
+      .from("vendor_onboarding_status")
+      .select("profile_id")
+      .in("profile_id", chunk)
+      .eq("onboarding_completed", true);
+    if (error) throw new Error(error.message || "Failed to load onboarding status");
+    for (const row of data || []) if (row?.profile_id) done.add(String(row.profile_id));
   }
-  return message || fallback;
+  return done;
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
+async function toPeople(users: UserRow[]): Promise<Person[]> {
+  const profileIds = users.map((u) => profileOf(u)?.id).filter((id): id is string => Boolean(id));
+  const adminCompleted = await loadAdminCompletedProfileIds(profileIds);
+  return users.map((u) => {
+    const profile = profileOf(u);
+    const onboarded = Boolean(profile?.onboarding_completed_at) || Boolean(profile?.id && adminCompleted.has(profile.id));
+    const firstName = safeDecryptName(profile?.first_name);
+    const lastName = safeDecryptName(profile?.last_name);
+    const name = `${firstName} ${lastName}`.trim();
+    return {
+      user_id: u.id,
+      name: name || String(u.email || "Unknown"),
+      first_name: firstName,
+      last_name: lastName,
+      email: String(u.email || ""),
+      role: String(u.role || ""),
+      state: String(profile?.state || "").trim().toUpperCase(),
+      eligible:
+        u.is_active !== false && VENDOR_DIVISIONS.includes(String(u.division || "").toLowerCase()) && onboarded,
+    };
+  });
 }
 
-function parseAmount(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const n = Number(String(value).replace(/[$,\s]/g, ""));
-  if (!Number.isFinite(n) || n < 0) return null;
-  return round2(n);
-}
-
-function cleanText(value: unknown): string | null {
-  const s = String(value ?? "").trim();
-  return s ? s.slice(0, 1000) : null;
-}
-
-function todayIso(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-}
-
-async function loadActivePeople(): Promise<Person[]> {
-  const people: Person[] = [];
+// Every active user in a vendor division who has finished onboarding.
+async function loadOnboardedVendors(): Promise<Person[]> {
+  const users: UserRow[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const { data, error } = await supabaseAdmin
       .from("users")
-      .select("id, email, role, is_active, profiles ( first_name, last_name, state, city )")
+      .select(USER_SELECT)
       .eq("is_active", true)
+      .in("division", VENDOR_DIVISIONS)
       .order("id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
-    if (error) throw new Error(error.message || "Failed to load active vendors and employees");
-    for (const u of (data || []) as UserRow[]) people.push(toPerson(u));
+    if (error) throw new Error(error.message || "Failed to load vendors");
+    users.push(...((data || []) as UserRow[]));
     if (!data || data.length < PAGE_SIZE) break;
   }
-  return people.sort((a, b) => a.name.localeCompare(b.name));
+  return (await toPeople(users)).filter((p) => p.eligible);
 }
 
-async function loadPeopleByIds(ids: string[]): Promise<Map<string, Person>> {
-  const map = new Map<string, Person>();
+async function loadPeopleByIds(ids: string[]): Promise<Person[]> {
+  const users: UserRow[] = [];
   for (const chunk of chunkArray(ids, QUERY_CHUNK_SIZE)) {
-    const { data, error } = await supabaseAdmin
-      .from("users")
-      .select("id, email, role, is_active, profiles ( first_name, last_name, state, city )")
-      .in("id", chunk);
+    const { data, error } = await supabaseAdmin.from("users").select(USER_SELECT).in("id", chunk);
     if (error) throw new Error(error.message || "Failed to load profiles");
-    for (const u of (data || []) as UserRow[]) map.set(u.id, toPerson(u));
+    users.push(...((data || []) as UserRow[]));
   }
-  return map;
+  return toPeople(users);
 }
 
-async function loadMonthRows(payMonth: string) {
+type MonthRow = { id: string; user_id: string; pay_period_start: string; pay_period_end: string; amount: number };
+
+async function loadMonthRows(month: string): Promise<MonthRow[]> {
   const { data, error } = await supabaseAdmin
     .from(TABLE)
-    .select("id, user_id, pay_month, amount, description, notes, status, paid_date, paid_by, created_by, created_at, updated_at")
-    .eq("pay_month", payMonth)
-    .order("created_at", { ascending: true });
-  if (error) throw new Error(tableErrorMessage(error, "Failed to load the equipment reimbursement queue"));
-  return data || [];
+    .select("id, user_id, pay_period_start, pay_period_end, amount")
+    .eq("pay_month", `${month}-01`);
+  if (error) throw new Error(error.message || "Failed to load equipment reimbursements");
+  return (data || []).map((r: any) => ({
+    id: String(r.id),
+    user_id: String(r.user_id),
+    pay_period_start: String(r.pay_period_start),
+    pay_period_end: String(r.pay_period_end),
+    amount: Number(r.amount || 0),
+  }));
 }
 
-async function decorateRows(rows: any[]) {
-  const ids = Array.from(
-    new Set(rows.flatMap((r) => [r.user_id, r.paid_by, r.created_by]).filter(Boolean).map(String)),
-  );
-  const people = await loadPeopleByIds(ids);
+function periodParam(value: unknown): EquipmentPayPeriod | null {
+  const raw = String(value || "").trim();
+  if (!raw) return lastCompletedPayPeriod(todayIso());
+  return payPeriodFromStart(raw);
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Everyone with an equipment reimbursement in a pay period that lies fully
+// inside [rangeStart, rangeEnd], for the Payroll tab views and exports.
+async function getForPayrollRange(rangeStart: string, rangeEnd: string) {
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select("id, user_id, pay_period_start, pay_period_end, amount")
+    .gte("pay_period_start", rangeStart)
+    .lte("pay_period_end", rangeEnd)
+    .order("pay_period_start", { ascending: true });
+  if (error) throw new Error(error.message || "Failed to load equipment reimbursements");
+  const rows = data || [];
+  const people = rows.length ? await loadPeopleByIds(Array.from(new Set(rows.map((r: any) => String(r.user_id))))) : [];
+  const byId = new Map(people.map((p) => [p.user_id, p] as const));
   return rows
-    .map((r) => {
-      const p = people.get(r.user_id);
+    .map((r: any) => {
+      const p = byId.get(String(r.user_id));
       return {
-        id: r.id,
-        user_id: r.user_id,
-        pay_month: r.pay_month,
-        amount: Number(r.amount || 0),
-        description: r.description ?? null,
-        notes: r.notes ?? null,
-        status: r.status as "queued" | "paid",
-        paid_date: r.paid_date ?? null,
-        paid_by_name: r.paid_by ? people.get(r.paid_by)?.name || null : null,
-        created_by_name: r.created_by ? people.get(r.created_by)?.name || null : null,
-        created_at: r.created_at,
-        updated_at: r.updated_at,
+        id: String(r.id),
+        user_id: String(r.user_id),
         name: p?.name || "Unknown",
+        first_name: p?.first_name || "",
+        last_name: p?.last_name || "",
         email: p?.email || "",
-        role: p?.role || "",
-        type: p?.type || ("other" as PersonType),
         state: p?.state || "",
-        is_active: p ? p.is_active : false,
+        role: p?.role || "",
+        pay_period_start: String(r.pay_period_start),
+        pay_period_end: String(r.pay_period_end),
+        amount: Number(r.amount || 0),
       };
     })
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name) || a.pay_period_start.localeCompare(b.pay_period_start));
 }
 
-// GET ?month=YYYY-MM -> that month's queue, plus every active vendor and employee
-// for the add/queue-everyone controls.
+// GET ?period_start=YYYY-MM-DD (defaults to the last completed pay period)
+// GET ?range_start=YYYY-MM-DD&range_end=YYYY-MM-DD -> { rows } for the payroll dates
 export async function GET(req: NextRequest) {
   try {
     const auth = await requireHr(req);
     if (auth instanceof NextResponse) return auth;
 
-    const { searchParams } = new URL(req.url);
-    const payMonth = parseMonth(searchParams.get("month"));
-    if (!payMonth) {
-      return NextResponse.json({ error: "A valid month (YYYY-MM) is required" }, { status: 400 });
+    const params = new URL(req.url).searchParams;
+    if (params.has("range_start") || params.has("range_end")) {
+      const rangeStart = String(params.get("range_start") || "");
+      const rangeEnd = String(params.get("range_end") || "");
+      if (!ISO_DATE.test(rangeStart) || !ISO_DATE.test(rangeEnd) || rangeStart > rangeEnd) {
+        return NextResponse.json({ error: "range_start and range_end must be YYYY-MM-DD, start first" }, { status: 400 });
+      }
+      return NextResponse.json({ rows: await getForPayrollRange(rangeStart, rangeEnd) });
     }
 
-    const [rows, people] = await Promise.all([loadMonthRows(payMonth), loadActivePeople()]);
-    return NextResponse.json({ month: payMonth.slice(0, 7), rows: await decorateRows(rows), people });
+    const period = periodParam(params.get("period_start"));
+    if (!period) {
+      return NextResponse.json({ error: "period_start must be the Monday a bi-weekly pay period starts on" }, { status: 400 });
+    }
+
+    const [vendors, monthRows] = await Promise.all([loadOnboardedVendors(), loadMonthRows(period.month)]);
+
+    // People checked this month who are no longer active or onboarded still show,
+    // so HR can see them and uncheck them.
+    const listed = new Set(vendors.map((v) => v.user_id));
+    const extraIds = Array.from(new Set(monthRows.map((r) => r.user_id).filter((id) => !listed.has(id))));
+    const extras = extraIds.length ? (await loadPeopleByIds(extraIds)).filter((p) => !listed.has(p.user_id)) : [];
+
+    const people = [...vendors, ...extras].sort((a, b) => a.name.localeCompare(b.name));
+
+    return NextResponse.json({
+      amount: EQUIPMENT_REIMBURSEMENT_AMOUNT,
+      period,
+      month_periods: payPeriodsInMonth(period.month),
+      people,
+      month_rows: monthRows,
+    });
   } catch (err: any) {
     console.error("[EQUIPMENT REIMBURSEMENTS][GET]", err);
     return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
   }
 }
 
-// POST: queue people for a month.
-//   { month, entries: [{ user_id, amount, description?, notes? }], skip_existing? }
-//   { month, copy_from_month }  -> re-queue that month's people (still active and
-//                                  not already queued) with the same amounts.
-export async function POST(req: NextRequest) {
+// PUT { period_start, user_ids: [...] } saves who is checked for that pay period.
+// Newly checked people get a $20 row; unchecked people lose this period's row.
+// People already checked in another pay period of the same month are skipped.
+export async function PUT(req: NextRequest) {
   try {
     const auth = await requireHr(req);
     if (auth instanceof NextResponse) return auth;
 
     const body = await req.json().catch(() => ({}));
-    const payMonth = parseMonth(body?.month);
-    if (!payMonth) {
-      return NextResponse.json({ error: "A valid month (YYYY-MM) is required" }, { status: 400 });
+    const period = payPeriodFromStart(String(body?.period_start || ""));
+    if (!period) {
+      return NextResponse.json({ error: "period_start must be the Monday a bi-weekly pay period starts on" }, { status: 400 });
+    }
+    const rawIds: unknown[] = Array.isArray(body?.user_ids) ? body.user_ids : [];
+    const wanted = Array.from(new Set(rawIds.map((v) => String(v))));
+    if (wanted.some((id) => !UUID_PATTERN.test(id))) {
+      return NextResponse.json({ error: "user_ids must be a list of user ids" }, { status: 400 });
     }
 
-    let entries: Array<{ user_id: string; amount: number; description: string | null; notes: string | null }> = [];
-    let skipExisting = body?.skip_existing !== false;
+    const monthRows = await loadMonthRows(period.month);
+    const thisPeriod = monthRows.filter((r) => r.pay_period_start === period.start);
+    const otherPeriod = new Map(
+      monthRows.filter((r) => r.pay_period_start !== period.start).map((r) => [r.user_id, r] as const),
+    );
+    const wantedSet = new Set(wanted);
+    const current = new Set(thisPeriod.map((r) => r.user_id));
 
-    const copyFrom = body?.copy_from_month != null ? parseMonth(body.copy_from_month) : null;
-    if (body?.copy_from_month != null) {
-      if (!copyFrom) return NextResponse.json({ error: "copy_from_month must be YYYY-MM" }, { status: 400 });
-      if (copyFrom === payMonth) return NextResponse.json({ error: "Pick a different month to copy from" }, { status: 400 });
-      const source = await loadMonthRows(copyFrom);
-      entries = source.map((r: any) => ({
-        user_id: String(r.user_id),
-        amount: round2(Number(r.amount || 0)),
-        description: r.description ?? null,
-        notes: null,
-      }));
-      skipExisting = true;
-    } else {
-      const raw = Array.isArray(body?.entries) ? body.entries : [];
-      for (const e of raw) {
-        const userId = String(e?.user_id || "").trim();
-        if (!UUID_PATTERN.test(userId)) {
-          return NextResponse.json({ error: "Every entry needs a valid user_id" }, { status: 400 });
-        }
-        const amount = parseAmount(e?.amount);
-        if (amount == null) {
-          return NextResponse.json({ error: "Every entry needs an amount of 0 or more" }, { status: 400 });
-        }
-        entries.push({ user_id: userId, amount, description: cleanText(e?.description), notes: cleanText(e?.notes) });
+    const toRemove = thisPeriod.filter((r) => !wantedSet.has(r.user_id)).map((r) => r.id);
+    const addCandidates = wanted.filter((id) => !current.has(id));
+
+    const people = addCandidates.length ? await loadPeopleByIds(addCandidates) : [];
+    const personById = new Map(people.map((p) => [p.user_id, p] as const));
+    const skippedOtherPeriod: string[] = [];
+    const skippedIneligible: string[] = [];
+    const toAdd: string[] = [];
+    for (const id of addCandidates) {
+      const person = personById.get(id);
+      if (!person || !person.eligible) {
+        skippedIneligible.push(person?.name || id);
+      } else if (otherPeriod.has(id)) {
+        skippedOtherPeriod.push(person.name);
+      } else {
+        toAdd.push(id);
       }
     }
 
-    if (entries.length === 0) {
-      return NextResponse.json({ error: "Nothing to queue" }, { status: 400 });
+    let removed = 0;
+    if (toRemove.length) {
+      const { data, error } = await supabaseAdmin.from(TABLE).delete().in("id", toRemove).select("id");
+      if (error) return NextResponse.json({ error: error.message || "Failed to uncheck vendors" }, { status: 500 });
+      removed = (data || []).length;
     }
 
-    // Equipment reimbursement is only for active vendors and employees.
-    const people = await loadPeopleByIds(Array.from(new Set(entries.map((e) => e.user_id))));
-    const inactive: string[] = [];
-    const missing: string[] = [];
-    entries = entries.filter((e) => {
-      const p = people.get(e.user_id);
-      if (!p) { missing.push(e.user_id); return false; }
-      if (!p.is_active) { inactive.push(p.name); return false; }
-      return true;
-    });
-
-    let alreadyQueued = 0;
-    if (skipExisting) {
-      const existing = new Set((await loadMonthRows(payMonth)).map((r: any) => String(r.user_id)));
-      const before = entries.length;
-      entries = entries.filter((e) => !existing.has(e.user_id));
-      alreadyQueued = before - entries.length;
-    }
-
-    // One row per person per request, even if the list repeats someone.
-    const seen = new Set<string>();
-    if (skipExisting) {
-      entries = entries.filter((e) => (seen.has(e.user_id) ? false : (seen.add(e.user_id), true)));
-    }
-
-    const inserted: any[] = [];
-    for (const chunk of chunkArray(entries, INSERT_CHUNK_SIZE)) {
+    let added = 0;
+    for (const chunk of chunkArray(toAdd, INSERT_CHUNK_SIZE)) {
       const { data, error } = await supabaseAdmin
         .from(TABLE)
         .insert(
-          chunk.map((e) => ({
-            user_id: e.user_id,
-            pay_month: payMonth,
-            amount: e.amount,
-            description: e.description,
-            notes: e.notes,
+          chunk.map((userId) => ({
+            user_id: userId,
+            pay_month: `${period.month}-01`,
+            pay_period_start: period.start,
+            pay_period_end: period.end,
+            amount: EQUIPMENT_REIMBURSEMENT_AMOUNT,
+            description: EQUIPMENT_REIMBURSEMENT_DESCRIPTION,
             status: "queued",
             created_by: auth.userId,
           })),
         )
         .select("id");
       if (error) {
+        const duplicate = String(error.code || "") === "23505";
         return NextResponse.json(
-          { error: tableErrorMessage(error, "Failed to queue equipment reimbursements"), inserted: inserted.length },
-          { status: 500 },
+          {
+            error: duplicate
+              ? "Someone in the list was already checked in another pay period this month. Refresh and try again."
+              : error.message || "Failed to check vendors",
+            added,
+            removed,
+          },
+          { status: duplicate ? 409 : 500 },
         );
       }
-      inserted.push(...(data || []));
+      added += (data || []).length;
     }
 
     return NextResponse.json({
       success: true,
-      inserted: inserted.length,
-      already_queued: alreadyQueued,
-      skipped_inactive: inactive,
-      skipped_missing: missing.length,
+      added,
+      removed,
+      skipped_other_period: skippedOtherPeriod,
+      skipped_ineligible: skippedIneligible,
     });
   } catch (err: any) {
-    console.error("[EQUIPMENT REIMBURSEMENTS][POST]", err);
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
-  }
-}
-
-// PATCH: { ids: [...], status?: "queued" | "paid", paid_date?, amount?, description?, notes? }
-// Amount and description can only change while a row is queued.
-export async function PATCH(req: NextRequest) {
-  try {
-    const auth = await requireHr(req);
-    if (auth instanceof NextResponse) return auth;
-
-    const body = await req.json().catch(() => ({}));
-    const ids: string[] = Array.isArray(body?.ids) ? body.ids.map((v: unknown) => String(v)) : [];
-    if (ids.length === 0 || ids.some((id) => !UUID_PATTERN.test(id))) {
-      return NextResponse.json({ error: "ids must be a list of row ids" }, { status: 400 });
-    }
-
-    const update: Record<string, unknown> = {};
-    const status = body?.status != null ? String(body.status) : null;
-    if (status != null && status !== "queued" && status !== "paid") {
-      return NextResponse.json({ error: "status must be queued or paid" }, { status: 400 });
-    }
-
-    if (status === "paid") {
-      const paidDate = body?.paid_date != null ? parseIsoDate(body.paid_date) : todayIso();
-      if (!paidDate) return NextResponse.json({ error: "paid_date must be YYYY-MM-DD" }, { status: 400 });
-      update.status = "paid";
-      update.paid_date = paidDate;
-      update.paid_by = auth.userId;
-    } else if (status === "queued") {
-      update.status = "queued";
-      update.paid_date = null;
-      update.paid_by = null;
-    } else if (body?.paid_date !== undefined) {
-      const paidDate = parseIsoDate(body.paid_date);
-      if (!paidDate) return NextResponse.json({ error: "paid_date must be YYYY-MM-DD" }, { status: 400 });
-      update.paid_date = paidDate;
-    }
-
-    const editsQueuedFields = body?.amount !== undefined || body?.description !== undefined;
-    if (body?.amount !== undefined) {
-      const amount = parseAmount(body.amount);
-      if (amount == null) return NextResponse.json({ error: "amount must be 0 or more" }, { status: 400 });
-      update.amount = amount;
-    }
-    if (body?.description !== undefined) update.description = cleanText(body.description);
-    if (body?.notes !== undefined) update.notes = cleanText(body.notes);
-
-    if (Object.keys(update).length === 0) {
-      return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
-    }
-
-    if (editsQueuedFields && status !== "queued") {
-      const { data: paidRows, error: checkError } = await supabaseAdmin
-        .from(TABLE)
-        .select("id")
-        .in("id", ids)
-        .eq("status", "paid");
-      if (checkError) return NextResponse.json({ error: tableErrorMessage(checkError, "Failed to check rows") }, { status: 500 });
-      if ((paidRows || []).length > 0) {
-        return NextResponse.json(
-          { error: "Paid rows cannot change amount or description. Move them back to the queue first." },
-          { status: 400 },
-        );
-      }
-    }
-
-    // Only a paid row has a paid date to edit on its own.
-    let query = supabaseAdmin.from(TABLE).update(update).in("id", ids);
-    if (!status && update.paid_date !== undefined) query = query.eq("status", "paid");
-    const { data, error } = await query.select("id");
-    if (error) return NextResponse.json({ error: tableErrorMessage(error, "Failed to save") }, { status: 500 });
-
-    return NextResponse.json({ success: true, updated: (data || []).length });
-  } catch (err: any) {
-    console.error("[EQUIPMENT REIMBURSEMENTS][PATCH]", err);
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
-  }
-}
-
-// DELETE: { ids: [...] } removes queued rows. Paid rows stay as the payment record.
-export async function DELETE(req: NextRequest) {
-  try {
-    const auth = await requireHr(req);
-    if (auth instanceof NextResponse) return auth;
-
-    const body = await req.json().catch(() => ({}));
-    const ids: string[] = Array.isArray(body?.ids) ? body.ids.map((v: unknown) => String(v)) : [];
-    if (ids.length === 0 || ids.some((id) => !UUID_PATTERN.test(id))) {
-      return NextResponse.json({ error: "ids must be a list of row ids" }, { status: 400 });
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from(TABLE)
-      .delete()
-      .in("id", ids)
-      .eq("status", "queued")
-      .select("id");
-    if (error) return NextResponse.json({ error: tableErrorMessage(error, "Failed to save") }, { status: 500 });
-
-    const removed = (data || []).length;
-    return NextResponse.json({ success: true, removed, kept_paid: ids.length - removed });
-  } catch (err: any) {
-    console.error("[EQUIPMENT REIMBURSEMENTS][DELETE]", err);
+    console.error("[EQUIPMENT REIMBURSEMENTS][PUT]", err);
     return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
   }
 }
