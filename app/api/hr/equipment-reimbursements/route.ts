@@ -410,3 +410,81 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
   }
 }
+
+// PATCH { from_pay_date, to_pay_date } moves everyone saved for one pay date to
+// another (HR 2026-10-23: the pay date is provisional, accounting may pay on a
+// different day). Each row gets the new pay date with its month and work period.
+// Within the same month nobody can clash (one row per person per month). Moving
+// into another month skips anyone who already has a row in that month.
+export async function PATCH(req: NextRequest) {
+  try {
+    const auth = await requireHr(req);
+    if (auth instanceof NextResponse) return auth;
+
+    const body = await req.json().catch(() => ({}));
+    const from = payPeriodForPayDate(String(body?.from_pay_date || "").trim());
+    const to = payPeriodForPayDate(String(body?.to_pay_date || "").trim());
+    if (!from || !to) {
+      return NextResponse.json(
+        { error: `from_pay_date and to_pay_date must be dates (YYYY-MM-DD) on or after ${EARLIEST_EQUIPMENT_PAY_DATE}` },
+        { status: 400 },
+      );
+    }
+    if (from.payDate === to.payDate) {
+      return NextResponse.json({ error: "The new pay date is the same as the current one" }, { status: 400 });
+    }
+
+    const { data: fromRows, error: fromError } = await supabaseAdmin
+      .from(TABLE)
+      .select("id, user_id")
+      .eq("pay_date", from.payDate);
+    if (fromError) throw new Error(fromError.message || "Failed to load equipment reimbursements");
+    const rows = (fromRows || []).map((r: any) => ({ id: String(r.id), user_id: String(r.user_id) }));
+    if (!rows.length) {
+      return NextResponse.json({ error: "Nobody is saved for that pay date" }, { status: 404 });
+    }
+
+    // Moving into another month: people already paid in that month keep their
+    // current pay date.
+    const taken = new Set<string>();
+    if (to.month !== from.month) {
+      for (const r of await loadMonthRows(to.month)) taken.add(r.user_id);
+    }
+    const movable = rows.filter((r) => !taken.has(r.user_id));
+    const skippedIds = rows.filter((r) => taken.has(r.user_id)).map((r) => r.user_id);
+
+    let moved = 0;
+    for (const chunk of chunkArray(movable.map((r) => r.id), QUERY_CHUNK_SIZE)) {
+      const { data, error } = await supabaseAdmin
+        .from(TABLE)
+        .update({
+          pay_date: to.payDate,
+          pay_month: `${to.month}-01`,
+          pay_period_start: to.start,
+          pay_period_end: to.end,
+        })
+        .in("id", chunk)
+        .eq("pay_date", from.payDate)
+        .select("id");
+      if (error) {
+        const duplicate = String(error.code || "") === "23505";
+        return NextResponse.json(
+          {
+            error: duplicate
+              ? "Someone in the list is already paid in that month. Refresh and try again."
+              : error.message || "Failed to change the pay date",
+            moved,
+          },
+          { status: duplicate ? 409 : 500 },
+        );
+      }
+      moved += (data || []).length;
+    }
+
+    const skipped = skippedIds.length ? (await loadPeopleByIds(skippedIds)).map((p) => p.name) : [];
+    return NextResponse.json({ success: true, moved, skipped_already_paid_that_month: skipped, to: to.payDate });
+  } catch (err: any) {
+    console.error("[EQUIPMENT REIMBURSEMENTS][PATCH]", err);
+    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+  }
+}
