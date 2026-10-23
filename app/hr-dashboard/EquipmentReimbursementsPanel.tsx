@@ -132,6 +132,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Changing a saved pay date (accounting may pay on another day).
+  const [moving, setMoving] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveTo, setMoveTo] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
@@ -329,6 +333,8 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       return;
     }
     setNotice("");
+    setMoveOpen(false);
+    setMoveTo("");
     setDateInput(date);
     setPayDate(date);
   };
@@ -370,6 +376,54 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       else next.add(key);
       return next;
     });
+  };
+
+  // Move everyone saved for `from` to `to`. The pay date is provisional (HR
+  // 2026-10-23: accounting may not pay on that day), so a saved list can move.
+  const movePayDate = async (from: string, to: string) => {
+    const target = payPeriodForPayDate(to);
+    if (!target || from === to) return;
+    const count = monthRows.filter((r) => r.pay_date === from).length;
+    const fromMonth = formatPayMonth(from.slice(0, 7));
+    const toMonth = formatPayMonth(target.month);
+    const lines = [`Move ${count} ${count === 1 ? "person" : "people"} from ${formatPayDate(from, { weekday: true })} to ${formatPayDate(to, { weekday: true })}?`];
+    if (from.slice(0, 7) !== target.month) {
+      lines.push(
+        `${formatPayDate(to)} is in ${toMonth}, so this becomes their ${toMonth} equipment reimbursement and they get none in ${fromMonth}. Anyone already paid in ${toMonth} stays on ${formatPayDate(from)}.`,
+      );
+    }
+    if (dirty) lines.push("Your unsaved changes on this pay date will be discarded.");
+    if (!window.confirm(lines.join("\n\n"))) return;
+
+    setMoving(true);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch(API, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ from_pay_date: from, to_pay_date: to }),
+        cache: "no-store",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to change the pay date");
+      const moved = Number(json.moved || 0);
+      const skipped: string[] = Array.isArray(json.skipped_already_paid_that_month) ? json.skipped_already_paid_that_month : [];
+      const parts = [`Moved ${moved} ${moved === 1 ? "person" : "people"} from ${formatPayDate(from)} to ${formatPayDate(to)}.`];
+      if (skipped.length) parts.push(`Kept ${skipped.length} on ${formatPayDate(from)} because they are already paid in ${toMonth}: ${skipped.join(", ")}.`);
+      setMoveOpen(false);
+      setMoveTo("");
+      onSaved?.();
+      setDateInput(to);
+      if (payDate === to) await load(to);
+      else setPayDate(to);
+      setNotice(parts.join(" "));
+    } catch (err: any) {
+      setError(err?.message || "Failed to change the pay date");
+      await load(payDate);
+    } finally {
+      setMoving(false);
+    }
   };
 
   const save = async () => {
@@ -530,7 +584,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     ]);
   };
 
-  const busy = loading || saving;
+  const busy = loading || saving || moving;
+  // Other pay dates of this month with people saved, shown when nobody is saved
+  // on the selected date yet: those people are locked here (once a month).
+  const otherSavedDates = ready && saved.size === 0 ? monthPayDates.filter(([date, count]) => date !== payDate && count > 0) : [];
   const savedCount = saved.size;
 
   const renderPersonRow = (p: Person) => {
@@ -625,7 +682,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
             value={dateInput}
             min={EARLIEST_EQUIPMENT_PAY_DATE}
             onChange={(e) => onDateInput(e.target.value)}
-            disabled={saving}
+            disabled={saving || moving}
             className="apple-select"
           />
         </div>
@@ -648,7 +705,72 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         ) : (
           <div className="pb-2 text-sm text-gray-500">Any date. Each account can be paid once per month.</div>
         )}
+        {/* Change a saved pay date (accounting may pay on another day) */}
+        {ready && saved.size > 0 &&
+          (moveOpen ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <label className="apple-label" htmlFor="equip-move-to">New pay date</label>
+                <input
+                  id="equip-move-to"
+                  type="date"
+                  value={moveTo}
+                  min={EARLIEST_EQUIPMENT_PAY_DATE}
+                  onChange={(e) => setMoveTo(e.target.value)}
+                  disabled={busy}
+                  className="apple-select"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void movePayDate(payDate, moveTo)}
+                disabled={busy || !payPeriodForPayDate(moveTo) || moveTo === payDate}
+                className={`apple-button ${busy || !payPeriodForPayDate(moveTo) || moveTo === payDate ? "apple-button-disabled" : "apple-button-primary"}`}
+              >
+                {moving ? "Moving…" : `Move ${saved.size} to this date`}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMoveOpen(false); setMoveTo(""); }}
+                disabled={moving}
+                className="apple-button apple-button-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setMoveOpen(true)}
+              disabled={busy}
+              className="apple-button apple-button-secondary"
+              title="Accounting paying on another day? Move everyone saved for this pay date to the new date."
+            >
+              Change pay date
+            </button>
+          ))}
       </div>
+
+      {/* People saved for another date this month are locked on this one; offer to move them here */}
+      {otherSavedDates.map(([date, count]) => (
+        <div
+          key={date}
+          className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900"
+        >
+          <span>
+            {count} {count === 1 ? "person is" : "people are"} saved for {formatPayDate(date, { weekday: true })}, so they can&apos;t be
+            checked on this date. If the payment moved, move them here.
+          </span>
+          <button
+            type="button"
+            onClick={() => void movePayDate(date, payDate)}
+            disabled={busy}
+            className="apple-button apple-button-secondary"
+          >
+            {moving ? "Moving…" : `Move them to ${formatPayDate(payDate, { year: false, weekday: true })}`}
+          </button>
+        </div>
+      ))}
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
       {notice && <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">{notice}</div>}
