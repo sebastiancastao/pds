@@ -9,6 +9,8 @@ import { findSameDayConflicts } from "@/lib/team-conflicts";
 import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 import { getPendingCustomFormsByUser, describePendingForms } from "@/lib/vendor-forms-status";
 import { calculateDistanceMiles } from "@/lib/geocoding";
+import { getAvailabilityForDateByVendor } from "@/lib/vendorAvailability";
+import type { AvailabilityAnswer } from "@/lib/availabilityTimeFrame";
 import crypto from "crypto";
 
 export const dynamic = 'force-dynamic';
@@ -747,7 +749,7 @@ export async function GET(
 
     const { data: eventData, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('venue, city, state, event_type')
+      .select('venue, city, state, event_type, event_date')
       .eq('id', eventId)
       .maybeSingle();
 
@@ -1130,6 +1132,34 @@ export async function GET(
       }
     }
 
+    // Each member's availability time frame on the event date (vendor form
+    // submission or an approved /employees change request), so the Team tab
+    // and the /dashboard + /global-calendar team pickers can show it as a
+    // partial-availability badge even after the vendor is on the team.
+    // Non Event Time Sheets don't use the availability flow.
+    const teamEventDateKey = String((eventData as any)?.event_date || '').slice(0, 10);
+    let availabilityByVendor = new Map<string, AvailabilityAnswer>();
+    if (!isNonEventTimesheet && teamEventDateKey && (teamMembers || []).length > 0) {
+      try {
+        availabilityByVendor = await getAvailabilityForDateByVendor(
+          supabaseAdmin,
+          (teamMembers || []).map((m: any) => String(m?.vendor_id || m?.users?.id || '')),
+          teamEventDateKey
+        );
+      } catch (availabilityErr) {
+        console.warn('[TEAM][GET] Could not load team availability time frames:', availabilityErr);
+      }
+    }
+    const availabilityFields = (vendorId: string) => {
+      const answer = vendorId ? availabilityByVendor.get(vendorId) : undefined;
+      const isPartial = Boolean(answer?.available && !answer.allDay && answer.startTime && answer.endTime);
+      return {
+        partialAvailability: isPartial,
+        availableFrom: isPartial ? answer!.startTime : null,
+        availableTo: isPartial ? answer!.endTime : null,
+      };
+    };
+
     // Decrypt sensitive profile data and fallback to employee_information.phone when needed
     const decryptedTeamMembers = teamMembers?.map((member: any) => {
       if (!member?.users) return member;
@@ -1193,6 +1223,7 @@ export async function GET(
         has_attestation: hasSubmittedAttestation,
         attestation_status: attestationStatus,
         ...pendingFormsFields(memberUserId),
+        ...availabilityFields(memberUserId),
         users: {
           ...member.users,
           profiles: {

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
+import * as XLSX from "xlsx";
 
 type Venue = {
   id: string;
@@ -13,6 +14,7 @@ type Venue = {
   latitude: number | null;
   longitude: number | null;
   region_id: string | null;
+  created_at?: string | null;
 };
 
 type Region = {
@@ -336,6 +338,76 @@ export default function VenueManagementPage() {
     return assignments.filter(a => a.venue_id === venueId && a.is_active);
   };
 
+  // Export every venue (with its region and active manager assignments) to Excel
+  const handleExportVenues = () => {
+    if (venues.length === 0) {
+      alert("There are no venues to export.");
+      return;
+    }
+
+    const regionNameById = new Map(regions.map((r) => [r.id, r.name]));
+    const toNumberOrBlank = (value: unknown) => {
+      if (value === null || value === undefined || value === "") return "";
+      const n = Number(value);
+      return Number.isFinite(n) ? n : "";
+    };
+
+    const headers = [
+      "Venue Name",
+      "City",
+      "State",
+      "Full Address",
+      "Region",
+      "Latitude",
+      "Longitude",
+      "Managers Assigned",
+      "Manager Names",
+      "Manager Emails",
+      "Created",
+    ];
+
+    const rows = [...venues]
+      .sort((a, b) => (a.venue_name || "").localeCompare(b.venue_name || ""))
+      .map((venue) => {
+        const managerInfos = getVenueAssignments(venue.id).map(getAssignmentManagerDetails);
+        return {
+          "Venue Name": venue.venue_name || "",
+          City: venue.city || "",
+          State: venue.state || "",
+          "Full Address": venue.full_address || "",
+          Region: venue.region_id
+            ? regionNameById.get(venue.region_id) || "Unknown"
+            : "No region set",
+          Latitude: toNumberOrBlank(venue.latitude),
+          Longitude: toNumberOrBlank(venue.longitude),
+          "Managers Assigned": managerInfos.length,
+          "Manager Names": managerInfos.map((m) => m.name).join(", "),
+          "Manager Emails": managerInfos.map((m) => m.email).filter(Boolean).join(", "),
+          Created: venue.created_at ? new Date(venue.created_at).toLocaleDateString("en-US") : "",
+        };
+      });
+
+    const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+    ws["!cols"] = headers.map((h) => ({
+      wch:
+        h === "Full Address" || h === "Manager Names" || h === "Manager Emails"
+          ? 40
+          : h === "Venue Name"
+          ? 30
+          : h === "Region" || h === "City"
+          ? 18
+          : 12,
+    }));
+    ws["!autofilter"] = { ref: ws["!ref"] || "A1" };
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Venues");
+
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    XLSX.writeFile(wb, `venues_${stamp}.xlsx`);
+  };
+
   // Edit venue
   const handleEditVenue = async () => {
     if (!editingVenue || !editingVenue.venue_name || !editingVenue.city || !editingVenue.state || !editingVenue.region_id) {
@@ -432,7 +504,15 @@ export default function VenueManagementPage() {
               Manage venues and assign managers
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <button
+              onClick={handleExportVenues}
+              disabled={venues.length === 0}
+              className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Download every venue as an Excel file"
+            >
+              Export Excel
+            </button>
             <button
               onClick={() => setShowCreateVenue(true)}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm"

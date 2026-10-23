@@ -1,357 +1,595 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { money } from "./reimbursements-export";
+import { downloadExcelSheets, roundCents } from "./equipment-reimbursement-export";
+import {
+  EARLIEST_EQUIPMENT_PAY_DATE,
+  EQUIPMENT_REIMBURSEMENT_AMOUNT,
+  formatPayDate,
+  formatPayMonth,
+  payPeriodForPayDate,
+  type EquipmentPayPeriod,
+} from "@/lib/equipment-reimbursement";
 
-// Equipment reimbursement queue for the HR dashboard Payroll tab.
-// Equipment reimbursement is paid once a month as an off-cycle payment to
-// active vendors and employees. HR adds people to a month's queue one at a
-// time, adjusts amounts, exports the list for the off-cycle run, and marks rows
-// paid. Data lives in
-// equipment_reimbursement_queue via /api/hr/equipment-reimbursements.
-
-type PersonType = "vendor" | "employee" | "exec" | "other";
+// Equipment reimbursement for the HR dashboard Payroll tab: type or pick a pay
+// date (any date, nothing preselected), then check the onboarded accounts who
+// get the $20 monthly equipment reimbursement on it. Worker accounts are listed;
+// staff accounts (exec, manager, supervisor...) only show when they are checked
+// this month (the "Show staff accounts" switch was removed at the user's request
+// on 2026-10-23). Many staff have a company account and a personal worker
+// account, so a row notes when the same person is checked on two accounts
+// (paid twice). Each account can be checked for only one pay date per month
+// (the month the pay date falls in). The list can be filtered and grouped by
+// region (the profile's region). Data: equipment_reimbursement_queue via
+// /api/hr/equipment-reimbursements.
 
 type Person = {
   user_id: string;
   name: string;
   email: string;
   role: string;
-  type: PersonType;
   state: string;
-  is_active: boolean;
+  region_id: string;
+  region_name: string;
+  eligible: boolean;
+  ineligible_reason?: "" | "inactive";
+  staff?: boolean;
 };
 
-type QueueRow = Person & {
+type MonthRow = {
   id: string;
-  pay_month: string;
+  user_id: string;
+  pay_date: string;
+  pay_period_start: string;
+  pay_period_end: string;
   amount: number;
-  description: string | null;
-  notes: string | null;
-  status: "queued" | "paid";
-  paid_date: string | null;
-  paid_by_name: string | null;
-  created_by_name: string | null;
-  created_at: string;
-  updated_at: string;
 };
+
+type ShowFilter = "all" | "checked" | "unchecked";
+type ViewMode = "region" | "list";
+
+type RegionSummary = { key: string; label: string; total: number; checked: number };
 
 const API = "/api/hr/equipment-reimbursements";
+const ALL_REGIONS = "all";
+const VIEW_STORAGE_KEY = "hr-equipment-reimbursement-view";
 
-const TYPE_LABELS: Record<PersonType, string> = {
-  vendor: "Vendor",
-  employee: "Employee",
-  exec: "Exec",
-  other: "Other",
+const STATE_NAMES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut",
+  DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois",
+  IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+  NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
+  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
+  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah",
+  VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
 };
 
-const TYPE_STYLES: Record<PersonType, string> = {
-  vendor: "bg-blue-50 text-blue-700 border-blue-200",
-  employee: "bg-purple-50 text-purple-700 border-purple-200",
-  exec: "bg-gray-100 text-gray-700 border-gray-200",
-  other: "bg-gray-50 text-gray-500 border-gray-200",
+// The profile state, or "" when it is missing or the "XX" placeholder.
+const stateOf = (p: { state?: string | null }) => {
+  const s = String(p.state || "").trim().toUpperCase();
+  return STATE_NAMES[s] ? s : "";
 };
 
-const todayIso = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-const currentMonth = () => todayIso().slice(0, 7);
-
-const shiftMonth = (month: string, delta: number) => {
-  const [y, m] = month.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+const roleLabel = (role: string) => {
+  const r = role.trim().toLowerCase();
+  if (!r || r === "worker" || r === "vendor") return "Vendor";
+  return r.charAt(0).toUpperCase() + r.slice(1);
 };
 
-const monthLabel = (month: string) => {
-  const [y, m] = month.split("-").map(Number);
-  if (!y || !m) return month;
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
-};
+// Group by the profile region; people with no region are grouped by their
+// state instead (user 2026-10-23: no "No region" group). People with neither
+// have no group ("" key): they are left out of the cards and the grouped view
+// (user 2026-10-23: no "State not set" group) and show in One list view.
+const regionKeyOf = (p: Person) => p.region_id || (stateOf(p) ? `state:${stateOf(p)}` : "");
+const regionLabelOf = (p: Person) => p.region_name || STATE_NAMES[stateOf(p)] || "";
+const hasPlace = (p: Person) => regionKeyOf(p) !== "";
 
-const formatDate = (value: string | null | undefined) => {
-  if (!value) return "—";
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-};
+// Regions by name, then state groups by name, then people with neither.
+const groupRank = (key: string) => (!key ? 2 : key.startsWith("state:") ? 1 : 0);
+const compareRegions = (a: { key: string; label: string }, b: { key: string; label: string }) =>
+  groupRank(a.key) - groupRank(b.key) || a.label.localeCompare(b.label);
 
-const parseMoney = (value: string): number | null => {
-  const n = Number(String(value).replace(/[$,\s]/g, ""));
-  if (!Number.isFinite(n) || n < 0) return null;
-  return Math.round(n * 100) / 100;
-};
+// Region order, then name, for the Excel sheets.
+const compareByRegionThenName = (a: Person, b: Person) =>
+  compareRegions({ key: regionKeyOf(a), label: regionLabelOf(a) }, { key: regionKeyOf(b), label: regionLabelOf(b) }) ||
+  a.name.localeCompare(b.name);
 
-async function callApi(method: string, body?: unknown, query = ""): Promise<any> {
-  const { data: { session } } = await supabase.auth.getSession();
-  const res = await fetch(`${API}${query}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    cache: "no-store",
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
-  return json;
+const INELIGIBLE_TEXT = "No longer active or onboarded";
+
+// "Staff (Supervisor)" for staff accounts, "Worker" otherwise.
+const accountLabel = (p: Person) => (p.staff ? `Staff (${roleLabel(p.role)})` : "Worker");
+
+// Same person on two accounts (company staff account + personal worker account):
+// names compared without case, spaces or punctuation.
+const personKey = (p: Person) => p.name.toLowerCase().replace(/[^a-z]/g, "");
+
+function readStoredView(): ViewMode {
+  try {
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "region";
+  } catch {
+    return "region";
+  }
 }
 
-export default function EquipmentReimbursementsPanel() {
-  const [month, setMonth] = useState(currentMonth);
-  const [rows, setRows] = useState<QueueRow[]>([]);
-  const [people, setPeople] = useState<Person[]>([]);
+async function authHeaders(): Promise<Record<string, string>> {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
+}
+
+// onSaved lets the Payroll tab refresh the equipment rows it shows for the loaded dates.
+export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: () => void } = {}) {
+  // dateInput is what the date field shows; payDate is the date the list is loaded for.
+  const [dateInput, setDateInput] = useState("");
+  const [payDate, setPayDate] = useState("");
+
+  const [period, setPeriod] = useState<EquipmentPayPeriod | null>(null);
+  const [loadedPeople, setPeople] = useState<Person[]>([]);
+  const [monthRows, setMonthRows] = useState<MonthRow[]>([]);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+
   const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-
-  // Add one person
-  const [personSearch, setPersonSearch] = useState("");
-  const [pickedPerson, setPickedPerson] = useState<Person | null>(null);
-  const [singleAmount, setSingleAmount] = useState("");
-  const [singleDescription, setSingleDescription] = useState("Equipment reimbursement");
-
-  // Table
-  const [statusFilter, setStatusFilter] = useState<"all" | "queued" | "paid">("all");
-  const [typeFilter, setTypeFilter] = useState<"all" | PersonType>("all");
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [paidDate, setPaidDate] = useState(todayIso);
-  const [selectedAmount, setSelectedAmount] = useState("");
-  const [amountDrafts, setAmountDrafts] = useState<Record<string, string>>({});
+  const [show, setShow] = useState<ShowFilter>("all");
+  const [regionFilter, setRegionFilter] = useState<string>(ALL_REGIONS);
+  const [view, setView] = useState<ViewMode>("region");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const requestRef = useRef(0);
 
-  const load = useCallback(async (targetMonth: string) => {
-    setLoading(true);
-    setError("");
+  useEffect(() => {
+    setView(readStoredView());
+  }, []);
+
+  const changeView = (next: ViewMode) => {
+    setView(next);
     try {
-      const json = await callApi("GET", undefined, `?month=${encodeURIComponent(targetMonth)}`);
-      setRows(Array.isArray(json.rows) ? json.rows : []);
-      setPeople(Array.isArray(json.people) ? json.people : []);
-      setSelected(new Set());
-      setAmountDrafts({});
-    } catch (err: any) {
-      setError(err?.message || "Failed to load the equipment reimbursement queue");
-    } finally {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+    } catch {
+      // storage blocked: the choice just isn't remembered
+    }
+  };
+
+  const load = useCallback(async (date: string) => {
+    const requestId = ++requestRef.current;
+    setError("");
+    if (!date) {
+      setPeriod(null);
+      setPeople([]);
+      setMonthRows([]);
+      setChecked(new Set());
       setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}?pay_date=${encodeURIComponent(date)}`, { headers: await authHeaders(), cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to load equipment reimbursements");
+      if (requestId !== requestRef.current) return; // a newer date was picked meanwhile
+      const rows: MonthRow[] = Array.isArray(json.month_rows) ? json.month_rows : [];
+      setPeriod(json.period || null);
+      setPeople(Array.isArray(json.people) ? json.people : []);
+      setMonthRows(rows);
+      setChecked(new Set(rows.filter((r) => r.pay_date === date).map((r) => r.user_id)));
+    } catch (err: any) {
+      if (requestId === requestRef.current) setError(err?.message || "Failed to load equipment reimbursements");
+    } finally {
+      if (requestId === requestRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (/^\d{4}-\d{2}$/.test(month)) void load(month);
-  }, [month, load]);
+    void load(payDate);
+  }, [payDate, load]);
 
-  const run = async (action: () => Promise<string | void>) => {
-    setBusy(true);
+  // Saved state for the selected pay date, and who is already checked for
+  // another pay date of the same month.
+  const saved = useMemo(
+    () => new Set(monthRows.filter((r) => r.pay_date === payDate).map((r) => r.user_id)),
+    [monthRows, payDate],
+  );
+  const otherPayDateByUser = useMemo(() => {
+    const map = new Map<string, MonthRow>();
+    for (const r of monthRows) if (r.pay_date !== payDate) map.set(r.user_id, r);
+    return map;
+  }, [monthRows, payDate]);
+
+  const toAdd = useMemo(() => Array.from(checked).filter((id) => !saved.has(id)), [checked, saved]);
+  const toRemove = useMemo(() => Array.from(saved).filter((id) => !checked.has(id)), [checked, saved]);
+  const dirty = toAdd.length + toRemove.length > 0;
+
+  const canCheck = (p: Person) => p.eligible && !otherPayDateByUser.has(p.user_id);
+  const grouped = view === "region";
+
+  // Company staff accounts usually have no region and the "XX" state; they take
+  // the region and state of the same person's other account (matched by name),
+  // so they sit next to it.
+  const people = useMemo(() => {
+    const placeByName = new Map<string, Person>();
+    for (const p of loadedPeople) {
+      const key = personKey(p);
+      if (key && hasPlace(p) && !placeByName.has(key)) placeByName.set(key, p);
+    }
+    return loadedPeople.map((p) => {
+      if (hasPlace(p)) return p;
+      const twin = placeByName.get(personKey(p));
+      return twin ? { ...p, region_id: twin.region_id, region_name: twin.region_name, state: twin.state } : p;
+    });
+  }, [loadedPeople]);
+
+  // Worker accounts, plus staff accounts when shown or when checked this month.
+  const listedPeople = useMemo(
+    () =>
+      people.filter(
+        (p) => !p.staff || checked.has(p.user_id) || saved.has(p.user_id) || otherPayDateByUser.has(p.user_id),
+      ),
+    [people, checked, saved, otherPayDateByUser],
+  );
+
+  // People checked this month (this pay date as it stands, or another one) on
+  // more than one account: they would be paid twice.
+  const otherCheckedAccounts = useMemo(() => {
+    const byKey = new Map<string, Person[]>();
+    for (const p of people) {
+      if (!checked.has(p.user_id) && !otherPayDateByUser.has(p.user_id)) continue;
+      const key = personKey(p);
+      if (!key) continue;
+      byKey.set(key, [...(byKey.get(key) || []), p]);
+    }
+    const others = new Map<string, Person[]>();
+    byKey.forEach((list) => {
+      if (list.length < 2) return;
+      for (const p of list) others.set(p.user_id, list.filter((o) => o.user_id !== p.user_id));
+    });
+    return others;
+  }, [people, checked, otherPayDateByUser]);
+
+  // One card per region over the whole list (search and Show don't change it),
+  // with what is checked right now, saved or not.
+  const regionSummaries = useMemo(() => {
+    const map = new Map<string, RegionSummary>();
+    for (const p of listedPeople) {
+      if (!hasPlace(p)) continue;
+      const key = regionKeyOf(p);
+      let s = map.get(key);
+      if (!s) {
+        s = { key, label: regionLabelOf(p), total: 0, checked: 0 };
+        map.set(key, s);
+      }
+      s.total += 1;
+      if (checked.has(p.user_id)) s.checked += 1;
+    }
+    return Array.from(map.values()).sort(compareRegions);
+  }, [listedPeople, checked]);
+
+  // A region picked for another pay date may have nobody in this list.
+  const activeRegion = regionSummaries.some((s) => s.key === regionFilter) ? regionFilter : ALL_REGIONS;
+
+  const visiblePeople = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return listedPeople.filter((p) => {
+      if (activeRegion !== ALL_REGIONS && regionKeyOf(p) !== activeRegion) return false;
+      if (show === "checked" && !checked.has(p.user_id)) return false;
+      if (show === "unchecked" && checked.has(p.user_id)) return false;
+      if (q && !`${p.name} ${p.email} ${stateOf(p)} ${STATE_NAMES[stateOf(p)] || ""} ${regionLabelOf(p)} ${accountLabel(p)}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [listedPeople, search, show, checked, activeRegion]);
+
+  const visibleGroups = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; people: Person[] }>();
+    for (const p of visiblePeople) {
+      if (!hasPlace(p)) continue;
+      const key = regionKeyOf(p);
+      if (!map.has(key)) map.set(key, { key, label: regionLabelOf(p), people: [] });
+      map.get(key)!.people.push(p);
+    }
+    return Array.from(map.values()).sort(compareRegions);
+  }, [visiblePeople]);
+
+  const workerCount = useMemo(() => people.filter((p) => p.eligible && !p.staff).length, [people]);
+  const selectableOf = (list: Person[]) => list.filter((p) => canCheck(p) || checked.has(p.user_id));
+  const allCheckedOf = (list: Person[]) => {
+    const selectable = selectableOf(list);
+    return selectable.length > 0 && selectable.every((p) => checked.has(p.user_id));
+  };
+  // The rows on screen: the grouped view leaves out people with no region or state.
+  const shownPeople = useMemo(() => (grouped ? visiblePeople.filter(hasPlace) : visiblePeople), [grouped, visiblePeople]);
+  const unplacedHidden = grouped ? visiblePeople.filter((p) => !hasPlace(p)) : [];
+  const unplacedHiddenChecked = unplacedHidden.filter((p) => checked.has(p.user_id)).length;
+  const shownSelectable = selectableOf(shownPeople);
+  const allShownChecked = allCheckedOf(shownPeople);
+
+  // Checked people who can't be paid: no longer active or onboarded.
+  const blockedChecked = useMemo(() => people.filter((p) => !p.eligible && checked.has(p.user_id)), [people, checked]);
+
+  // The loaded data matches the date in the field.
+  const ready = Boolean(payDate && period && period.payDate === payDate);
+
+  // Pay dates of this month that already have people saved, plus the selected one.
+  const monthPayDates = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of monthRows) counts.set(r.pay_date, (counts.get(r.pay_date) || 0) + 1);
+    if (payDate && !counts.has(payDate)) counts.set(payDate, 0);
+    return Array.from(counts.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [monthRows, payDate]);
+
+  const changePayDate = (date: string) => {
+    if (date === payDate) {
+      setDateInput(date);
+      return;
+    }
+    if (dirty && !window.confirm("You have unsaved changes for this pay date. Discard them?")) {
+      setDateInput(payDate);
+      return;
+    }
+    setNotice("");
+    setDateInput(date);
+    setPayDate(date);
+  };
+
+  // The date field reports partial or out-of-range dates while someone types;
+  // only a full date from the first pay period on loads the list.
+  const onDateInput = (value: string) => {
+    setDateInput(value);
+    if (value && payPeriodForPayDate(value)) changePayDate(value);
+  };
+
+  const toggle = (p: Person) => {
+    setNotice("");
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(p.user_id)) next.delete(p.user_id);
+      else if (canCheck(p)) next.add(p.user_id);
+      return next;
+    });
+  };
+
+  // Check (only people who can be checked) or uncheck everyone in `list`.
+  const setListChecked = (list: Person[], on: boolean) => {
+    setNotice("");
+    setChecked((prev) => {
+      const next = new Set(prev);
+      for (const p of list) {
+        if (on && canCheck(p)) next.add(p.user_id);
+        if (!on) next.delete(p.user_id);
+      }
+      return next;
+    });
+  };
+
+  const toggleCollapsed = (key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const save = async () => {
+    if (!ready) return;
+    setSaving(true);
     setError("");
     setNotice("");
     try {
-      const message = await action();
-      if (message) setNotice(message);
-      await load(month);
+      const res = await fetch(API, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ pay_date: payDate, user_ids: Array.from(checked) }),
+        cache: "no-store",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to save");
+      const parts = [`Saved. ${json.added} checked, ${json.removed} unchecked.`];
+      const other: string[] = Array.isArray(json.skipped_other_period) ? json.skipped_other_period : [];
+      const ineligible: string[] = Array.isArray(json.skipped_ineligible) ? json.skipped_ineligible : [];
+      if (other.length) parts.push(`Skipped ${other.length} already checked for another pay date this month: ${other.join(", ")}.`);
+      if (ineligible.length) parts.push(`Skipped ${ineligible.length} no longer active or onboarded: ${ineligible.join(", ")}.`);
+      setNotice(parts.join(" "));
+      onSaved?.();
+      await load(payDate);
     } catch (err: any) {
-      setError(err?.message || "Something went wrong");
+      setError(err?.message || "Failed to save");
+      await load(payDate);
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   };
 
-  const queuedUserIds = useMemo(() => new Set(rows.map((r) => r.user_id)), [rows]);
-
-  const notQueuedByType = useMemo(() => {
-    const out: Record<PersonType, Person[]> = { vendor: [], employee: [], exec: [], other: [] };
-    for (const p of people) if (!queuedUserIds.has(p.user_id)) out[p.type].push(p);
-    return out;
-  }, [people, queuedUserIds]);
-
-  const activeCountByType = useMemo(() => {
-    const out: Record<PersonType, number> = { vendor: 0, employee: 0, exec: 0, other: 0 };
-    for (const p of people) out[p.type] += 1;
-    return out;
-  }, [people]);
-
-  const summary = useMemo(() => {
-    const out = { queued: { count: 0, amount: 0 }, paid: { count: 0, amount: 0 }, inactive: 0 };
-    for (const r of rows) {
-      out[r.status].count += 1;
-      out[r.status].amount += r.amount;
-      if (!r.is_active && r.status === "queued") out.inactive += 1;
-    }
-    return out;
-  }, [rows]);
-
-  const visibleRows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (statusFilter !== "all" && r.status !== statusFilter) return false;
-      if (typeFilter !== "all" && r.type !== typeFilter) return false;
-      if (q && !`${r.name} ${r.email} ${r.state} ${r.description || ""} ${r.notes || ""}`.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [rows, statusFilter, typeFilter, search]);
-
-  const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
-  const selectedQueued = selectedRows.filter((r) => r.status === "queued");
-  const selectedPaid = selectedRows.filter((r) => r.status === "paid");
-  const allVisibleSelected = visibleRows.length > 0 && visibleRows.every((r) => selected.has(r.id));
-
-  const toggleRow = (id: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  const toggleAllVisible = () =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (allVisibleSelected) visibleRows.forEach((r) => next.delete(r.id));
-      else visibleRows.forEach((r) => next.add(r.id));
-      return next;
-    });
-
-  const personMatches = useMemo(() => {
-    const q = personSearch.trim().toLowerCase();
-    if (!q || pickedPerson) return [];
-    return people.filter((p) => `${p.name} ${p.email}`.toLowerCase().includes(q)).slice(0, 8);
-  }, [people, personSearch, pickedPerson]);
-
-  const addOne = () => {
-    if (!pickedPerson) {
-      setError("Pick a person to add.");
-      return;
-    }
-    const amount = parseMoney(singleAmount);
-    if (amount == null) {
-      setError("Enter an amount for this person.");
-      return;
-    }
-    if (queuedUserIds.has(pickedPerson.user_id)) {
-      const ok = window.confirm(`${pickedPerson.name} is already in the ${monthLabel(month)} queue. Add another line for them?`);
-      if (!ok) return;
-    }
-    const person = pickedPerson;
-    void run(async () => {
-      await callApi("POST", {
-        month,
-        skip_existing: false,
-        entries: [{ user_id: person.user_id, amount, description: singleDescription }],
-      });
-      setPickedPerson(null);
-      setPersonSearch("");
-      setSingleAmount("");
-      return `Added ${person.name} for ${money(amount)}.`;
-    });
-  };
-
-  const markPaid = (ids: string[]) => {
-    if (ids.length === 0) return;
-    void run(async () => {
-      const json = await callApi("PATCH", { ids, status: "paid", paid_date: paidDate });
-      return `Marked ${json.updated} paid on ${formatDate(paidDate)}.`;
-    });
-  };
-
-  const moveBackToQueue = (ids: string[]) => {
-    if (ids.length === 0) return;
-    void run(async () => {
-      const json = await callApi("PATCH", { ids, status: "queued" });
-      return `Moved ${json.updated} back to the queue.`;
-    });
-  };
-
-  const removeRows = (ids: string[], label: string) => {
-    if (ids.length === 0) return;
-    if (!window.confirm(`Remove ${label} from the ${monthLabel(month)} queue?`)) return;
-    void run(async () => {
-      const json = await callApi("DELETE", { ids });
-      return `Removed ${json.removed} from the queue.`;
-    });
-  };
-
-  const setAmountForSelected = () => {
-    const amount = parseMoney(selectedAmount);
-    if (amount == null) {
-      setError("Enter a valid amount for the selected rows.");
-      return;
-    }
-    const ids = selectedQueued.map((r) => r.id);
-    if (ids.length === 0) return;
-    void run(async () => {
-      const json = await callApi("PATCH", { ids, amount });
-      setSelectedAmount("");
-      return `Set ${json.updated} amounts to ${money(amount)}.`;
-    });
-  };
-
-  const saveAmount = (row: QueueRow) => {
-    const draft = amountDrafts[row.id];
-    if (draft === undefined) return;
-    const amount = parseMoney(draft);
-    if (amount == null) {
-      setError(`Enter a valid amount for ${row.name}.`);
-      return;
-    }
-    if (Math.abs(amount - row.amount) < 0.005) {
-      setAmountDrafts((prev) => {
-        const next = { ...prev };
-        delete next[row.id];
-        return next;
-      });
-      return;
-    }
-    void run(async () => {
-      await callApi("PATCH", { ids: [row.id], amount });
-    });
-  };
-
+  // Three sheets from the saved data, all regions, sorted by region then name:
+  // who is paid on this pay date, every worker in the list with the pay date
+  // they are checked for this month, and a count and total per region.
   const exportToExcel = () => {
-    const exportRows = visibleRows;
-    if (exportRows.length === 0) return;
-    const headers = ["Name", "Email", "Type", "Role", "State", "Pay Month", "Description", "Amount", "Status", "Paid Date", "Notes"];
-    const data = exportRows.map((r) => ({
-      Name: r.name,
-      Email: r.email,
-      Type: TYPE_LABELS[r.type],
-      Role: r.role,
-      State: r.state,
-      "Pay Month": monthLabel(month),
-      Description: r.description || "",
-      Amount: r.amount,
-      Status: r.status === "paid" ? "Paid" : "Queued",
-      "Paid Date": r.paid_date || "",
-      Notes: [r.notes || "", r.is_active ? "" : "No longer active"].filter(Boolean).join(" · "),
-    }));
-    const total = exportRows.reduce((sum, r) => sum + r.amount, 0);
-    data.push({
-      Name: "Total",
-      Email: "",
-      Type: "",
-      Role: "",
-      State: "",
-      "Pay Month": "",
-      Description: `${exportRows.length} people`,
-      Amount: Math.round(total * 100) / 100,
-      Status: "",
-      "Paid Date": "",
-      Notes: "",
-    });
-    const ws = XLSX.utils.json_to_sheet(data, { header: headers });
-    const amountCol = headers.indexOf("Amount");
-    const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
-    for (let r = 1; r <= range.e.r; r++) {
-      const cell = ws[XLSX.utils.encode_cell({ r, c: amountCol })];
-      if (cell && typeof cell.v === "number") cell.z = '"$"#,##0.00';
+    if (!ready || !period) return;
+    if (dirty && !window.confirm("You have unsaved changes. The Excel file only has the saved list. Download it anyway?")) return;
+    const thisDate = formatPayDate(period.payDate);
+    const rowByUser = new Map(monthRows.map((r) => [r.user_id, r] as const));
+    // Worker accounts, plus staff accounts that are checked this month.
+    const sorted = people.filter((p) => !p.staff || rowByUser.has(p.user_id)).sort(compareByRegionThenName);
+    // Same person saved on another account this month (paid twice).
+    const savedByKey = new Map<string, Person[]>();
+    for (const p of sorted) {
+      if (!rowByUser.has(p.user_id) || !personKey(p)) continue;
+      savedByKey.set(personKey(p), [...(savedByKey.get(personKey(p)) || []), p]);
     }
-    ws["!cols"] = headers.map((h) => ({ wch: h === "Email" || h === "Description" || h === "Notes" ? 30 : h === "Name" ? 26 : 12 }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Equipment Reimbursement");
-    XLSX.writeFile(wb, `equipment_reimbursement_${month}.xlsx`);
+    const alsoSavedAs = (p: Person) =>
+      (savedByKey.get(personKey(p)) || []).filter((o) => o.user_id !== p.user_id).map((o) => o.email).join(", ");
+
+    const paidHere = sorted
+      .filter((p) => rowByUser.get(p.user_id)?.pay_date === period.payDate)
+      .map((p) => ({ person: p, row: rowByUser.get(p.user_id)! }));
+    const payDateRows: Array<Record<string, string | number>> = paidHere.map(({ person, row }) => ({
+      Name: person.name,
+      Email: person.email,
+      Account: accountLabel(person),
+      Region: person.region_name || "",
+      State: stateOf(person),
+      "Pay Date": thisDate,
+      Amount: roundCents(row.amount),
+      Warning: alsoSavedAs(person) ? `Also checked as ${alsoSavedAs(person)}` : "",
+    }));
+    payDateRows.push({
+      Name: "Total",
+      Email: `${paidHere.length} ${paidHere.length === 1 ? "account" : "accounts"}`,
+      Account: "",
+      Region: "",
+      State: "",
+      "Pay Date": "",
+      Amount: roundCents(paidHere.reduce((s, { row }) => s + row.amount, 0)),
+      Warning: "",
+    });
+
+    const monthLabel = formatPayMonth(period.month);
+    let monthCount = 0;
+    let monthTotal = 0;
+    const vendorRows: Array<Record<string, string | number>> = sorted.map((p) => {
+      const row = rowByUser.get(p.user_id);
+      if (row) {
+        monthCount += 1;
+        monthTotal += row.amount;
+      }
+      return {
+        Name: p.name,
+        Email: p.email,
+        Account: accountLabel(p),
+        Region: p.region_name || "",
+        State: stateOf(p),
+        Status: row ? (p.eligible ? "Checked" : `Checked, ${INELIGIBLE_TEXT.toLowerCase()}`) : p.eligible ? "Not checked" : INELIGIBLE_TEXT,
+        "Pay Date": row ? formatPayDate(row.pay_date) : "",
+        Amount: row ? roundCents(row.amount) : "",
+        Warning: row && alsoSavedAs(p) ? `Also checked as ${alsoSavedAs(p)}` : "",
+      };
+    });
+    vendorRows.push({
+      Name: "Total",
+      Email: `${monthCount} checked in ${monthLabel}`,
+      Account: "",
+      Region: "",
+      State: "",
+      Status: "",
+      "Pay Date": "",
+      Amount: roundCents(monthTotal),
+      Warning: "",
+    });
+
+    const regionTotals = new Map<string, { key: string; label: string; workers: number; paidHere: number; paidHereAmount: number; month: number; monthAmount: number }>();
+    for (const p of sorted) {
+      const key = regionKeyOf(p);
+      if (!regionTotals.has(key)) regionTotals.set(key, { key, label: regionLabelOf(p) || "—", workers: 0, paidHere: 0, paidHereAmount: 0, month: 0, monthAmount: 0 });
+      const t = regionTotals.get(key)!;
+      if (p.eligible && !p.staff) t.workers += 1;
+      const row = rowByUser.get(p.user_id);
+      if (row) {
+        t.month += 1;
+        t.monthAmount += row.amount;
+        if (row.pay_date === period.payDate) {
+          t.paidHere += 1;
+          t.paidHereAmount += row.amount;
+        }
+      }
+    }
+    const regionList = Array.from(regionTotals.values()).sort(compareRegions);
+    const paidHereHeader = `Paid ${formatPayDate(period.payDate, { year: false })}`;
+    const paidHereAmountHeader = `Amount ${formatPayDate(period.payDate, { year: false })}`;
+    const monthHeader = `Checked in ${monthLabel}`;
+    const monthAmountHeader = `Amount ${monthLabel}`;
+    const regionRows: Array<Record<string, string | number>> = regionList.map((t) => ({
+      Region: t.label,
+      "Worker Accounts": t.workers,
+      [paidHereHeader]: t.paidHere,
+      [paidHereAmountHeader]: roundCents(t.paidHereAmount),
+      [monthHeader]: t.month,
+      [monthAmountHeader]: roundCents(t.monthAmount),
+    }));
+    regionRows.push({
+      Region: "Total",
+      "Worker Accounts": regionList.reduce((s, t) => s + t.workers, 0),
+      [paidHereHeader]: regionList.reduce((s, t) => s + t.paidHere, 0),
+      [paidHereAmountHeader]: roundCents(regionList.reduce((s, t) => s + t.paidHereAmount, 0)),
+      [monthHeader]: regionList.reduce((s, t) => s + t.month, 0),
+      [monthAmountHeader]: roundCents(regionList.reduce((s, t) => s + t.monthAmount, 0)),
+    });
+
+    const widths = { Name: 26, Email: 32, Account: 20, Region: 18, State: 8, Status: 34, "Pay Date": 14, Amount: 12, Warning: 44 };
+    downloadExcelSheets(`equipment_reimbursement_paid_${period.payDate}.xlsx`, [
+      { name: `Paid ${formatPayDate(period.payDate)}`.replace(/,/g, ""), headers: ["Name", "Email", "Account", "Region", "State", "Pay Date", "Amount", "Warning"], rows: payDateRows, widths },
+      { name: `All Vendors ${monthLabel}`, headers: ["Name", "Email", "Account", "Region", "State", "Status", "Pay Date", "Amount", "Warning"], rows: vendorRows, widths },
+      {
+        name: "By Region",
+        headers: ["Region", "Worker Accounts", paidHereHeader, paidHereAmountHeader, monthHeader, monthAmountHeader],
+        rows: regionRows,
+        widths: { Region: 20, "Worker Accounts": 16, [paidHereHeader]: 14, [paidHereAmountHeader]: 16, [monthHeader]: 22, [monthAmountHeader]: 22 },
+        moneyHeaders: [paidHereAmountHeader, monthAmountHeader],
+      },
+    ]);
   };
 
-  const disabled = loading || busy;
+  const busy = loading || saving;
+  const savedCount = saved.size;
+
+  const renderPersonRow = (p: Person) => {
+    const isChecked = checked.has(p.user_id);
+    const other = otherPayDateByUser.get(p.user_id);
+    const disabled = busy || (!isChecked && !canCheck(p));
+    let note: { text: string; className: string } | null = null;
+    if (other) note = { text: `Checked for ${formatPayDate(other.pay_date, { year: false })}`, className: "text-gray-500" };
+    else if (!isChecked && saved.has(p.user_id)) note = { text: "Will be unchecked", className: "text-red-600" };
+    else if (!p.eligible) note = { text: INELIGIBLE_TEXT, className: "text-red-600" };
+    else if (isChecked && !saved.has(p.user_id)) note = { text: "Not saved yet", className: "text-green-700" };
+    const twins = otherCheckedAccounts.get(p.user_id);
+    const twinText = twins?.length && (isChecked || other) ? `Paid twice: also checked as ${twins.map((t) => t.email).join(", ")}` : "";
+    return (
+      <tr
+        key={p.user_id}
+        className={`${isChecked ? "bg-blue-50/50" : "hover:bg-gray-50"} ${disabled ? "" : "cursor-pointer"}`}
+        onClick={() => { if (!disabled) toggle(p); }}
+      >
+        <td className={`py-2 ${grouped ? "pl-6 pr-3" : "px-3"}`}>
+          <input
+            type="checkbox"
+            checked={isChecked}
+            disabled={disabled}
+            onChange={() => toggle(p)}
+            onClick={(e) => e.stopPropagation()}
+            aria-label={`Equipment reimbursement for ${p.name}`}
+          />
+        </td>
+        <td className="px-3 py-2 text-sm text-gray-900">
+          <div className="font-medium">
+            {p.name}
+            {p.staff && (
+              <span className="ml-2 rounded bg-purple-50 px-1.5 py-0.5 text-xs font-normal text-purple-700" title="Staff account, not a worker account">
+                Staff · {roleLabel(p.role)}
+              </span>
+            )}
+          </div>
+          {p.email && <div className="text-xs text-gray-400">{p.email}</div>}
+        </td>
+        {!grouped && <td className="px-3 py-2 text-sm text-gray-700">{p.region_name || "—"}</td>}
+        <td className="px-3 py-2 text-sm text-gray-700">{stateOf(p) || "—"}</td>
+        <td className="px-3 py-2 text-sm text-right tabular-nums text-gray-900">
+          {isChecked ? money(EQUIPMENT_REIMBURSEMENT_AMOUNT) : <span className="text-gray-300">—</span>}
+        </td>
+        <td className="px-3 py-2 text-xs">
+          {note && <div className={note.className}>{note.text}</div>}
+          {twinText && <div className="font-medium text-amber-700">{twinText}</div>}
+        </td>
+      </tr>
+    );
+  };
+
+  const allSummary: RegionSummary = {
+    key: ALL_REGIONS,
+    label: "All regions",
+    total: listedPeople.length,
+    checked: checked.size,
+  };
 
   return (
     <div className="apple-card mb-6">
@@ -359,371 +597,276 @@ export default function EquipmentReimbursementsPanel() {
         <div>
           <h2 className="text-xl font-semibold">Equipment Reimbursement</h2>
           <p className="text-sm text-gray-500">
-            Monthly off-cycle payment for active vendors and employees. Queue people for the month, export the list for the off-cycle run, then mark them paid.
+            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked account, paid on the pay date you choose.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={exportToExcel}
-            disabled={disabled || visibleRows.length === 0}
-            className={`apple-button ${disabled || visibleRows.length === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
-            title="Download the rows shown below as an Excel file."
+            disabled={busy || !ready}
+            className={`apple-button ${busy || !ready ? "apple-button-disabled" : "apple-button-secondary"}`}
+            title={ready ? "Download the saved list for this pay date, every worker with the pay date they are checked for this month, and a total per region. Always includes all regions." : "Choose a pay date first."}
           >
-            Export to Excel ({visibleRows.length})
+            Export to Excel{ready ? ` (${savedCount})` : ""}
           </button>
-          <button onClick={() => void load(month)} disabled={disabled} className="apple-button apple-button-secondary">
+          <button onClick={() => void load(payDate)} disabled={busy || !payDate} className="apple-button apple-button-secondary">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
       </div>
 
-      {/* Month */}
-      <div className="flex flex-wrap items-end gap-3 mb-4">
+      {/* Pay date */}
+      <div className="flex flex-wrap items-end gap-4 mb-4">
         <div>
-          <label className="apple-label" htmlFor="equip-month">Pay month</label>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setMonth(shiftMonth(month, -1))} disabled={disabled} className="apple-button apple-button-secondary" aria-label="Previous month">
-              ‹
-            </button>
-            <input
-              id="equip-month"
-              type="month"
-              value={month}
-              onChange={(e) => e.target.value && setMonth(e.target.value)}
-              className="apple-select"
-            />
-            <button type="button" onClick={() => setMonth(shiftMonth(month, 1))} disabled={disabled} className="apple-button apple-button-secondary" aria-label="Next month">
-              ›
-            </button>
+          <label className="apple-label" htmlFor="equip-pay-date">Pay date</label>
+          <input
+            id="equip-pay-date"
+            type="date"
+            value={dateInput}
+            min={EARLIEST_EQUIPMENT_PAY_DATE}
+            onChange={(e) => onDateInput(e.target.value)}
+            disabled={saving}
+            className="apple-select"
+          />
+        </div>
+        {ready && period ? (
+          <div className="pb-2 text-sm text-gray-600">
+            <span className="font-medium text-gray-900">{formatPayMonth(period.month)}</span> pay dates:{" "}
+            {monthPayDates.map(([date, count], i) => (
+              <span key={date}>
+                {i > 0 && " · "}
+                {date === payDate ? (
+                  <span className="font-medium text-gray-900">{formatPayDate(date, { year: false, weekday: true })} (this one, {count} saved)</span>
+                ) : (
+                  <button type="button" onClick={() => changePayDate(date)} className="text-blue-600 hover:text-blue-800">
+                    {formatPayDate(date, { year: false, weekday: true })} ({count} saved)
+                  </button>
+                )}
+              </span>
+            ))}
           </div>
-        </div>
-        <div className="pb-2 text-sm text-gray-500">
-          {people.length} active · {activeCountByType.vendor} vendors · {activeCountByType.employee} employees · {activeCountByType.exec} execs
-        </div>
+        ) : (
+          <div className="pb-2 text-sm text-gray-500">Any date. Each account can be paid once per month.</div>
+        )}
       </div>
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
       {notice && <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">{notice}</div>}
 
-      {/* Summary tiles */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <button
-          type="button"
-          onClick={() => setStatusFilter(statusFilter === "queued" ? "all" : "queued")}
-          className={`text-left rounded-xl border border-gray-200 border-l-4 border-l-amber-400 px-4 py-3 transition ${statusFilter === "queued" ? "bg-gray-50 ring-2 ring-blue-200" : "bg-white hover:bg-gray-50"}`}
-        >
-          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Queued</div>
-          <div className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">{money(summary.queued.amount)}</div>
-          <div className="text-xs text-gray-400">{summary.queued.count} {summary.queued.count === 1 ? "person" : "people"}</div>
-        </button>
-        <button
-          type="button"
-          onClick={() => setStatusFilter(statusFilter === "paid" ? "all" : "paid")}
-          className={`text-left rounded-xl border border-gray-200 border-l-4 border-l-green-500 px-4 py-3 transition ${statusFilter === "paid" ? "bg-gray-50 ring-2 ring-blue-200" : "bg-white hover:bg-gray-50"}`}
-        >
-          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Paid</div>
-          <div className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">{money(summary.paid.amount)}</div>
-          <div className="text-xs text-gray-400">{summary.paid.count} {summary.paid.count === 1 ? "person" : "people"}</div>
-        </button>
-        <div className="rounded-xl border border-gray-200 border-l-4 border-l-blue-400 px-4 py-3 bg-white">
-          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{monthLabel(month)} total</div>
-          <div className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">{money(summary.queued.amount + summary.paid.amount)}</div>
-          <div className="text-xs text-gray-400">{rows.length} lines</div>
+      {!payDate ? (
+        <div className="rounded-xl border border-dashed border-gray-300 py-8 text-center text-sm text-gray-500">
+          Choose a pay date to see the onboarded worker accounts.
         </div>
-        <div className="rounded-xl border border-gray-200 border-l-4 border-l-gray-300 px-4 py-3 bg-white">
-          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Active, not queued</div>
-          <div className="mt-1 text-2xl font-semibold text-gray-900 tabular-nums">
-            {notQueuedByType.vendor.length + notQueuedByType.employee.length}
-          </div>
-          <div className="text-xs text-gray-400">
-            {notQueuedByType.vendor.length} vendors · {notQueuedByType.employee.length} employees
-          </div>
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* Checked people who can't be paid (no longer active or onboarded) */}
+          {ready && blockedChecked.length > 0 && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <span>
+                {blockedChecked.length} checked {blockedChecked.length === 1 ? "account is" : "accounts are"} no longer active or onboarded and
+                can't get the equipment reimbursement. Uncheck them, then Save.
+              </span>
+              <button
+                type="button"
+                onClick={() => setListChecked(blockedChecked, false)}
+                disabled={busy}
+                className="apple-button apple-button-secondary"
+              >
+                Uncheck {blockedChecked.length === 1 ? "it" : `these ${blockedChecked.length}`}
+              </button>
+            </div>
+          )}
 
-      {summary.inactive > 0 && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <span>
-            {summary.inactive} queued {summary.inactive === 1 ? "person is" : "people are"} no longer active. Equipment reimbursement is only for active vendors and employees.
-          </span>
-          <button
-            onClick={() => removeRows(rows.filter((r) => !r.is_active && r.status === "queued").map((r) => r.id), `${summary.inactive} inactive ${summary.inactive === 1 ? "person" : "people"}`)}
-            disabled={disabled}
-            className="apple-button apple-button-secondary"
-          >
-            Remove inactive from queue
-          </button>
-        </div>
-      )}
-
-      {/* Add to queue */}
-      <div className="mb-6">
-        <div className="rounded-xl border border-gray-200 p-4">
-          <h3 className="text-sm font-semibold text-gray-700 uppercase mb-3">Add one person</h3>
-          <div className="relative mb-3">
-            <label className="apple-label" htmlFor="equip-person">Active vendor or employee</label>
-            {pickedPerson ? (
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
-                <span>
-                  <span className="font-medium text-gray-900">{pickedPerson.name}</span>
-                  <span className="text-gray-400"> · {TYPE_LABELS[pickedPerson.type]}{pickedPerson.state ? ` · ${pickedPerson.state}` : ""}</span>
-                  {queuedUserIds.has(pickedPerson.user_id) && <span className="ml-2 text-xs text-amber-700">already queued this month</span>}
-                </span>
-                <button type="button" onClick={() => { setPickedPerson(null); setPersonSearch(""); }} className="text-xs text-blue-600 hover:text-blue-800">
-                  Change
-                </button>
-              </div>
-            ) : (
-              <input
-                id="equip-person"
-                type="search"
-                value={personSearch}
-                onChange={(e) => setPersonSearch(e.target.value)}
-                placeholder="Search by name or email…"
-                className="apple-select w-full"
-                autoComplete="off"
-              />
-            )}
-            {personMatches.length > 0 && (
-              <div className="absolute z-10 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg">
-                {personMatches.map((p) => (
-                  <button
-                    key={p.user_id}
-                    type="button"
-                    onClick={() => { setPickedPerson(p); setPersonSearch(""); }}
-                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50"
-                  >
-                    <span>
-                      <span className="text-gray-900">{p.name}</span>
-                      <span className="text-xs text-gray-400"> {p.email}</span>
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {TYPE_LABELS[p.type]}{queuedUserIds.has(p.user_id) ? " · queued" : ""}
-                    </span>
+          {/* By region */}
+          {ready && people.length > 0 && (
+            <div className="mb-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-xs font-medium uppercase text-gray-500">By region</span>
+                {activeRegion !== ALL_REGIONS && (
+                  <button type="button" onClick={() => setRegionFilter(ALL_REGIONS)} className="text-xs text-blue-600 hover:text-blue-800">
+                    Show all regions
                   </button>
-                ))}
+                )}
               </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                {[allSummary, ...regionSummaries].map((s) => {
+                  const selected = s.key === activeRegion;
+                  const pct = s.total > 0 ? Math.min(100, Math.round((s.checked / s.total) * 100)) : 0;
+                  return (
+                    <button
+                      key={s.key}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setRegionFilter(selected ? ALL_REGIONS : s.key)}
+                      title={s.key === ALL_REGIONS ? "Show every region" : `Show only ${s.label}`}
+                      className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                        selected ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="truncate text-sm font-medium text-gray-900">{s.label}</div>
+                      <div className="text-xs tabular-nums text-gray-600">
+                        {s.checked} of {s.total} checked
+                      </div>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-200">
+                        <div className="h-full rounded-full bg-blue-500" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="mt-1 text-xs font-medium tabular-nums text-gray-900">
+                        {money(s.checked * EQUIPMENT_REIMBURSEMENT_AMOUNT)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Filters + totals + actions */}
+          <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-[14rem]">
+                <label className="apple-label" htmlFor="equip-search">Search</label>
+                <input
+                  id="equip-search"
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Name, email, region, state…"
+                  className="apple-select w-full"
+                />
+              </div>
+              <div>
+                <label className="apple-label" htmlFor="equip-region">Region</label>
+                <select id="equip-region" value={activeRegion} onChange={(e) => setRegionFilter(e.target.value)} className="apple-select">
+                  <option value={ALL_REGIONS}>All regions</option>
+                  {regionSummaries.map((s) => (
+                    <option key={s.key} value={s.key}>{s.label} ({s.total})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="apple-label" htmlFor="equip-show">Show</label>
+                <select id="equip-show" value={show} onChange={(e) => setShow(e.target.value as ShowFilter)} className="apple-select">
+                  <option value="all">All</option>
+                  <option value="checked">Checked</option>
+                  <option value="unchecked">Not checked</option>
+                </select>
+              </div>
+              <div>
+                <label className="apple-label" htmlFor="equip-view">View</label>
+                <select id="equip-view" value={view} onChange={(e) => changeView(e.target.value as ViewMode)} className="apple-select">
+                  <option value="region">Grouped by region</option>
+                  <option value="list">One list</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-gray-700 tabular-nums">
+                <span className="font-semibold">{checked.size}</span> checked · {money(checked.size * EQUIPMENT_REIMBURSEMENT_AMOUNT)}
+              </span>
+              {dirty && (
+                <button onClick={() => { setChecked(new Set(saved)); setNotice(""); }} disabled={busy} className="apple-button apple-button-secondary">
+                  Undo changes
+                </button>
+              )}
+              <button
+                onClick={() => void save()}
+                disabled={busy || !dirty || !ready}
+                className={`apple-button ${busy || !dirty || !ready ? "apple-button-disabled" : "apple-button-primary"}`}
+              >
+                {saving ? "Saving…" : dirty ? `Save (${toAdd.length} checked, ${toRemove.length} unchecked)` : "Saved"}
+              </button>
+            </div>
+          </div>
+
+          {/* Worker list */}
+          <div className="max-h-[36rem] overflow-y-auto rounded-xl border border-gray-200">
+            {loading && !ready ? (
+              <div className="text-center py-6 text-sm text-gray-400">Loading onboarded worker accounts…</div>
+            ) : shownPeople.length === 0 ? (
+              <div className="text-center py-6 text-sm text-gray-400">No workers match these filters.</div>
+            ) : (
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-3 py-2 text-left w-10">
+                      <input
+                        type="checkbox"
+                        checked={allShownChecked}
+                        onChange={() => setListChecked(shownPeople, !allShownChecked)}
+                        disabled={busy || shownSelectable.length === 0}
+                        aria-label="Check or uncheck everyone shown"
+                      />
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Worker</th>
+                    {!grouped && <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Region</th>}
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
+                    <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Note</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {grouped
+                    ? visibleGroups.map((group) => {
+                        const isCollapsed = collapsed.has(group.key);
+                        const groupChecked = group.people.filter((p) => checked.has(p.user_id)).length;
+                        const groupSelectable = selectableOf(group.people);
+                        const groupAllChecked = allCheckedOf(group.people);
+                        return (
+                          <Fragment key={group.key}>
+                            <tr className="bg-gray-100">
+                              <td className="px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={groupAllChecked}
+                                  onChange={() => setListChecked(group.people, !groupAllChecked)}
+                                  disabled={busy || groupSelectable.length === 0}
+                                  aria-label={`Check or uncheck everyone shown in ${group.label}`}
+                                />
+                              </td>
+                              <td colSpan={2} className="px-3 py-2">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleCollapsed(group.key)}
+                                  aria-expanded={!isCollapsed}
+                                  className="flex items-center gap-2 text-left text-sm font-semibold text-gray-900"
+                                >
+                                  <span className="inline-block w-3 text-gray-500">{isCollapsed ? "▸" : "▾"}</span>
+                                  {group.label}
+                                  <span className="font-normal text-gray-500 tabular-nums">
+                                    {groupChecked} of {group.people.length} checked
+                                  </span>
+                                </button>
+                              </td>
+                              <td className="px-3 py-2 text-right text-sm font-semibold tabular-nums text-gray-900">
+                                {money(groupChecked * EQUIPMENT_REIMBURSEMENT_AMOUNT)}
+                              </td>
+                              <td className="px-3 py-2" />
+                            </tr>
+                            {!isCollapsed && group.people.map(renderPersonRow)}
+                          </Fragment>
+                        );
+                      })
+                    : visiblePeople.map(renderPersonRow)}
+                </tbody>
+              </table>
             )}
           </div>
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="apple-label" htmlFor="equip-single-amount">Amount</label>
-              <input
-                id="equip-single-amount"
-                inputMode="decimal"
-                value={singleAmount}
-                onChange={(e) => setSingleAmount(e.target.value)}
-                placeholder="0.00"
-                className="apple-select w-28"
-              />
+          <div className="mt-2 text-xs text-gray-500">
+            {workerCount} onboarded worker accounts · showing {shownPeople.length}
+            {grouped && visibleGroups.length > 0 ? ` in ${visibleGroups.length} ${visibleGroups.length === 1 ? "region" : "regions"}` : ""}
+          </div>
+          {unplacedHidden.length > 0 && (
+            <div className="mt-1 text-xs text-gray-500">
+              {unplacedHidden.length} {unplacedHidden.length === 1 ? "account has" : "accounts have"} no region or state in their profile
+              {unplacedHiddenChecked > 0 ? ` (${unplacedHiddenChecked} checked)` : ""} and only {unplacedHidden.length === 1 ? "shows" : "show"} in{" "}
+              <button type="button" onClick={() => changeView("list")} className="text-blue-600 hover:text-blue-800">
+                One list
+              </button>{" "}
+              view.
             </div>
-            <div className="flex-1 min-w-[10rem]">
-              <label className="apple-label" htmlFor="equip-single-desc">Description</label>
-              <input
-                id="equip-single-desc"
-                value={singleDescription}
-                onChange={(e) => setSingleDescription(e.target.value)}
-                className="apple-select w-full"
-              />
-            </div>
-            <button
-              onClick={addOne}
-              disabled={disabled || !pickedPerson}
-              className={`apple-button ${disabled || !pickedPerson ? "apple-button-disabled" : "apple-button-primary"}`}
-            >
-              Add to queue
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3 mb-3">
-        <div>
-          <label className="apple-label" htmlFor="equip-status">Status</label>
-          <select id="equip-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)} className="apple-select">
-            <option value="all">All</option>
-            <option value="queued">Queued</option>
-            <option value="paid">Paid</option>
-          </select>
-        </div>
-        <div>
-          <label className="apple-label" htmlFor="equip-type">Type</label>
-          <select id="equip-type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)} className="apple-select">
-            <option value="all">All</option>
-            <option value="vendor">Vendors</option>
-            <option value="employee">Employees</option>
-            <option value="exec">Execs</option>
-            <option value="other">Other</option>
-          </select>
-        </div>
-        <div className="flex-1 min-w-[12rem]">
-          <label className="apple-label" htmlFor="equip-search">Search</label>
-          <input
-            id="equip-search"
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Name, email, state, description…"
-            className="apple-select w-full"
-          />
-        </div>
-      </div>
-
-      {/* Bulk actions for selected rows */}
-      <div className="flex flex-wrap items-end gap-3 mb-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-        <span className="pb-2 text-sm text-gray-600">{selected.size} selected</span>
-        <div>
-          <label className="apple-label" htmlFor="equip-paid-date">Paid date</label>
-          <input id="equip-paid-date" type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} className="apple-select" />
-        </div>
-        <button
-          onClick={() => markPaid(selectedQueued.map((r) => r.id))}
-          disabled={disabled || selectedQueued.length === 0 || !paidDate}
-          className={`apple-button ${disabled || selectedQueued.length === 0 || !paidDate ? "apple-button-disabled" : "apple-button-primary"}`}
-        >
-          Mark {selectedQueued.length} paid
-        </button>
-        <button
-          onClick={() => moveBackToQueue(selectedPaid.map((r) => r.id))}
-          disabled={disabled || selectedPaid.length === 0}
-          className={`apple-button ${disabled || selectedPaid.length === 0 ? "apple-button-disabled" : "apple-button-secondary"}`}
-        >
-          Back to queue ({selectedPaid.length})
-        </button>
-        <div className="flex items-end gap-2">
-          <div>
-            <label className="apple-label" htmlFor="equip-selected-amount">New amount</label>
-            <input
-              id="equip-selected-amount"
-              inputMode="decimal"
-              value={selectedAmount}
-              onChange={(e) => setSelectedAmount(e.target.value)}
-              placeholder="0.00"
-              className="apple-select w-24"
-            />
-          </div>
-          <button
-            onClick={setAmountForSelected}
-            disabled={disabled || selectedQueued.length === 0 || !selectedAmount}
-            className={`apple-button ${disabled || selectedQueued.length === 0 || !selectedAmount ? "apple-button-disabled" : "apple-button-secondary"}`}
-          >
-            Set for {selectedQueued.length} queued
-          </button>
-        </div>
-        <button
-          onClick={() => removeRows(selectedQueued.map((r) => r.id), `${selectedQueued.length} ${selectedQueued.length === 1 ? "person" : "people"}`)}
-          disabled={disabled || selectedQueued.length === 0}
-          className={`apple-button ${disabled || selectedQueued.length === 0 ? "apple-button-disabled" : "apple-button-secondary"}`}
-        >
-          Remove {selectedQueued.length} queued
-        </button>
-      </div>
-
-      {/* Queue table */}
-      <div className="overflow-x-auto">
-        {loading && rows.length === 0 ? (
-          <div className="text-center py-6 text-sm text-gray-400">Loading the equipment reimbursement queue…</div>
-        ) : rows.length === 0 ? (
-          <div className="text-center py-6 text-sm text-gray-400">
-            Nobody is queued for {monthLabel(month)} yet. Add people above.
-          </div>
-        ) : visibleRows.length === 0 ? (
-          <div className="text-center py-6 text-sm text-gray-400">No rows match these filters.</div>
-        ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-3 py-2 text-left">
-                  <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="Select all shown rows" />
-                </th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
-                <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {visibleRows.map((r) => (
-                <tr key={r.id} className={`align-top ${selected.has(r.id) ? "bg-blue-50/40" : "hover:bg-gray-50"}`}>
-                  <td className="px-3 py-2">
-                    <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} aria-label={`Select ${r.name}`} />
-                  </td>
-                  <td className="px-3 py-2 text-sm text-gray-900">
-                    <div className="font-medium">{r.name}</div>
-                    {r.email && <div className="text-xs text-gray-400">{r.email}</div>}
-                  </td>
-                  <td className="px-3 py-2 text-sm whitespace-nowrap">
-                    <span className={`px-2 py-0.5 text-xs font-semibold border rounded-full ${TYPE_STYLES[r.type]}`}>{TYPE_LABELS[r.type]}</span>
-                    {!r.is_active && (
-                      <div className="mt-1">
-                        <span className="px-2 py-0.5 text-xs font-semibold border rounded-full bg-red-50 text-red-700 border-red-200">Inactive</span>
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-sm text-gray-700">{r.state || "—"}</td>
-                  <td className="px-3 py-2 text-sm text-gray-700 max-w-xs">
-                    <div className="line-clamp-2" title={r.description || ""}>{r.description || "—"}</div>
-                    {r.notes && <div className="text-xs text-gray-400 line-clamp-1" title={r.notes}>Note: {r.notes}</div>}
-                  </td>
-                  <td className="px-3 py-2 text-sm text-right whitespace-nowrap">
-                    {r.status === "queued" ? (
-                      <input
-                        inputMode="decimal"
-                        value={amountDrafts[r.id] ?? r.amount.toFixed(2)}
-                        onChange={(e) => setAmountDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
-                        onBlur={() => saveAmount(r)}
-                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                        disabled={disabled}
-                        className="apple-select w-24 text-right tabular-nums"
-                        aria-label={`Amount for ${r.name}`}
-                      />
-                    ) : (
-                      <span className="font-semibold text-gray-900 tabular-nums">{money(r.amount)}</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-sm whitespace-nowrap">
-                    {r.status === "paid" ? (
-                      <>
-                        <span className="px-2 py-0.5 text-xs font-semibold border rounded-full bg-green-100 text-green-700 border-green-200">Paid</span>
-                        <div className="mt-1 text-xs text-gray-400">
-                          {formatDate(r.paid_date)}{r.paid_by_name ? ` · ${r.paid_by_name}` : ""}
-                        </div>
-                      </>
-                    ) : (
-                      <span className="px-2 py-0.5 text-xs font-semibold border rounded-full bg-amber-100 text-amber-800 border-amber-200">Queued</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-sm text-right whitespace-nowrap">
-                    {r.status === "queued" ? (
-                      <div className="flex justify-end gap-3">
-                        <button
-                          onClick={() => markPaid([r.id])}
-                          disabled={disabled || !paidDate}
-                          className="text-blue-600 hover:text-blue-800 font-medium"
-                          title={paidDate ? `Uses the paid date above (${formatDate(paidDate)}).` : "Set a paid date above first."}
-                        >
-                          Mark paid
-                        </button>
-                        <button onClick={() => removeRows([r.id], r.name)} disabled={disabled} className="text-red-600 hover:text-red-800">
-                          Remove
-                        </button>
-                      </div>
-                    ) : (
-                      <button onClick={() => moveBackToQueue([r.id])} disabled={disabled} className="text-gray-600 hover:text-gray-800">
-                        Back to queue
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

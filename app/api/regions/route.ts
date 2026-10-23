@@ -23,11 +23,14 @@ export async function GET(req: NextRequest) {
     const includeInactive = searchParams.get('include_inactive') === 'true';
     const withVendorCount = searchParams.get('with_vendor_count') === 'true';
 
-    // Build the query - fetch all regions sorted by name
-    const { data: regions, error } = await supabase
+    // Build the query - active regions sorted by name (inactive ones only on
+    // request, e.g. Wisconsin, merged into Milwaukee on 2026-10-23)
+    let regionsQuery = supabase
       .from('regions')
       .select('*')
       .order('name', { ascending: true });
+    if (!includeInactive) regionsQuery = regionsQuery.eq('is_active', true);
+    const { data: regions, error } = await regionsQuery;
 
     if (error) {
       console.error('Error fetching regions:', error);

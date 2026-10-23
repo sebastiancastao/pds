@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { describeAvailabilityAnswer, toAvailabilityAnswer } from "@/lib/availabilityTimeFrame";
 
 type OverrideRequestRow = {
   id: string;
@@ -30,7 +31,20 @@ type OverrideRequestRow = {
   requested_by_email: string | null;
 };
 
-type DateChange = { date: string; current_available: boolean | null; requested_available: boolean };
+// *_all_day / *_start_time / *_end_time only exist on requests filed since
+// time frames were added (2026-10-22); requested_all_day === false means
+// "available only between requested_start_time and requested_end_time".
+type DateChange = {
+  date: string;
+  current_available: boolean | null;
+  current_all_day?: boolean | null;
+  current_start_time?: string | null;
+  current_end_time?: string | null;
+  requested_available: boolean;
+  requested_all_day?: boolean;
+  requested_start_time?: string | null;
+  requested_end_time?: string | null;
+};
 
 type AvailabilityChangeRequestRow = {
   id: string;
@@ -79,8 +93,27 @@ function fmtDateOnly(value?: string | null) {
   return Number.isNaN(date.getTime()) ? ymd : date.toLocaleDateString();
 }
 
-function availabilityLabel(value: boolean | null) {
-  return value === null ? "No answer" : value ? "Available" : "Unavailable";
+function currentAvailabilityLabel(c: DateChange) {
+  if (c.current_available === null || c.current_available === undefined) return "No answer";
+  return describeAvailabilityAnswer(
+    toAvailabilityAnswer({
+      available: c.current_available,
+      allDay: c.current_all_day ?? true,
+      startTime: c.current_start_time,
+      endTime: c.current_end_time,
+    })
+  );
+}
+
+function requestedAvailabilityLabel(c: DateChange) {
+  return describeAvailabilityAnswer(
+    toAvailabilityAnswer({
+      available: c.requested_available,
+      allDay: c.requested_all_day ?? true,
+      startTime: c.requested_start_time,
+      endTime: c.requested_end_time,
+    })
+  );
 }
 
 function statusBadgeClass(status: string) {
@@ -798,8 +831,8 @@ function VendorInviteRequestsPageInner() {
                                 {request.date_changes.map((c) => (
                                   <tr key={c.date}>
                                     <td className="px-3 py-2 font-medium text-slate-900">{fmtDateOnly(c.date)}</td>
-                                    <td className="px-3 py-2 text-slate-600">{availabilityLabel(c.current_available)}</td>
-                                    <td className="px-3 py-2 font-semibold text-amber-700">{availabilityLabel(c.requested_available)}</td>
+                                    <td className="px-3 py-2 text-slate-600">{currentAvailabilityLabel(c)}</td>
+                                    <td className="px-3 py-2 font-semibold text-amber-700">{requestedAvailabilityLabel(c)}</td>
                                   </tr>
                                 ))}
                               </tbody>

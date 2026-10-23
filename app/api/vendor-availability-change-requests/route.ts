@@ -16,6 +16,13 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 import { getEffectiveAvailabilityByDate } from "@/lib/vendorAvailability";
+import {
+  describeAvailabilityAnswer,
+  normalizeTimeFrameTime,
+  sameAvailabilityAnswer,
+  toAvailabilityAnswer,
+  type AvailabilityAnswer,
+} from "@/lib/availabilityTimeFrame";
 import { getSingleProfile } from "@/lib/vendorInvites";
 import {
   APPROVAL_NOTIFICATION_EMAILS,
@@ -59,7 +66,42 @@ const REQUEST_COLUMNS =
   "vendor:users!vendor_availability_change_requests_vendor_id_fkey (email, profiles (first_name, last_name)), " +
   "requested_by_user:users!vendor_availability_change_requests_requested_by_fkey (email, profiles (first_name, last_name))";
 
-type DateChange = { date: string; current_available: boolean | null; requested_available: boolean };
+// Each entry in vendor_availability_change_requests.date_changes. The
+// *_all_day / *_start_time / *_end_time keys were added with time frames
+// (2026-10-22); requests filed before that only carry the two booleans.
+// requested_all_day === false means "available only between
+// requested_start_time and requested_end_time" ("HH:MM", end may be earlier
+// than start for windows crossing midnight).
+type DateChange = {
+  date: string;
+  current_available: boolean | null;
+  current_all_day?: boolean | null;
+  current_start_time?: string | null;
+  current_end_time?: string | null;
+  requested_available: boolean;
+  requested_all_day?: boolean;
+  requested_start_time?: string | null;
+  requested_end_time?: string | null;
+};
+
+function currentAnswerOf(change: DateChange): AvailabilityAnswer | null {
+  if (change.current_available === null || change.current_available === undefined) return null;
+  return toAvailabilityAnswer({
+    available: change.current_available,
+    allDay: change.current_all_day ?? true,
+    startTime: change.current_start_time,
+    endTime: change.current_end_time,
+  });
+}
+
+function requestedAnswerOf(change: DateChange): AvailabilityAnswer {
+  return toAvailabilityAnswer({
+    available: change.requested_available,
+    allDay: change.requested_all_day ?? true,
+    startTime: change.requested_start_time,
+    endTime: change.requested_end_time,
+  });
+}
 
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
@@ -112,14 +154,13 @@ function buildApprovalNotificationEmailHtml(params: {
   changes: DateChange[];
   reviewUrl: string;
 }) {
-  const labelFor = (value: boolean | null) => (value === null ? "No answer on record" : value ? "Available" : "Unavailable");
   const rows = params.changes
     .map(
       (c) => `
         <tr>
           <td style="padding: 6px 10px; font-weight: 600;">${escapeHtml(c.date)}</td>
-          <td style="padding: 6px 10px; color: #374151;">${escapeHtml(labelFor(c.current_available))}</td>
-          <td style="padding: 6px 10px; font-weight: 600; color: #b45309;">${escapeHtml(labelFor(c.requested_available))}</td>
+          <td style="padding: 6px 10px; color: #374151;">${escapeHtml(describeAvailabilityAnswer(currentAnswerOf(c)))}</td>
+          <td style="padding: 6px 10px; font-weight: 600; color: #b45309;">${escapeHtml(describeAvailabilityAnswer(requestedAnswerOf(c)))}</td>
         </tr>`
     )
     .join("");
@@ -179,13 +220,12 @@ function buildOutcomeNotificationEmailHtml(params: {
   const bodyText = params.approved
     ? "Your requested availability correction was approved and your calendar has been updated."
     : "Your requested availability correction was not approved. Your calendar is unchanged.";
-  const labelFor = (value: boolean | null) => (value === null ? "No answer on record" : value ? "Available" : "Unavailable");
   const rows = params.changes
     .map(
       (c) => `
         <tr>
           <td style="padding: 6px 10px; font-weight: 600;">${escapeHtml(c.date)}</td>
-          <td style="padding: 6px 10px; color: #374151;">${escapeHtml(labelFor(c.requested_available))}</td>
+          <td style="padding: 6px 10px; color: #374151;">${escapeHtml(describeAvailabilityAnswer(requestedAnswerOf(c)))}</td>
         </tr>`
     )
     .join("");
@@ -294,7 +334,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Validate + dedupe requested dates (last occurrence for a repeated date wins).
-    const requestedByDate = new Map<string, boolean>();
+    // An available date may carry a time frame: allDay: false + startTime/endTime
+    // ("HH:MM", 24h; end earlier than start = crosses midnight).
+    const requestedByDate = new Map<string, AvailabilityAnswer>();
     for (const entry of rawDates) {
       const date = typeof entry?.date === "string" ? entry.date.slice(0, 10) : "";
       if (!DATE_REGEX.test(date) || typeof entry?.requestedAvailable !== "boolean") {
@@ -303,7 +345,26 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      requestedByDate.set(date, entry.requestedAvailable);
+      const wantsTimeFrame = entry.requestedAvailable === true && entry?.allDay === false;
+      if (wantsTimeFrame) {
+        const startTime = normalizeTimeFrameTime(entry?.startTime);
+        const endTime = normalizeTimeFrameTime(entry?.endTime);
+        if (!startTime || !endTime || startTime === endTime) {
+          return NextResponse.json(
+            { error: `Invalid time frame for ${date}: give a start and end time (HH:MM) that are different.` },
+            { status: 400 }
+          );
+        }
+      }
+      requestedByDate.set(
+        date,
+        toAvailabilityAnswer({
+          available: entry.requestedAvailable,
+          allDay: wantsTimeFrame ? false : true,
+          startTime: entry?.startTime,
+          endTime: entry?.endTime,
+        })
+      );
     }
 
     const currentByDate = await getEffectiveAvailabilityByDate(
@@ -313,12 +374,21 @@ export async function POST(req: NextRequest) {
     );
 
     const dateChanges: DateChange[] = Array.from(requestedByDate.entries())
-      .map(([date, requested_available]) => ({
-        date,
-        current_available: currentByDate.get(date) ?? null,
-        requested_available,
-      }))
-      .filter((c) => c.current_available !== c.requested_available)
+      .filter(([date, requested]) => !sameAvailabilityAnswer(currentByDate.get(date) ?? null, requested))
+      .map(([date, requested]) => {
+        const current = currentByDate.get(date) ?? null;
+        return {
+          date,
+          current_available: current ? current.available : null,
+          current_all_day: current ? current.allDay : null,
+          current_start_time: current?.startTime ?? null,
+          current_end_time: current?.endTime ?? null,
+          requested_available: requested.available,
+          requested_all_day: requested.allDay,
+          requested_start_time: requested.startTime,
+          requested_end_time: requested.endTime,
+        };
+      })
       .sort((a, b) => a.date.localeCompare(b.date));
 
     if (dateChanges.length === 0) {
@@ -473,12 +543,23 @@ export async function PATCH(req: NextRequest) {
     const dateChanges: DateChange[] = Array.isArray(requestRow.date_changes) ? requestRow.date_changes : [];
 
     if (action === "approved") {
-      const correctionRows = dateChanges.map((c) => ({
-        vendor_id: requestRow.vendor_id,
-        date: c.date,
-        available: c.requested_available,
-        change_request_id: requestRow.id,
-      }));
+      // requested_all_day is missing on requests filed before time frames
+      // existed; those keep all_day NULL (legacy semantics, see the
+      // 20261022000002 migration). Times are always written so an older
+      // window on the same date is cleared.
+      const correctionRows = dateChanges.map((c) => {
+        const requested = requestedAnswerOf(c);
+        const hasTimeFrameKeys = typeof c.requested_all_day === "boolean";
+        return {
+          vendor_id: requestRow.vendor_id,
+          date: c.date,
+          available: requested.available,
+          all_day: !hasTimeFrameKeys || !requested.available ? null : requested.allDay,
+          start_time: requested.available && !requested.allDay ? requested.startTime : null,
+          end_time: requested.available && !requested.allDay ? requested.endTime : null,
+          change_request_id: requestRow.id,
+        };
+      });
 
       if (correctionRows.length > 0) {
         const { error: upsertError } = await supabaseAdmin

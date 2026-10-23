@@ -32,6 +32,41 @@ function dec(value: unknown): string {
   try { return safeDecrypt(value.trim()); } catch { return value.trim(); }
 }
 
+// Supabase rejects a request whose URL is too long ("Bad Request"), which happens
+// once an .in() filter lists hundreds of ids, and it returns at most 1,000 rows per
+// request. Every list query below goes through these two helpers so neither limit
+// can break the report or silently cut rows off.
+const ID_CHUNK_SIZE = 100;
+const PAGE_SIZE = 1000;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+/** Reads every row of a query, one page at a time. `build` must return a fresh query with a stable order. */
+async function fetchAllPages<T = any>(build: () => any): Promise<T[]> {
+  const rows: T[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await build().range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(error.message || "Query failed");
+    const page = (data || []) as T[];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) return rows;
+  }
+}
+
+/** Runs `build` once per batch of ids (keeping the URL short) and reads every page of each batch. */
+async function fetchAllByIds<T = any>(ids: string[], build: (idChunk: string[]) => any): Promise<T[]> {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  if (uniqueIds.length === 0) return [];
+  const results = await Promise.all(
+    chunk(uniqueIds, ID_CHUNK_SIZE).map((idChunk) => fetchAllPages<T>(() => build(idChunk)))
+  );
+  return results.flat();
+}
+
 /**
  * GET /api/reports
  * Query params:
@@ -71,39 +106,40 @@ export async function GET(req: NextRequest) {
     // USERS SECTION
     // ─────────────────────────────────────────────
     if (section === "all" || section === "users") {
-      let usersQuery = supabaseAdmin
-        .from("users")
-        .select(`
-          id,
-          email,
-          role,
-          division,
-          is_active,
-          created_at,
-          background_check_completed,
-          profiles (
+      const users = await fetchAllPages<any>(() => {
+        let usersQuery = supabaseAdmin
+          .from("users")
+          .select(`
             id,
-            first_name,
-            last_name,
-            phone,
-            city,
-            state,
-            zip_code,
-            address,
-            region_id,
-            latitude,
-            longitude,
-            onboarding_completed_at
-          )
-        `)
-        .order("created_at", { ascending: false });
+            email,
+            role,
+            division,
+            is_active,
+            created_at,
+            background_check_completed,
+            profiles (
+              id,
+              first_name,
+              last_name,
+              phone,
+              city,
+              state,
+              zip_code,
+              address,
+              region_id,
+              latitude,
+              longitude,
+              onboarding_completed_at
+            )
+          `)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: true });
 
-      if (stateFilter && stateFilter !== "all") {
-        usersQuery = usersQuery.eq("profiles.state", stateFilter);
-      }
-
-      const { data: users, error: usersError } = await usersQuery;
-      if (usersError) throw new Error(usersError.message);
+        if (stateFilter && stateFilter !== "all") {
+          usersQuery = usersQuery.eq("profiles.state", stateFilter);
+        }
+        return usersQuery;
+      });
 
       // Build profile_id -> user_id map from the users we already fetched
       const profileIdToUserId = new Map<string, string>();
@@ -113,9 +149,10 @@ export async function GET(req: NextRequest) {
       });
 
       // Background checks — keyed by profile_id
-      const { data: bgChecks } = await supabaseAdmin
+      const bgChecks = await fetchAllPages<any>(() => supabaseAdmin
         .from("vendor_background_checks")
-        .select("profile_id, background_check_completed, completed_date, notes, updated_at");
+        .select("profile_id, background_check_completed, completed_date, notes, updated_at")
+        .order("id", { ascending: true }));
 
       const bgByUser = new Map<string, any>();
       (bgChecks || []).forEach((b: any) => {
@@ -124,9 +161,10 @@ export async function GET(req: NextRequest) {
       });
 
       // Onboarding status — vendor_onboarding_status keyed by profile_id
-      const { data: onboardingRows } = await supabaseAdmin
+      const onboardingRows = await fetchAllPages<any>(() => supabaseAdmin
         .from("vendor_onboarding_status")
-        .select("profile_id, onboarding_completed, completed_date");
+        .select("profile_id, onboarding_completed, completed_date")
+        .order("id", { ascending: true }));
 
       const onboardingByUser = new Map<string, any>();
       (onboardingRows || []).forEach((o: any) => {
@@ -141,12 +179,13 @@ export async function GET(req: NextRequest) {
 
       if (allUserIds.length > 0) {
         // All clock-outs with an explicit attestation decision
-        const { data: attestEntries } = await supabaseAdmin
+        const attestEntries = await fetchAllByIds<any>(allUserIds, (idChunk) => supabaseAdmin
           .from("time_entries")
           .select("id, user_id, event_id, timestamp, attestation_accepted")
-          .in("user_id", allUserIds)
+          .in("user_id", idChunk)
           .eq("action", "clock_out")
-          .not("attestation_accepted", "is", null);
+          .not("attestation_accepted", "is", null)
+          .order("id", { ascending: true }));
 
         const attestEntryIds = (attestEntries || [])
           .filter((e: any) => e.attestation_accepted === false)
@@ -156,10 +195,11 @@ export async function GET(req: NextRequest) {
         // Fetch rejection reasons for the rejected entries
         const rejectionByEntryId = new Map<string, any>();
         if (attestEntryIds.length > 0) {
-          const { data: rejections } = await supabaseAdmin
+          const rejections = await fetchAllByIds<any>(attestEntryIds, (idChunk) => supabaseAdmin
             .from("attestation_rejections")
             .select("time_entry_id, rejection_reason, rejection_notes")
-            .in("time_entry_id", attestEntryIds);
+            .in("time_entry_id", idChunk)
+            .order("id", { ascending: true }));
           (rejections || []).forEach((r: any) => {
             if (r.time_entry_id) rejectionByEntryId.set(r.time_entry_id, r);
           });
@@ -255,49 +295,51 @@ export async function GET(req: NextRequest) {
     // EVENTS SECTION
     // ─────────────────────────────────────────────
     if (section === "all" || section === "events") {
-      let eventsQuery = supabaseAdmin
-        .from("events")
-        .select(`
-          id,
-          event_name,
-          artist,
-          venue,
-          city,
-          state,
-          event_date,
-          start_time,
-          end_time,
-          ends_next_day,
-          ticket_sales,
-          ticket_count,
-          artist_share_percent,
-          venue_share_percent,
-          pds_share_percent,
-          commission_pool,
-          required_staff,
-          confirmed_staff,
-          is_active,
-          created_at,
-          tax_rate_percent
-        `)
-        .order("event_date", { ascending: false });
+      const events = await fetchAllPages<any>(() => {
+        let eventsQuery = supabaseAdmin
+          .from("events")
+          .select(`
+            id,
+            event_name,
+            artist,
+            venue,
+            city,
+            state,
+            event_date,
+            start_time,
+            end_time,
+            ends_next_day,
+            ticket_sales,
+            ticket_count,
+            artist_share_percent,
+            venue_share_percent,
+            pds_share_percent,
+            commission_pool,
+            required_staff,
+            confirmed_staff,
+            is_active,
+            created_at,
+            tax_rate_percent
+          `)
+          .order("event_date", { ascending: false })
+          .order("id", { ascending: true });
 
-      if (fromDate) eventsQuery = eventsQuery.gte("event_date", fromDate);
-      if (toDate) eventsQuery = eventsQuery.lte("event_date", toDate);
-      if (stateFilter && stateFilter !== "all") eventsQuery = eventsQuery.eq("state", stateFilter);
-
-      const { data: events, error: eventsError } = await eventsQuery;
-      if (eventsError) throw new Error(eventsError.message);
+        if (fromDate) eventsQuery = eventsQuery.gte("event_date", fromDate);
+        if (toDate) eventsQuery = eventsQuery.lte("event_date", toDate);
+        if (stateFilter && stateFilter !== "all") eventsQuery = eventsQuery.eq("state", stateFilter);
+        return eventsQuery;
+      });
 
       // Get team sizes per event
       const eventIds = (events || []).map((e: any) => e.id).filter(Boolean);
       let teamCounts = new Map<string, number>();
 
       if (eventIds.length > 0) {
-        const { data: teamRows } = await supabaseAdmin
+        const teamRows = await fetchAllByIds<any>(eventIds, (idChunk) => supabaseAdmin
           .from("event_teams")
           .select("event_id, vendor_id, status")
-          .in("event_id", eventIds);
+          .in("event_id", idChunk)
+          .order("id", { ascending: true }));
 
         (teamRows || []).forEach((r: any) => {
           if (!r.event_id) return;
@@ -353,16 +395,17 @@ export async function GET(req: NextRequest) {
       const GATE_PHONE_OFFSET_MS = 30 * 60 * 1000;
 
       // Step 1: events in the date range
-      let eventsForTimeQuery = supabaseAdmin
-        .from("events")
-        .select("id")
-        .order("event_date", { ascending: true });
-      if (fromDate) eventsForTimeQuery = eventsForTimeQuery.gte("event_date", fromDate);
-      if (toDate)   eventsForTimeQuery = eventsForTimeQuery.lte("event_date", toDate);
-      if (stateFilter && stateFilter !== "all") eventsForTimeQuery = eventsForTimeQuery.eq("state", stateFilter);
-
-      const { data: eventsForTime, error: eventsForTimeErr } = await eventsForTimeQuery;
-      if (eventsForTimeErr) throw new Error(eventsForTimeErr.message);
+      const eventsForTime = await fetchAllPages<any>(() => {
+        let eventsForTimeQuery = supabaseAdmin
+          .from("events")
+          .select("id")
+          .order("event_date", { ascending: true })
+          .order("id", { ascending: true });
+        if (fromDate) eventsForTimeQuery = eventsForTimeQuery.gte("event_date", fromDate);
+        if (toDate)   eventsForTimeQuery = eventsForTimeQuery.lte("event_date", toDate);
+        if (stateFilter && stateFilter !== "all") eventsForTimeQuery = eventsForTimeQuery.eq("state", stateFilter);
+        return eventsForTimeQuery;
+      });
 
       const scopedEventIds = (eventsForTime || []).map((e: any) => e.id).filter(Boolean);
 
@@ -374,23 +417,20 @@ export async function GET(req: NextRequest) {
 
       if (scopedEventIds.length > 0) {
         // Step 2: fetch payment records + time entries for those events in parallel
-        const [payRes, teRes] = await Promise.all([
-          supabaseAdmin
+        const [paymentRows, timeEntries] = await Promise.all([
+          fetchAllByIds<any>(scopedEventIds, (idChunk) => supabaseAdmin
             .from("event_vendor_payments")
             .select("event_id, user_id, actual_hours, regular_hours, overtime_hours, doubletime_hours")
-            .in("event_id", scopedEventIds),
-          supabaseAdmin
+            .in("event_id", idChunk)
+            .order("id", { ascending: true })),
+          fetchAllByIds<any>(scopedEventIds, (idChunk) => supabaseAdmin
             .from("time_entries")
             .select("id, user_id, event_id, action, timestamp")
-            .in("event_id", scopedEventIds)
+            .in("event_id", idChunk)
             .in("action", ["clock_in", "clock_out", "meal_start", "meal_end"])
-            .order("timestamp", { ascending: true }),
+            .order("timestamp", { ascending: true })
+            .order("id", { ascending: true })),
         ]);
-        if (payRes.error)  throw new Error(payRes.error.message);
-        if (teRes.error)   throw new Error(teRes.error.message);
-
-        const paymentRows = payRes.data || [];
-        const timeEntries = teRes.data  || [];
 
         // Step 3: group time entries by (user, event) and compute timesheet hours
         const entriesBySession = new Map<string, any[]>();
@@ -515,12 +555,11 @@ export async function GET(req: NextRequest) {
     // BACKGROUND CHECKS SECTION
     // ─────────────────────────────────────────────
     if (section === "all" || section === "background") {
-      const { data: bgRows, error: bgError } = await supabaseAdmin
+      const bgRows = await fetchAllPages<any>(() => supabaseAdmin
         .from("vendor_background_checks")
         .select("id, profile_id, background_check_completed, completed_date, notes, updated_at")
-        .order("updated_at", { ascending: false });
-
-      if (bgError) throw new Error(bgError.message);
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: true }));
 
       const completed = (bgRows || []).filter((r: any) => r.background_check_completed).length;
       const pending = (bgRows || []).length - completed;
@@ -537,14 +576,21 @@ export async function GET(req: NextRequest) {
     // LOGINS SECTION
     // ─────────────────────────────────────────────
     if (section === "all" || section === "login") {
-      // Fetch all auth users (paginated, up to 1000)
-      const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000, page: 1 });
-      if (authError) throw new Error(authError.message);
+      // Fetch all auth users, 1,000 per page until a short page comes back
+      const authUsers: any[] = [];
+      for (let page = 1; ; page++) {
+        const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers({ perPage: PAGE_SIZE, page });
+        if (authError) throw new Error(authError.message);
+        const batch = authData?.users || [];
+        authUsers.push(...batch);
+        if (batch.length < PAGE_SIZE) break;
+      }
 
       // Fetch profiles for names and roles
-      const { data: profileRows } = await supabaseAdmin
+      const profileRows = await fetchAllPages<any>(() => supabaseAdmin
         .from("users")
-        .select("id, role, is_active, profiles(first_name, last_name)");
+        .select("id, role, is_active, profiles(first_name, last_name)")
+        .order("id", { ascending: true }));
 
       const profileByAuthId = new Map<string, any>();
       (profileRows || []).forEach((u: any) => {
@@ -554,7 +600,7 @@ export async function GET(req: NextRequest) {
 
       const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000;
 
-      const loginRows = (authData?.users || []).map((au: any) => {
+      const loginRows = authUsers.map((au: any) => {
         const userData = profileByAuthId.get(au.id);
         const profile = userData?.profile;
         return {

@@ -28,6 +28,13 @@ import { stampHomeVenueAssignmentLayout } from "@/app/lib/home-venue-pdf-layout"
 import { renderCustomFormInputsOnDetectedLines } from "@/app/lib/custom-form-line-renderer";
 import { getKnownCustomFlatFormLayout } from "@/app/lib/custom-flat-form-layout";
 import { getTimezoneForState, toZonedIso } from "@/lib/timezones";
+import {
+  crossesMidnight,
+  describeAvailabilityAnswer,
+  formatTimeFrameTimeShort,
+  toAvailabilityAnswer,
+  type AvailabilityAnswer,
+} from "@/lib/availabilityTimeFrame";
 
 type Employee = {
   id: string;
@@ -308,11 +315,58 @@ function getHoursUntilEventStart(inv: Pick<EventInvitation, "event_date" | "star
 type SubmittedAvailabilityDay = {
   date: string;
   available: boolean;
+  // false = available only between startTime and endTime ("HH:MM", 24h).
+  allDay?: boolean;
+  startTime?: string | null;
+  endTime?: string | null;
   notes?: string | null;
   submitted_at?: string | null;
 };
 
-type AvailabilityDateChange = { date: string; current_available: boolean | null; requested_available: boolean };
+// The *_all_day / *_start_time / *_end_time keys only exist on requests
+// filed since time frames were added (2026-10-22).
+type AvailabilityDateChange = {
+  date: string;
+  current_available: boolean | null;
+  current_all_day?: boolean | null;
+  current_start_time?: string | null;
+  current_end_time?: string | null;
+  requested_available: boolean;
+  requested_all_day?: boolean;
+  requested_start_time?: string | null;
+  requested_end_time?: string | null;
+};
+
+// What the requester wants a selected calendar date to become.
+// allDay=false means "available only between startTime and endTime".
+type RequestedAvailabilityChange = { available: boolean; allDay: boolean; startTime: string; endTime: string };
+
+
+function shortAvailabilityLabel(answer: AvailabilityAnswer | null): string {
+  if (!answer) return "no answer";
+  if (!answer.available) return "unavailable";
+  if (answer.allDay) return "available";
+  return `available ${formatTimeFrameTimeShort(answer.startTime)}–${formatTimeFrameTimeShort(answer.endTime)}`;
+}
+
+function currentAnswerOfChange(change: AvailabilityDateChange): AvailabilityAnswer | null {
+  if (change.current_available === null || change.current_available === undefined) return null;
+  return toAvailabilityAnswer({
+    available: change.current_available,
+    allDay: change.current_all_day ?? true,
+    startTime: change.current_start_time,
+    endTime: change.current_end_time,
+  });
+}
+
+function requestedAnswerOfChange(change: AvailabilityDateChange): AvailabilityAnswer {
+  return toAvailabilityAnswer({
+    available: change.requested_available,
+    allDay: change.requested_all_day ?? true,
+    startTime: change.requested_start_time,
+    endTime: change.requested_end_time,
+  });
+}
 
 type AvailabilityChangeRequest = {
   id: string;
@@ -565,7 +619,10 @@ export default function WorkerProfilePage() {
   const [availabilityChangeRequests, setAvailabilityChangeRequests] = useState<AvailabilityChangeRequest[]>([]);
   const [availabilityChangeRequestsLoading, setAvailabilityChangeRequestsLoading] = useState(false);
   const [selectingAvailabilityDates, setSelectingAvailabilityDates] = useState(false);
-  const [selectedAvailabilityChanges, setSelectedAvailabilityChanges] = useState<Map<string, boolean>>(new Map());
+  const [selectedAvailabilityChanges, setSelectedAvailabilityChanges] = useState<Map<string, RequestedAvailabilityChange>>(new Map());
+  // Hour time frame used by "Apply to all selected dates".
+  const [bulkTimeFrameStart, setBulkTimeFrameStart] = useState("09:00");
+  const [bulkTimeFrameEnd, setBulkTimeFrameEnd] = useState("17:00");
   const [availabilityChangeReason, setAvailabilityChangeReason] = useState("");
   const [submittingAvailabilityChange, setSubmittingAvailabilityChange] = useState(false);
   const [availabilityChangeError, setAvailabilityChangeError] = useState("");
@@ -845,27 +902,65 @@ export default function WorkerProfilePage() {
     }
   };
 
-  // Toggles a calendar date in/out of the pending availability-change
-  // selection. When first added, the requested value defaults to the
+  // Effective answer on record per date (submissions + approved corrections,
+  // including any time frame), straight from the invitations API.
+  const submittedAvailabilityByDate = useMemo(
+    () => new Map(submittedAvailability.map((day) => [day.date, day] as const)),
+    [submittedAvailability]
+  );
+
+  const availabilityAnswerOnRecord = (date: string): AvailabilityAnswer | null => {
+    const day = submittedAvailabilityByDate.get(date);
+    if (!day) return null;
+    return toAvailabilityAnswer({
+      available: day.available,
+      allDay: day.allDay ?? true,
+      startTime: day.startTime,
+      endTime: day.endTime,
+    });
+  };
+
+  // When a date is first added, the requested value defaults to the
   // opposite of whatever's currently on record (or "available" if there's
-  // no answer for that date yet) — the reviewer panel below still lets the
-  // requester flip it before submitting.
-  const toggleAvailabilityChangeDate = (date: string, currentAvailable: boolean | null) => {
+  // no answer for that date yet), all day — the panel below lets the
+  // requester flip it or narrow it to a time frame before submitting.
+  const defaultRequestedAvailabilityChange = (date: string): RequestedAvailabilityChange => {
+    const current = availabilityAnswerOnRecord(date);
+    return {
+      available: current === null ? true : !current.available,
+      allDay: true,
+      startTime: current?.startTime || bulkTimeFrameStart || "09:00",
+      endTime: current?.endTime || bulkTimeFrameEnd || "17:00",
+    };
+  };
+
+  // Toggles a calendar date in/out of the pending availability-change selection.
+  const toggleAvailabilityChangeDate = (date: string) => {
     setSelectedAvailabilityChanges((prev) => {
       const next = new Map(prev);
       if (next.has(date)) {
         next.delete(date);
       } else {
-        next.set(date, currentAvailable === null ? true : !currentAvailable);
+        next.set(date, defaultRequestedAvailabilityChange(date));
       }
       return next;
     });
   };
 
-  const setAvailabilityChangeRequestedValue = (date: string, value: boolean) => {
+  const updateAvailabilityChange = (date: string, patch: Partial<RequestedAvailabilityChange>) => {
     setSelectedAvailabilityChanges((prev) => {
+      const existing = prev.get(date);
+      if (!existing) return prev;
       const next = new Map(prev);
-      next.set(date, value);
+      next.set(date, { ...existing, ...patch });
+      return next;
+    });
+  };
+
+  const updateAllAvailabilityChanges = (patch: Partial<RequestedAvailabilityChange>) => {
+    setSelectedAvailabilityChanges((prev) => {
+      const next = new Map<string, RequestedAvailabilityChange>();
+      prev.forEach((value, date) => next.set(date, { ...value, ...patch }));
       return next;
     });
   };
@@ -884,6 +979,15 @@ export default function WorkerProfilePage() {
       setAvailabilityChangeError("Please provide a reason for the change.");
       return;
     }
+    const invalidTimeFrame = Array.from(selectedAvailabilityChanges.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .find(([, change]) => change.available && !change.allDay && (!change.startTime || !change.endTime || change.startTime === change.endTime));
+    if (invalidTimeFrame) {
+      setAvailabilityChangeError(
+        `Set a start and an end time (they must be different) for ${formatEventDate(invalidTimeFrame[0])}.`
+      );
+      return;
+    }
 
     setSubmittingAvailabilityChange(true);
     setAvailabilityChangeError("");
@@ -897,10 +1001,15 @@ export default function WorkerProfilePage() {
         },
         body: JSON.stringify({
           userId: employeeId,
-          dates: Array.from(selectedAvailabilityChanges.entries()).map(([date, requestedAvailable]) => ({
-            date,
-            requestedAvailable,
-          })),
+          dates: Array.from(selectedAvailabilityChanges.entries()).map(([date, change]) => {
+            const isTimeFrame = change.available && !change.allDay;
+            return {
+              date,
+              requestedAvailable: change.available,
+              allDay: !isTimeFrame,
+              ...(isTimeFrame ? { startTime: change.startTime, endTime: change.endTime } : {}),
+            };
+          }),
           reason: trimmedReason,
         }),
       });
@@ -3656,7 +3765,8 @@ export default function WorkerProfilePage() {
                   </div>
                   {selectingAvailabilityDates && (
                     <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                      Click any date below to add or remove it from your correction request.
+                      Click any date below to add or remove it from your request. Each date can be available all day,
+                      available only during an hour time frame (for example 4:00 PM to 11:00 PM), or unavailable.
                     </div>
                   )}
                   <div className="apple-card p-4">
@@ -3692,17 +3802,24 @@ export default function WorkerProfilePage() {
                           : hasUnavailableSubmission
                             ? "Unavailable"
                             : null;
-                        const currentAvailable: boolean | null = hasAvailableSubmission
-                          ? true
-                          : hasUnavailableSubmission
-                            ? false
+                        const dayOnRecord = submittedAvailabilityByDate.get(dateStr);
+                        const dayTimeFrameLabel =
+                          hasAvailableSubmission && dayOnRecord?.allDay === false && dayOnRecord.startTime && dayOnRecord.endTime
+                            ? `${formatTimeFrameTimeShort(dayOnRecord.startTime)}–${formatTimeFrameTimeShort(dayOnRecord.endTime)}`
                             : null;
                         const isSelectedForChange = selectedAvailabilityChanges.has(dateStr);
                         const requestedValue = selectedAvailabilityChanges.get(dateStr);
+                        const requestedLabel = !requestedValue
+                          ? ""
+                          : !requestedValue.available
+                            ? "Unavailable"
+                            : requestedValue.allDay
+                              ? "Available"
+                              : `${formatTimeFrameTimeShort(requestedValue.startTime)}–${formatTimeFrameTimeShort(requestedValue.endTime)}`;
                         return (
                           <div
                             key={i}
-                            onClick={selectingAvailabilityDates ? () => toggleAvailabilityChangeDate(dateStr, currentAvailable) : undefined}
+                            onClick={selectingAvailabilityDates ? () => toggleAvailabilityChangeDate(dateStr) : undefined}
                             className={`flex flex-col items-center py-1 px-0.5 min-h-[3.5rem] rounded-lg transition-colors ${
                               selectingAvailabilityDates ? "cursor-pointer hover:bg-amber-50" : ""
                             } ${isSelectedForChange ? "ring-2 ring-amber-400 bg-amber-50" : ""}`}
@@ -3722,9 +3839,14 @@ export default function WorkerProfilePage() {
                                 {availabilityLabel}
                               </div>
                             )}
+                            {dayTimeFrameLabel && (
+                              <div className="text-[9px] text-emerald-700 leading-tight" title="Available only during this time frame">
+                                {dayTimeFrameLabel}
+                              </div>
+                            )}
                             {isSelectedForChange && (
                               <div className="mt-0.5 px-1 rounded text-[9px] font-semibold leading-tight bg-amber-200 text-amber-900">
-                                → {requestedValue ? "Available" : "Unavailable"}
+                                → {requestedLabel}
                               </div>
                             )}
                             {evs.map((ev, ei) => (
@@ -3767,6 +3889,7 @@ export default function WorkerProfilePage() {
                       <span className="flex items-center gap-1"><span className="px-1 rounded bg-violet-100 text-violet-800 text-[10px] font-semibold">Event</span>Region events</span>
                       <span className="flex items-center gap-1"><span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">Available</span>Submitted availability</span>
                       <span className="flex items-center gap-1"><span className="px-1 rounded bg-rose-100 text-rose-800 text-[10px] font-semibold">Unavailable</span>Submitted availability</span>
+                      <span className="flex items-center gap-1"><span className="text-[10px] text-emerald-700">4p–11p</span>Available only during that time frame</span>
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-500 inline-block"/>Shift</span>
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-500 inline-block"/>Sick leave</span>
                     </div>
@@ -3782,44 +3905,157 @@ export default function WorkerProfilePage() {
                       <p className="text-sm font-semibold text-gray-800 mb-2">
                         {selectedAvailabilityChanges.size} date{selectedAvailabilityChanges.size !== 1 ? "s" : ""} selected
                       </p>
+                      {selectedAvailabilityChanges.size > 1 && (
+                        <div className="mb-3 rounded-lg border border-amber-200 bg-white px-3 py-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">Apply to all selected dates</p>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                            <button
+                              type="button"
+                              onClick={() => updateAllAvailabilityChanges({ available: true, allDay: true })}
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                            >
+                              Available all day
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateAllAvailabilityChanges({ available: false, allDay: true })}
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100"
+                            >
+                              Unavailable
+                            </button>
+                            <span className="text-gray-300">|</span>
+                            <input
+                              type="time"
+                              value={bulkTimeFrameStart}
+                              onChange={(e) => setBulkTimeFrameStart(e.target.value)}
+                              className="rounded-md border border-gray-300 px-1.5 py-0.5 text-xs"
+                              aria-label="Time frame start for all selected dates"
+                            />
+                            <span>to</span>
+                            <input
+                              type="time"
+                              value={bulkTimeFrameEnd}
+                              onChange={(e) => setBulkTimeFrameEnd(e.target.value)}
+                              className="rounded-md border border-gray-300 px-1.5 py-0.5 text-xs"
+                              aria-label="Time frame end for all selected dates"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateAllAvailabilityChanges({
+                                  available: true,
+                                  allDay: false,
+                                  startTime: bulkTimeFrameStart,
+                                  endTime: bulkTimeFrameEnd,
+                                })
+                              }
+                              disabled={!bulkTimeFrameStart || !bulkTimeFrameEnd || bulkTimeFrameStart === bulkTimeFrameEnd}
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-600 text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Set time frame
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <div className="space-y-1.5 mb-3">
                         {Array.from(selectedAvailabilityChanges.entries())
                           .sort(([a], [b]) => a.localeCompare(b))
-                          .map(([date, requested]) => (
-                            <div key={date} className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5">
-                              <span className="text-xs font-medium text-gray-700">{formatEventDate(date)}</span>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => setAvailabilityChangeRequestedValue(date, true)}
-                                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                                    requested ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                                  }`}
-                                >
-                                  Available
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setAvailabilityChangeRequestedValue(date, false)}
-                                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                                    !requested ? "bg-rose-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                                  }`}
-                                >
-                                  Unavailable
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleAvailabilityChangeDate(date, null)}
-                                  className="text-gray-400 hover:text-gray-600 p-0.5"
-                                  title="Remove this date"
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
+                          .map(([date, requested]) => {
+                            const isTimeFrame = requested.available && !requested.allDay;
+                            const timeFrameInvalid =
+                              isTimeFrame && (!requested.startTime || !requested.endTime || requested.startTime === requested.endTime);
+                            return (
+                            <div key={date} className="rounded-lg border border-gray-200 bg-white px-3 py-1.5">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <span className="text-xs font-medium text-gray-700">{formatEventDate(date)}</span>
+                                  <span className="ml-1.5 text-[11px] text-gray-400">Now: {describeAvailabilityAnswer(availabilityAnswerOnRecord(date))}</span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => updateAvailabilityChange(date, { available: true })}
+                                    className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                                      requested.available ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                    }`}
+                                  >
+                                    Available
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateAvailabilityChange(date, { available: false })}
+                                    className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                                      !requested.available ? "bg-rose-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                    }`}
+                                  >
+                                    Unavailable
+                                  </button>
+                                  {requested.available && (
+                                    <>
+                                      <span className="text-gray-300">|</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateAvailabilityChange(date, { allDay: true })}
+                                        className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                                          requested.allDay ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                        }`}
+                                      >
+                                        All day
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateAvailabilityChange(date, { allDay: false })}
+                                        className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
+                                          !requested.allDay ? "bg-amber-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                        }`}
+                                        title="Available only between a start and end time"
+                                      >
+                                        Time frame
+                                      </button>
+                                    </>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleAvailabilityChangeDate(date)}
+                                    className="text-gray-400 hover:text-gray-600 p-0.5"
+                                    title="Remove this date"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </div>
                               </div>
+                              {isTimeFrame && (
+                                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                                  <label className="flex items-center gap-1">
+                                    From
+                                    <input
+                                      type="time"
+                                      value={requested.startTime}
+                                      onChange={(e) => updateAvailabilityChange(date, { startTime: e.target.value })}
+                                      className="rounded-md border border-gray-300 px-1.5 py-0.5 text-xs"
+                                    />
+                                  </label>
+                                  <label className="flex items-center gap-1">
+                                    To
+                                    <input
+                                      type="time"
+                                      value={requested.endTime}
+                                      onChange={(e) => updateAvailabilityChange(date, { endTime: e.target.value })}
+                                      className="rounded-md border border-gray-300 px-1.5 py-0.5 text-xs"
+                                    />
+                                  </label>
+                                  {timeFrameInvalid ? (
+                                    <span className="text-[11px] text-red-600">Start and end must be different times.</span>
+                                  ) : crossesMidnight(requested.startTime, requested.endTime) ? (
+                                    <span className="text-[11px] text-gray-500">Ends the next day.</span>
+                                  ) : null}
+                                </div>
+                              )}
                             </div>
-                          ))}
+                            );
+                          })}
                       </div>
                       <textarea
                         value={availabilityChangeReason}
@@ -3889,10 +4125,10 @@ export default function WorkerProfilePage() {
                                   key={c.date}
                                   className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] text-gray-600"
                                 >
-                                  {formatEventDate(c.date)}: {c.current_available === null ? "no answer" : c.current_available ? "available" : "unavailable"}
+                                  {formatEventDate(c.date)}: {shortAvailabilityLabel(currentAnswerOfChange(c))}
                                   {" → "}
                                   <span className={c.requested_available ? "text-emerald-700 font-semibold" : "text-rose-700 font-semibold"}>
-                                    {c.requested_available ? "available" : "unavailable"}
+                                    {shortAvailabilityLabel(requestedAnswerOfChange(c))}
                                   </span>
                                 </span>
                               ))}

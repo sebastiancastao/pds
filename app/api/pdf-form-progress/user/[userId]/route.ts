@@ -5,6 +5,7 @@ import { PNG } from 'pngjs';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { safeDecrypt } from '@/lib/encryption';
+import { rebuildSavedCaTempEmploymentAgreement } from '@/lib/ca-temp-employment-agreement';
 import {
   drawSignatureIntoExistingPlacement,
   findEmployeeSignatureLabelPlacements,
@@ -1264,7 +1265,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
-const MERGED_PDF_CACHE_VERSION = '2026-06-15-state-tax-layout-1';
+const MERGED_PDF_CACHE_VERSION = '2026-10-22-ca-temp-agreement-current-template';
 
 async function ensureCacheDirectory() {
   try {
@@ -1612,6 +1613,37 @@ export async function GET(
     const isTargetStateAZ = normalizedUserState === 'az' || normalizedUserState === 'arizona';
     const isTargetStateCA = normalizedUserState === 'ca' || normalizedUserState === 'california';
 
+    // CA temp agreement is rebuilt on the payroll packet's template (see below) so
+    // the download shows the same PDF as /payroll-packet-ca/form-viewer?form=
+    // temp-employment-agreement. That route picks San Diego vs LA/NorCal from the
+    // region of the LOGGED-IN user, so the same rule is used here: the person
+    // downloading (HR/exec, or the employee for their own packet). The employee's
+    // official name and home venue are still printed on it.
+    let caTempTemplateRegionName = '';
+    let targetUserOfficialName = '';
+    if (isTargetStateCA) {
+      const [targetCaProfile, requesterCaProfile] = await Promise.all([
+        supabaseAdmin
+          .from('profiles')
+          .select('official_name')
+          .eq('user_id', userId)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('profiles')
+          .select('regions(name)')
+          .eq('user_id', user.id)
+          .maybeSingle(),
+      ]);
+      if (targetCaProfile.error) {
+        console.warn('[PDF_FORMS] Could not fetch official name for CA temp agreement:', targetCaProfile.error.message);
+      }
+      if (requesterCaProfile.error) {
+        console.warn('[PDF_FORMS] Could not fetch requester region for CA temp agreement:', requesterCaProfile.error.message);
+      }
+      caTempTemplateRegionName = ((requesterCaProfile.data as any)?.regions?.name || '').toString();
+      targetUserOfficialName = ((targetCaProfile.data as any)?.official_name || '').toString().trim();
+    }
+
     const latestFormTimestamp = maxTimestamp(formsToProcess.map((form) => form.updated_at));
     let mealWaiverLatestUpdate: string | null = null;
 
@@ -1848,6 +1880,28 @@ export async function GET(
         const isCaliforniaTempEmploymentAgreement =
           normalizedFormName === 'temp-employment-agreement' &&
           (normalizedUserState === 'ca' || normalizedUserState === 'california');
+
+        // Saved bytes can hold another template than the viewer shows (Jan-Feb 2026
+        // saves hold the old "Temporary Employment Commission Agreement"; San Diego
+        // signers hold the 3% San Diego version). The payroll packet viewer always
+        // reopens on its current template, so rebuild it here the same way.
+        let rebuiltCaTempAgreement = false;
+        if (isCaliforniaTempEmploymentAgreement) {
+          try {
+            formPdf = await rebuildSavedCaTempEmploymentAgreement(formPdf, {
+              regionName: caTempTemplateRegionName,
+              userName: targetUserOfficialName,
+              homeVenueName: targetUserHomeVenueName,
+              fallbackName: targetUserFullName,
+            });
+            rebuiltCaTempAgreement = true;
+          } catch (rebuildError) {
+            console.warn(
+              '[PDF_FORMS] Could not rebuild CA temp agreement on current template; using saved PDF:',
+              (rebuildError as Error).message
+            );
+          }
+        }
         const directFormKey = form.form_name || normalizedFormName || 'unknown-form';
         let signatureForForm: SignatureEntry | null = null;
         let signatureSourceForm = directFormKey;
@@ -2230,7 +2284,7 @@ export async function GET(
           }
         }
 
-        if (isCaliforniaTempEmploymentAgreement && targetUserHomeVenueName) {
+        if (isCaliforniaTempEmploymentAgreement && targetUserHomeVenueName && !rebuiltCaTempAgreement) {
           try {
             const font = await formPdf.embedFont(StandardFonts.Helvetica);
             const firstPage = formPdf.getPages()[0];
@@ -2547,7 +2601,10 @@ export async function GET(
               // handbook) that need a signature on every page, and for
               // notice-to-employee when an employee signature is already present.
               let drawnViaDetector = false;
+              // A rebuilt CA temp agreement is the scanned current template; the
+              // detector would read the old saved layout, so use the fixed line.
               const supportsDetectorPlacement =
+                !rebuiltCaTempAgreement &&
                 signaturePageIndexes.length <= 1 &&
                 !(isNoticeToEmployee && noticeHasEmployeeSignatureAppearance);
 
