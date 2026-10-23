@@ -15,10 +15,10 @@ import {
 
 // Equipment reimbursement for the HR dashboard Payroll tab: type or pick a pay
 // date (any date, nothing preselected), then check the onboarded accounts who
-// get the $20 monthly equipment reimbursement on it. Worker accounts are listed
-// by default; "Show staff accounts" adds staff accounts (exec, manager,
-// supervisor...) so HR can pay the staff who should get it. Staff checked this
-// month always show. Many staff have a company account and a personal worker
+// get the $20 monthly equipment reimbursement on it. Worker accounts are listed;
+// staff accounts (exec, manager, supervisor...) only show when they are checked
+// this month (the "Show staff accounts" switch was removed at the user's request
+// on 2026-10-23). Many staff have a company account and a personal worker
 // account, so a row notes when the same person is checked on two accounts
 // (paid twice). Each account can be checked for only one pay date per month
 // (the month the pay date falls in). The list can be filtered and grouped by
@@ -137,7 +137,6 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const [search, setSearch] = useState("");
   const [show, setShow] = useState<ShowFilter>("all");
   const [regionFilter, setRegionFilter] = useState<string>(ALL_REGIONS);
-  const [showStaff, setShowStaff] = useState(false);
   const [view, setView] = useState<ViewMode>("region");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const requestRef = useRef(0);
@@ -227,11 +226,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const listedPeople = useMemo(
     () =>
       people.filter(
-        (p) => !p.staff || showStaff || checked.has(p.user_id) || saved.has(p.user_id) || otherPayDateByUser.has(p.user_id),
+        (p) => !p.staff || checked.has(p.user_id) || saved.has(p.user_id) || otherPayDateByUser.has(p.user_id),
       ),
-    [people, showStaff, checked, saved, otherPayDateByUser],
+    [people, checked, saved, otherPayDateByUser],
   );
-  const staffCount = useMemo(() => people.filter((p) => p.staff && p.eligible).length, [people]);
 
   // People checked this month (this pay date as it stands, or another one) on
   // more than one account: they would be paid twice.
@@ -599,7 +597,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         <div>
           <h2 className="text-xl font-semibold">Equipment Reimbursement</h2>
           <p className="text-sm text-gray-500">
-            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked account, paid on the pay date you choose. Worker accounts are listed; staff accounts can be added.
+            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked account, paid on the pay date you choose.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -760,13 +758,6 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
                   <option value="list">One list</option>
                 </select>
               </div>
-              <label
-                className="flex cursor-pointer items-center gap-2 pb-2 text-sm text-gray-700"
-                title="Add exec, manager and supervisor accounts to the list so they can be checked. Staff already checked this month always show."
-              >
-                <input type="checkbox" checked={showStaff} onChange={(e) => setShowStaff(e.target.checked)} />
-                Show staff accounts ({staffCount})
-              </label>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm text-gray-700 tabular-nums">
@@ -861,7 +852,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
             )}
           </div>
           <div className="mt-2 text-xs text-gray-500">
-            {workerCount} onboarded worker accounts{showStaff ? ` + ${staffCount} staff accounts` : ""} · showing {shownPeople.length}
+            {workerCount} onboarded worker accounts · showing {shownPeople.length}
             {grouped && visibleGroups.length > 0 ? ` in ${visibleGroups.length} ${visibleGroups.length === 1 ? "region" : "regions"}` : ""}
           </div>
           {unplacedHidden.length > 0 && (
