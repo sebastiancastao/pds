@@ -19,7 +19,7 @@ import {
 // by default; "Show staff accounts" adds staff accounts (exec, manager,
 // supervisor...) so HR can pay the staff who should get it. Staff checked this
 // month always show. Many staff have a company account and a personal worker
-// account, so the panel warns when the same person is checked on two accounts
+// account, so a row notes when the same person is checked on two accounts
 // (paid twice). Each account can be checked for only one pay date per month
 // (the month the pay date falls in). The list can be filtered and grouped by
 // region (the profile's region). Data: equipment_reimbursement_queue via
@@ -54,9 +54,24 @@ type RegionSummary = { key: string; label: string; total: number; checked: numbe
 
 const API = "/api/hr/equipment-reimbursements";
 const ALL_REGIONS = "all";
-const NO_REGION = "none";
-const NO_REGION_LABEL = "No region";
 const VIEW_STORAGE_KEY = "hr-equipment-reimbursement-view";
+
+const STATE_NAMES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut",
+  DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois",
+  IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+  NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
+  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
+  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah",
+  VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+};
+
+// The profile state, or "" when it is missing or the "XX" placeholder.
+const stateOf = (p: { state?: string | null }) => {
+  const s = String(p.state || "").trim().toUpperCase();
+  return STATE_NAMES[s] ? s : "";
+};
 
 const roleLabel = (role: string) => {
   const r = role.trim().toLowerCase();
@@ -64,15 +79,18 @@ const roleLabel = (role: string) => {
   return r.charAt(0).toUpperCase() + r.slice(1);
 };
 
-const regionKeyOf = (p: Person) => p.region_id || NO_REGION;
-const regionLabelOf = (p: Person) => p.region_name || NO_REGION_LABEL;
+// Group by the profile region; people with no region are grouped by their
+// state instead (user 2026-10-23: no "No region" group). People with neither
+// have no group ("" key): they are left out of the cards and the grouped view
+// (user 2026-10-23: no "State not set" group) and show in One list view.
+const regionKeyOf = (p: Person) => p.region_id || (stateOf(p) ? `state:${stateOf(p)}` : "");
+const regionLabelOf = (p: Person) => p.region_name || STATE_NAMES[stateOf(p)] || "";
+const hasPlace = (p: Person) => regionKeyOf(p) !== "";
 
-// Regions by name, "No region" last.
-const compareRegions = (a: { key: string; label: string }, b: { key: string; label: string }) => {
-  if (a.key === NO_REGION) return b.key === NO_REGION ? 0 : 1;
-  if (b.key === NO_REGION) return -1;
-  return a.label.localeCompare(b.label);
-};
+// Regions by name, then state groups by name, then people with neither.
+const groupRank = (key: string) => (!key ? 2 : key.startsWith("state:") ? 1 : 0);
+const compareRegions = (a: { key: string; label: string }, b: { key: string; label: string }) =>
+  groupRank(a.key) - groupRank(b.key) || a.label.localeCompare(b.label);
 
 // Region order, then name, for the Excel sheets.
 const compareByRegionThenName = (a: Person, b: Person) =>
@@ -108,7 +126,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const [payDate, setPayDate] = useState("");
 
   const [period, setPeriod] = useState<EquipmentPayPeriod | null>(null);
-  const [people, setPeople] = useState<Person[]>([]);
+  const [loadedPeople, setPeople] = useState<Person[]>([]);
   const [monthRows, setMonthRows] = useState<MonthRow[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
@@ -187,6 +205,23 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const dirty = toAdd.length + toRemove.length > 0;
 
   const canCheck = (p: Person) => p.eligible && !otherPayDateByUser.has(p.user_id);
+  const grouped = view === "region";
+
+  // Company staff accounts usually have no region and the "XX" state; they take
+  // the region and state of the same person's other account (matched by name),
+  // so they sit next to it.
+  const people = useMemo(() => {
+    const placeByName = new Map<string, Person>();
+    for (const p of loadedPeople) {
+      const key = personKey(p);
+      if (key && hasPlace(p) && !placeByName.has(key)) placeByName.set(key, p);
+    }
+    return loadedPeople.map((p) => {
+      if (hasPlace(p)) return p;
+      const twin = placeByName.get(personKey(p));
+      return twin ? { ...p, region_id: twin.region_id, region_name: twin.region_name, state: twin.state } : p;
+    });
+  }, [loadedPeople]);
 
   // Worker accounts, plus staff accounts when shown or when checked this month.
   const listedPeople = useMemo(
@@ -215,34 +250,13 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     });
     return others;
   }, [people, checked, otherPayDateByUser]);
-  const doublePaidGroups = useMemo(() => {
-    const seen = new Set<string>();
-    const groups: Person[][] = [];
-    otherCheckedAccounts.forEach((others, userId) => {
-      if (seen.has(userId)) return;
-      const me = people.find((p) => p.user_id === userId);
-      if (!me) return;
-      const group = [me, ...others];
-      group.forEach((p) => seen.add(p.user_id));
-      groups.push(group);
-    });
-    return groups.sort((a, b) => a[0].name.localeCompare(b[0].name));
-  }, [otherCheckedAccounts, people]);
-  // Staff copies HR can uncheck here: checked for this pay date, while the same
-  // person keeps a checked worker account.
-  const staffCopiesToUncheck = useMemo(
-    () =>
-      doublePaidGroups.flatMap((group) =>
-        group.some((p) => !p.staff) ? group.filter((p) => p.staff && checked.has(p.user_id)) : [],
-      ),
-    [doublePaidGroups, checked],
-  );
 
   // One card per region over the whole list (search and Show don't change it),
   // with what is checked right now, saved or not.
   const regionSummaries = useMemo(() => {
     const map = new Map<string, RegionSummary>();
     for (const p of listedPeople) {
+      if (!hasPlace(p)) continue;
       const key = regionKeyOf(p);
       let s = map.get(key);
       if (!s) {
@@ -264,7 +278,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       if (activeRegion !== ALL_REGIONS && regionKeyOf(p) !== activeRegion) return false;
       if (show === "checked" && !checked.has(p.user_id)) return false;
       if (show === "unchecked" && checked.has(p.user_id)) return false;
-      if (q && !`${p.name} ${p.email} ${p.state} ${regionLabelOf(p)} ${accountLabel(p)}`.toLowerCase().includes(q)) return false;
+      if (q && !`${p.name} ${p.email} ${stateOf(p)} ${STATE_NAMES[stateOf(p)] || ""} ${regionLabelOf(p)} ${accountLabel(p)}`.toLowerCase().includes(q)) return false;
       return true;
     });
   }, [listedPeople, search, show, checked, activeRegion]);
@@ -272,6 +286,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const visibleGroups = useMemo(() => {
     const map = new Map<string, { key: string; label: string; people: Person[] }>();
     for (const p of visiblePeople) {
+      if (!hasPlace(p)) continue;
       const key = regionKeyOf(p);
       if (!map.has(key)) map.set(key, { key, label: regionLabelOf(p), people: [] });
       map.get(key)!.people.push(p);
@@ -285,8 +300,12 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     const selectable = selectableOf(list);
     return selectable.length > 0 && selectable.every((p) => checked.has(p.user_id));
   };
-  const shownSelectable = selectableOf(visiblePeople);
-  const allShownChecked = allCheckedOf(visiblePeople);
+  // The rows on screen: the grouped view leaves out people with no region or state.
+  const shownPeople = useMemo(() => (grouped ? visiblePeople.filter(hasPlace) : visiblePeople), [grouped, visiblePeople]);
+  const unplacedHidden = grouped ? visiblePeople.filter((p) => !hasPlace(p)) : [];
+  const unplacedHiddenChecked = unplacedHidden.filter((p) => checked.has(p.user_id)).length;
+  const shownSelectable = selectableOf(shownPeople);
+  const allShownChecked = allCheckedOf(shownPeople);
 
   // Checked people who can't be paid: no longer active or onboarded.
   const blockedChecked = useMemo(() => people.filter((p) => !p.eligible && checked.has(p.user_id)), [people, checked]);
@@ -411,8 +430,8 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       Name: person.name,
       Email: person.email,
       Account: accountLabel(person),
-      Region: regionLabelOf(person),
-      State: person.state,
+      Region: person.region_name || "",
+      State: stateOf(person),
       "Pay Date": thisDate,
       Amount: roundCents(row.amount),
       Warning: alsoSavedAs(person) ? `Also checked as ${alsoSavedAs(person)}` : "",
@@ -441,8 +460,8 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         Name: p.name,
         Email: p.email,
         Account: accountLabel(p),
-        Region: regionLabelOf(p),
-        State: p.state,
+        Region: p.region_name || "",
+        State: stateOf(p),
         Status: row ? (p.eligible ? "Checked" : `Checked, ${INELIGIBLE_TEXT.toLowerCase()}`) : p.eligible ? "Not checked" : INELIGIBLE_TEXT,
         "Pay Date": row ? formatPayDate(row.pay_date) : "",
         Amount: row ? roundCents(row.amount) : "",
@@ -464,7 +483,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     const regionTotals = new Map<string, { key: string; label: string; workers: number; paidHere: number; paidHereAmount: number; month: number; monthAmount: number }>();
     for (const p of sorted) {
       const key = regionKeyOf(p);
-      if (!regionTotals.has(key)) regionTotals.set(key, { key, label: regionLabelOf(p), workers: 0, paidHere: 0, paidHereAmount: 0, month: 0, monthAmount: 0 });
+      if (!regionTotals.has(key)) regionTotals.set(key, { key, label: regionLabelOf(p) || "—", workers: 0, paidHere: 0, paidHereAmount: 0, month: 0, monthAmount: 0 });
       const t = regionTotals.get(key)!;
       if (p.eligible && !p.staff) t.workers += 1;
       const row = rowByUser.get(p.user_id);
@@ -515,7 +534,6 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
 
   const busy = loading || saving;
   const savedCount = saved.size;
-  const grouped = view === "region";
 
   const renderPersonRow = (p: Person) => {
     const isChecked = checked.has(p.user_id);
@@ -555,8 +573,8 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
           </div>
           {p.email && <div className="text-xs text-gray-400">{p.email}</div>}
         </td>
-        {!grouped && <td className="px-3 py-2 text-sm text-gray-700">{regionLabelOf(p)}</td>}
-        <td className="px-3 py-2 text-sm text-gray-700">{p.state || "—"}</td>
+        {!grouped && <td className="px-3 py-2 text-sm text-gray-700">{p.region_name || "—"}</td>}
+        <td className="px-3 py-2 text-sm text-gray-700">{stateOf(p) || "—"}</td>
         <td className="px-3 py-2 text-sm text-right tabular-nums text-gray-900">
           {isChecked ? money(EQUIPMENT_REIMBURSEMENT_AMOUNT) : <span className="text-gray-300">—</span>}
         </td>
@@ -571,7 +589,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const allSummary: RegionSummary = {
     key: ALL_REGIONS,
     label: "All regions",
-    total: people.length,
+    total: listedPeople.length,
     checked: checked.size,
   };
 
@@ -643,45 +661,6 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         </div>
       ) : (
         <>
-          {/* Same person checked on two accounts this month (company staff account + personal worker account) */}
-          {ready && doublePaidGroups.length > 0 && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span>
-                  <span className="font-semibold">
-                    {doublePaidGroups.length} {doublePaidGroups.length === 1 ? "person is" : "people are"} checked on two accounts in {period ? formatPayMonth(period.month) : "this month"}
-                  </span>{" "}
-                  and would be paid twice. Keep one account per person, then Save.
-                </span>
-                {staffCopiesToUncheck.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setListChecked(staffCopiesToUncheck, false)}
-                    disabled={busy}
-                    className="apple-button apple-button-secondary"
-                    title="Uncheck the staff account of each person who also has a checked worker account."
-                  >
-                    Keep worker accounts only ({staffCopiesToUncheck.length})
-                  </button>
-                )}
-              </div>
-              <ul className="mt-2 grid gap-x-6 gap-y-0.5 text-xs sm:grid-cols-2">
-                {doublePaidGroups.map((group) => (
-                  <li key={group.map((p) => p.user_id).join("-")}>
-                    <span className="font-medium">{group[0].name}</span>:{" "}
-                    {group
-                      .map((p) => {
-                        const other = otherPayDateByUser.get(p.user_id);
-                        const where = other ? `on ${formatPayDate(other.pay_date, { year: false })}` : "on this pay date";
-                        return `${p.email} (${p.staff ? roleLabel(p.role) : "worker"}, ${where})`;
-                      })
-                      .join(" + ")}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           {/* Checked people who can't be paid (no longer active or onboarded) */}
           {ready && blockedChecked.length > 0 && (
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -812,7 +791,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
           <div className="max-h-[36rem] overflow-y-auto rounded-xl border border-gray-200">
             {loading && !ready ? (
               <div className="text-center py-6 text-sm text-gray-400">Loading onboarded worker accounts…</div>
-            ) : visiblePeople.length === 0 ? (
+            ) : shownPeople.length === 0 ? (
               <div className="text-center py-6 text-sm text-gray-400">No workers match these filters.</div>
             ) : (
               <table className="min-w-full divide-y divide-gray-200">
@@ -822,7 +801,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
                       <input
                         type="checkbox"
                         checked={allShownChecked}
-                        onChange={() => setListChecked(visiblePeople, !allShownChecked)}
+                        onChange={() => setListChecked(shownPeople, !allShownChecked)}
                         disabled={busy || shownSelectable.length === 0}
                         aria-label="Check or uncheck everyone shown"
                       />
@@ -882,9 +861,19 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
             )}
           </div>
           <div className="mt-2 text-xs text-gray-500">
-            {workerCount} onboarded worker accounts{showStaff ? ` + ${staffCount} staff accounts` : ""} · showing {visiblePeople.length}
+            {workerCount} onboarded worker accounts{showStaff ? ` + ${staffCount} staff accounts` : ""} · showing {shownPeople.length}
             {grouped && visibleGroups.length > 0 ? ` in ${visibleGroups.length} ${visibleGroups.length === 1 ? "region" : "regions"}` : ""}
           </div>
+          {unplacedHidden.length > 0 && (
+            <div className="mt-1 text-xs text-gray-500">
+              {unplacedHidden.length} {unplacedHidden.length === 1 ? "account has" : "accounts have"} no region or state in their profile
+              {unplacedHiddenChecked > 0 ? ` (${unplacedHiddenChecked} checked)` : ""} and only {unplacedHidden.length === 1 ? "shows" : "show"} in{" "}
+              <button type="button" onClick={() => changeView("list")} className="text-blue-600 hover:text-blue-800">
+                One list
+              </button>{" "}
+              view.
+            </div>
+          )}
         </>
       )}
     </div>

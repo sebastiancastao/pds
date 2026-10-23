@@ -6035,8 +6035,8 @@ function HRDashboardContent() {
                   'First Name': r.first_name || r.name,
                   'Last Name': r.last_name,
                   'Email': r.email,
-                  'Region': r.region_name || 'No region',
-                  'State': r.state || '',
+                  'Region': r.region_name || '',
+                  'State': r.state === 'XX' ? '' : r.state || '',
                   'Pay Date': formatPayDate(payDateOf(r)),
                   'In This Payroll': payrollVendorIds.has(r.user_id) ? 'Yes, with events' : 'Equipment only',
                   'Amount': roundCents(Number(r.amount || 0)),
@@ -6107,8 +6107,8 @@ function HRDashboardContent() {
                                 <div className="text-gray-900">{r.name}</div>
                                 {r.email && <div className="text-xs text-gray-400">{r.email}</div>}
                               </td>
-                              <td className="px-4 py-2 text-sm text-gray-700">{r.region_name || 'No region'}</td>
-                              <td className="px-4 py-2 text-sm text-gray-700">{r.state || '—'}</td>
+                              <td className="px-4 py-2 text-sm text-gray-700">{r.region_name || '—'}</td>
+                              <td className="px-4 py-2 text-sm text-gray-700">{r.state && r.state !== 'XX' ? r.state : '—'}</td>
                               <td className="px-4 py-2 text-sm text-gray-700">{formatPayDate(payDateOf(r))}</td>
                               <td className="px-4 py-2 text-sm text-gray-700">{payrollVendorIds.has(r.user_id) ? 'Yes, with events' : 'Equipment only'}</td>
                               <td className="px-4 py-2 text-sm text-right tabular-nums">${formatExactMoney(Number(r.amount || 0))}</td>
