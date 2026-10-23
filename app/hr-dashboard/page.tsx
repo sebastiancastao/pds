@@ -5369,7 +5369,7 @@ function HRDashboardContent() {
                         onClick={() => setShowEquipmentReimbursementsPanel((prev) => !prev)}
                         className={`apple-button ${showEquipmentReimbursementsPanel ? 'apple-button-primary' : 'apple-button-secondary'}`}
                         aria-expanded={showEquipmentReimbursementsPanel}
-                        title="Check which onboarded vendors get the $20 monthly equipment reimbursement in a pay period."
+                        title="Check which onboarded worker accounts get the $20 monthly equipment reimbursement on a pay date, by region."
                       >
                         {showEquipmentReimbursementsPanel ? 'Hide Equipment Reimbursement' : 'Equipment Reimbursement'}
                       </button>
@@ -6035,6 +6035,7 @@ function HRDashboardContent() {
                   'First Name': r.first_name || r.name,
                   'Last Name': r.last_name,
                   'Email': r.email,
+                  'Region': r.region_name || 'No region',
                   'State': r.state || '',
                   'Pay Date': formatPayDate(payDateOf(r)),
                   'In This Payroll': payrollVendorIds.has(r.user_id) ? 'Yes, with events' : 'Equipment only',
@@ -6042,14 +6043,14 @@ function HRDashboardContent() {
                 }));
                 sheetRows.push({
                   'First Name': 'TOTAL', 'Last Name': '', 'Email': `${equipmentRows.length} ${equipmentRows.length === 1 ? 'person' : 'people'}`,
-                  'State': '', 'Pay Date': '', 'In This Payroll': '', 'Amount': roundCents(equipmentTotal),
+                  'Region': '', 'State': '', 'Pay Date': '', 'In This Payroll': '', 'Amount': roundCents(equipmentTotal),
                 });
                 const fileDates = payDates.length > 1 ? `${payDates[0]}_to_${payDates[payDates.length - 1]}` : payDates[0] || 'none';
                 downloadExcelSheets(`equipment_reimbursement_paid_${fileDates}.xlsx`, [{
                   name: 'Equipment Reimbursement',
-                  headers: ['First Name', 'Last Name', 'Email', 'State', 'Pay Date', 'In This Payroll', 'Amount'],
+                  headers: ['First Name', 'Last Name', 'Email', 'Region', 'State', 'Pay Date', 'In This Payroll', 'Amount'],
                   rows: sheetRows,
-                  widths: { 'First Name': 18, 'Last Name': 18, 'Email': 32, 'State': 8, 'Pay Date': 14, 'In This Payroll': 18, 'Amount': 12 },
+                  widths: { 'First Name': 18, 'Last Name': 18, 'Email': 32, 'Region': 18, 'State': 8, 'Pay Date': 14, 'In This Payroll': 18, 'Amount': 12 },
                 }]);
               };
               return (
@@ -6092,6 +6093,7 @@ function HRDashboardContent() {
                         <thead className="bg-gray-50 sticky top-0">
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Region</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">State</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Pay Date</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">In This Payroll</th>
@@ -6105,6 +6107,7 @@ function HRDashboardContent() {
                                 <div className="text-gray-900">{r.name}</div>
                                 {r.email && <div className="text-xs text-gray-400">{r.email}</div>}
                               </td>
+                              <td className="px-4 py-2 text-sm text-gray-700">{r.region_name || 'No region'}</td>
                               <td className="px-4 py-2 text-sm text-gray-700">{r.state || '—'}</td>
                               <td className="px-4 py-2 text-sm text-gray-700">{formatPayDate(payDateOf(r))}</td>
                               <td className="px-4 py-2 text-sm text-gray-700">{payrollVendorIds.has(r.user_id) ? 'Yes, with events' : 'Equipment only'}</td>

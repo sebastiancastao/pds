@@ -9,6 +9,8 @@ export type ExcelSheet = {
   headers: string[];
   rows: Array<Record<string, string | number>>;
   widths?: Record<string, number>;
+  // Columns shown as dollars; defaults to the "Amount" column.
+  moneyHeaders?: string[];
 };
 
 const MONEY_FORMAT = '"$"#,##0.00';
@@ -17,11 +19,12 @@ export function downloadExcelSheets(fileName: string, sheets: ExcelSheet[]): voi
   const wb = XLSX.utils.book_new();
   for (const sheet of sheets) {
     const ws = XLSX.utils.json_to_sheet(sheet.rows, { header: sheet.headers });
-    const amountCol = sheet.headers.indexOf("Amount");
-    if (amountCol >= 0) {
-      const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+    const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+    for (const header of sheet.moneyHeaders ?? ["Amount"]) {
+      const col = sheet.headers.indexOf(header);
+      if (col < 0) continue;
       for (let r = 1; r <= range.e.r; r++) {
-        const cell = ws[XLSX.utils.encode_cell({ r, c: amountCol })];
+        const cell = ws[XLSX.utils.encode_cell({ r, c: col })];
         if (cell && typeof cell.v === "number") cell.z = MONEY_FORMAT;
       }
     }

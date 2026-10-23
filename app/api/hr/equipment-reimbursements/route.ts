@@ -11,8 +11,10 @@ import {
 } from "@/lib/equipment-reimbursement";
 
 // Equipment reimbursement for the HR dashboard Payroll tab: a flat $20 a month
-// for each checked onboarded vendor, paid on a pay date HR picks (any date).
-// GET lists the onboarded vendors and who is checked for a pay date; PUT saves
+// for each checked onboarded worker role account, paid on a pay date HR picks
+// (any date). Staff accounts (exec, manager, supervisor...) are not listed.
+// Every person carries their profile region so the panel can group by region.
+// GET lists the onboarded workers and who is checked for a pay date; PUT saves
 // the checked list for that pay date. A person can be checked for only one pay
 // date per month (unique user_id + pay_month, pay_month = month of pay_date).
 // Each row also stores the bi-weekly work period the pay date belongs to (the
@@ -84,12 +86,15 @@ function safeDecryptName(value: string | null | undefined): string {
   }
 }
 
+type RegionShape = { id?: string | null; name?: string | null };
 type ProfileShape = {
   id?: string | null;
   first_name?: string | null;
   last_name?: string | null;
   state?: string | null;
   onboarding_completed_at?: string | null;
+  region_id?: string | null;
+  regions?: RegionShape | RegionShape[] | null;
 };
 type UserRow = {
   id: string;
@@ -108,14 +113,27 @@ type Person = {
   email: string;
   role: string;
   state: string;
-  // Active and onboarded: may be checked. Others only appear when already
-  // checked this month, so HR can see and uncheck them.
+  // The profile's region (profiles.region_id), the same one the HR dashboard filters by.
+  region_id: string;
+  region_name: string;
+  // Active, onboarded, worker role account: may be checked. Others only appear
+  // when already checked this month, so HR can see and uncheck them.
   eligible: boolean;
+  // Why someone can't be checked: "not_worker" (a staff account such as exec,
+  // manager or supervisor) or "inactive" (no longer active or onboarded).
+  ineligible_reason: "" | "not_worker" | "inactive";
 };
 
-const USER_SELECT = "id, email, role, division, is_active, profiles ( id, first_name, last_name, state, onboarding_completed_at )";
+// Only worker role accounts get the equipment reimbursement (user request
+// 2026-10-22); staff accounts in the vendor divisions are left out.
+const WORKER_ROLE = "worker";
+
+const USER_SELECT =
+  "id, email, role, division, is_active, profiles ( id, first_name, last_name, state, onboarding_completed_at, region_id, regions ( id, name ) )";
 
 const profileOf = (u: UserRow): ProfileShape | null => (Array.isArray(u.profiles) ? u.profiles[0] || null : u.profiles || null);
+const regionOf = (p: ProfileShape | null): RegionShape | null =>
+  !p?.regions ? null : Array.isArray(p.regions) ? p.regions[0] || null : p.regions;
 
 // Profiles an admin marked onboarding-complete in vendor_onboarding_status.
 async function loadAdminCompletedProfileIds(profileIds: string[]): Promise<Set<string>> {
@@ -141,6 +159,10 @@ async function toPeople(users: UserRow[]): Promise<Person[]> {
     const firstName = safeDecryptName(profile?.first_name);
     const lastName = safeDecryptName(profile?.last_name);
     const name = `${firstName} ${lastName}`.trim();
+    const region = regionOf(profile);
+    const activeOnboarded =
+      u.is_active !== false && VENDOR_DIVISIONS.includes(String(u.division || "").toLowerCase()) && onboarded;
+    const isWorker = String(u.role || "").trim().toLowerCase() === WORKER_ROLE;
     return {
       user_id: u.id,
       name: name || String(u.email || "Unknown"),
@@ -149,13 +171,15 @@ async function toPeople(users: UserRow[]): Promise<Person[]> {
       email: String(u.email || ""),
       role: String(u.role || ""),
       state: String(profile?.state || "").trim().toUpperCase(),
-      eligible:
-        u.is_active !== false && VENDOR_DIVISIONS.includes(String(u.division || "").toLowerCase()) && onboarded,
+      region_id: String(profile?.region_id || region?.id || ""),
+      region_name: String(region?.name || "").trim(),
+      eligible: activeOnboarded && isWorker,
+      ineligible_reason: !activeOnboarded ? "inactive" : !isWorker ? "not_worker" : "",
     };
   });
 }
 
-// Every active user in a vendor division who has finished onboarding.
+// Every active worker role account in a vendor division who has finished onboarding.
 async function loadOnboardedVendors(): Promise<Person[]> {
   const users: UserRow[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
@@ -163,6 +187,7 @@ async function loadOnboardedVendors(): Promise<Person[]> {
       .from("users")
       .select(USER_SELECT)
       .eq("is_active", true)
+      .eq("role", WORKER_ROLE)
       .in("division", VENDOR_DIVISIONS)
       .order("id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -230,6 +255,7 @@ async function getForPayrollRange(rangeStart: string, rangeEnd: string) {
         email: p?.email || "",
         state: p?.state || "",
         role: p?.role || "",
+        region_name: p?.region_name || "",
         pay_date: String(r.pay_date),
         pay_period_start: String(r.pay_period_start),
         pay_period_end: String(r.pay_period_end),
@@ -313,10 +339,13 @@ export async function PUT(req: NextRequest) {
     const personById = new Map(people.map((p) => [p.user_id, p] as const));
     const skippedOtherPeriod: string[] = [];
     const skippedIneligible: string[] = [];
+    const skippedNotWorker: string[] = [];
     const toAdd: string[] = [];
     for (const id of addCandidates) {
       const person = personById.get(id);
-      if (!person || !person.eligible) {
+      if (person && !person.eligible && person.ineligible_reason === "not_worker") {
+        skippedNotWorker.push(person.name);
+      } else if (!person || !person.eligible) {
         skippedIneligible.push(person?.name || id);
       } else if (otherPeriod.has(id)) {
         skippedOtherPeriod.push(person.name);
@@ -372,6 +401,7 @@ export async function PUT(req: NextRequest) {
       removed,
       skipped_other_period: skippedOtherPeriod,
       skipped_ineligible: skippedIneligible,
+      skipped_not_worker: skippedNotWorker,
     });
   } catch (err: any) {
     console.error("[EQUIPMENT REIMBURSEMENTS][PUT]", err);

@@ -92,6 +92,7 @@ export type PayrollEquipmentRow = {
   email: string;
   state: string;
   role: string;
+  region_name: string; // the profile's region, "" when none
   pay_date: string;
   pay_period_start: string;
   pay_period_end: string;
