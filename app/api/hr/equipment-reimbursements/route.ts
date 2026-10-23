@@ -11,10 +11,11 @@ import {
 } from "@/lib/equipment-reimbursement";
 
 // Equipment reimbursement for the HR dashboard Payroll tab: a flat $20 a month
-// for each checked onboarded worker role account, paid on a pay date HR picks
-// (any date). Staff accounts (exec, manager, supervisor...) are not listed.
+// for each checked onboarded account, paid on a pay date HR picks (any date).
+// Worker accounts are the default list; staff accounts (exec, manager,
+// supervisor...) carry staff: true and the panel shows them on request.
 // Every person carries their profile region so the panel can group by region.
-// GET lists the onboarded workers and who is checked for a pay date; PUT saves
+// GET lists the onboarded accounts and who is checked for a pay date; PUT saves
 // the checked list for that pay date. A person can be checked for only one pay
 // date per month (unique user_id + pay_month, pay_month = month of pay_date).
 // Each row also stores the bi-weekly work period the pay date belongs to (the
@@ -116,17 +117,21 @@ type Person = {
   // The profile's region (profiles.region_id), the same one the HR dashboard filters by.
   region_id: string;
   region_name: string;
-  // Active, onboarded, worker role account: may be checked. Others only appear
-  // when already checked this month, so HR can see and uncheck them.
+  // Active and onboarded: may be checked. Others only appear when already
+  // checked this month, so HR can see and uncheck them.
   eligible: boolean;
-  // Why someone can't be checked: "not_worker" (a staff account such as exec,
-  // manager or supervisor) or "inactive" (no longer active or onboarded).
-  ineligible_reason: "" | "not_worker" | "inactive";
+  // Why someone can't be checked: "inactive" (no longer active or onboarded).
+  ineligible_reason: "" | "inactive";
+  // A staff account (exec, manager, supervisor...), not a worker one. The panel
+  // lists worker accounts by default and shows staff accounts on request.
+  staff: boolean;
 };
 
-// Only worker role accounts get the equipment reimbursement (user request
-// 2026-10-22); staff accounts in the vendor divisions are left out.
-const WORKER_ROLE = "worker";
+// Worker accounts are the default list (user request 2026-10-22). Staff
+// accounts can still be checked when HR shows them (user 2026-10-23: some staff
+// must be paid too). "employee" is the older name of the worker role (the ADP
+// YTD import treats it the same), e.g. Katrina Gonzales's personal account.
+const WORKER_ROLES = ["worker", "employee"];
 
 const USER_SELECT =
   "id, email, role, division, is_active, profiles ( id, first_name, last_name, state, onboarding_completed_at, region_id, regions ( id, name ) )";
@@ -162,7 +167,7 @@ async function toPeople(users: UserRow[]): Promise<Person[]> {
     const region = regionOf(profile);
     const activeOnboarded =
       u.is_active !== false && VENDOR_DIVISIONS.includes(String(u.division || "").toLowerCase()) && onboarded;
-    const isWorker = String(u.role || "").trim().toLowerCase() === WORKER_ROLE;
+    const isWorker = WORKER_ROLES.includes(String(u.role || "").trim().toLowerCase());
     return {
       user_id: u.id,
       name: name || String(u.email || "Unknown"),
@@ -173,13 +178,15 @@ async function toPeople(users: UserRow[]): Promise<Person[]> {
       state: String(profile?.state || "").trim().toUpperCase(),
       region_id: String(profile?.region_id || region?.id || ""),
       region_name: String(region?.name || "").trim(),
-      eligible: activeOnboarded && isWorker,
-      ineligible_reason: !activeOnboarded ? "inactive" : !isWorker ? "not_worker" : "",
+      eligible: activeOnboarded,
+      ineligible_reason: activeOnboarded ? "" : "inactive",
+      staff: !isWorker,
     };
   });
 }
 
-// Every active worker role account in a vendor division who has finished onboarding.
+// Every active account in a vendor division who has finished onboarding,
+// worker and staff accounts alike (the panel decides which ones to show).
 async function loadOnboardedVendors(): Promise<Person[]> {
   const users: UserRow[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
@@ -187,7 +194,6 @@ async function loadOnboardedVendors(): Promise<Person[]> {
       .from("users")
       .select(USER_SELECT)
       .eq("is_active", true)
-      .eq("role", WORKER_ROLE)
       .in("division", VENDOR_DIVISIONS)
       .order("id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -339,13 +345,10 @@ export async function PUT(req: NextRequest) {
     const personById = new Map(people.map((p) => [p.user_id, p] as const));
     const skippedOtherPeriod: string[] = [];
     const skippedIneligible: string[] = [];
-    const skippedNotWorker: string[] = [];
     const toAdd: string[] = [];
     for (const id of addCandidates) {
       const person = personById.get(id);
-      if (person && !person.eligible && person.ineligible_reason === "not_worker") {
-        skippedNotWorker.push(person.name);
-      } else if (!person || !person.eligible) {
+      if (!person || !person.eligible) {
         skippedIneligible.push(person?.name || id);
       } else if (otherPeriod.has(id)) {
         skippedOtherPeriod.push(person.name);
@@ -401,7 +404,6 @@ export async function PUT(req: NextRequest) {
       removed,
       skipped_other_period: skippedOtherPeriod,
       skipped_ineligible: skippedIneligible,
-      skipped_not_worker: skippedNotWorker,
     });
   } catch (err: any) {
     console.error("[EQUIPMENT REIMBURSEMENTS][PUT]", err);

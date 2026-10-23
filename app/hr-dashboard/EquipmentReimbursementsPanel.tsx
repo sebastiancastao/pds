@@ -14,13 +14,16 @@ import {
 } from "@/lib/equipment-reimbursement";
 
 // Equipment reimbursement for the HR dashboard Payroll tab: type or pick a pay
-// date (any date, nothing preselected), then check the onboarded worker role
-// accounts who get the $20 monthly equipment reimbursement on it. Staff
-// accounts (exec, manager, supervisor...) are not listed; if one was saved
-// before, it shows flagged so HR can uncheck it. Each person can be checked for
-// only one pay date per month (the month the pay date falls in). The list can
-// be filtered and grouped by region (the profile's region). Data:
-// equipment_reimbursement_queue via /api/hr/equipment-reimbursements.
+// date (any date, nothing preselected), then check the onboarded accounts who
+// get the $20 monthly equipment reimbursement on it. Worker accounts are listed
+// by default; "Show staff accounts" adds staff accounts (exec, manager,
+// supervisor...) so HR can pay the staff who should get it. Staff checked this
+// month always show. Many staff have a company account and a personal worker
+// account, so the panel warns when the same person is checked on two accounts
+// (paid twice). Each account can be checked for only one pay date per month
+// (the month the pay date falls in). The list can be filtered and grouped by
+// region (the profile's region). Data: equipment_reimbursement_queue via
+// /api/hr/equipment-reimbursements.
 
 type Person = {
   user_id: string;
@@ -31,7 +34,8 @@ type Person = {
   region_id: string;
   region_name: string;
   eligible: boolean;
-  ineligible_reason?: "" | "not_worker" | "inactive";
+  ineligible_reason?: "" | "inactive";
+  staff?: boolean;
 };
 
 type MonthRow = {
@@ -75,8 +79,14 @@ const compareByRegionThenName = (a: Person, b: Person) =>
   compareRegions({ key: regionKeyOf(a), label: regionLabelOf(a) }, { key: regionKeyOf(b), label: regionLabelOf(b) }) ||
   a.name.localeCompare(b.name);
 
-const ineligibleText = (p: Person) =>
-  p.ineligible_reason === "not_worker" ? `Not a worker account (${roleLabel(p.role)})` : "No longer active or onboarded";
+const INELIGIBLE_TEXT = "No longer active or onboarded";
+
+// "Staff (Supervisor)" for staff accounts, "Worker" otherwise.
+const accountLabel = (p: Person) => (p.staff ? `Staff (${roleLabel(p.role)})` : "Worker");
+
+// Same person on two accounts (company staff account + personal worker account):
+// names compared without case, spaces or punctuation.
+const personKey = (p: Person) => p.name.toLowerCase().replace(/[^a-z]/g, "");
 
 function readStoredView(): ViewMode {
   try {
@@ -109,6 +119,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const [search, setSearch] = useState("");
   const [show, setShow] = useState<ShowFilter>("all");
   const [regionFilter, setRegionFilter] = useState<string>(ALL_REGIONS);
+  const [showStaff, setShowStaff] = useState(false);
   const [view, setView] = useState<ViewMode>("region");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const requestRef = useRef(0);
@@ -177,11 +188,61 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
 
   const canCheck = (p: Person) => p.eligible && !otherPayDateByUser.has(p.user_id);
 
+  // Worker accounts, plus staff accounts when shown or when checked this month.
+  const listedPeople = useMemo(
+    () =>
+      people.filter(
+        (p) => !p.staff || showStaff || checked.has(p.user_id) || saved.has(p.user_id) || otherPayDateByUser.has(p.user_id),
+      ),
+    [people, showStaff, checked, saved, otherPayDateByUser],
+  );
+  const staffCount = useMemo(() => people.filter((p) => p.staff && p.eligible).length, [people]);
+
+  // People checked this month (this pay date as it stands, or another one) on
+  // more than one account: they would be paid twice.
+  const otherCheckedAccounts = useMemo(() => {
+    const byKey = new Map<string, Person[]>();
+    for (const p of people) {
+      if (!checked.has(p.user_id) && !otherPayDateByUser.has(p.user_id)) continue;
+      const key = personKey(p);
+      if (!key) continue;
+      byKey.set(key, [...(byKey.get(key) || []), p]);
+    }
+    const others = new Map<string, Person[]>();
+    byKey.forEach((list) => {
+      if (list.length < 2) return;
+      for (const p of list) others.set(p.user_id, list.filter((o) => o.user_id !== p.user_id));
+    });
+    return others;
+  }, [people, checked, otherPayDateByUser]);
+  const doublePaidGroups = useMemo(() => {
+    const seen = new Set<string>();
+    const groups: Person[][] = [];
+    otherCheckedAccounts.forEach((others, userId) => {
+      if (seen.has(userId)) return;
+      const me = people.find((p) => p.user_id === userId);
+      if (!me) return;
+      const group = [me, ...others];
+      group.forEach((p) => seen.add(p.user_id));
+      groups.push(group);
+    });
+    return groups.sort((a, b) => a[0].name.localeCompare(b[0].name));
+  }, [otherCheckedAccounts, people]);
+  // Staff copies HR can uncheck here: checked for this pay date, while the same
+  // person keeps a checked worker account.
+  const staffCopiesToUncheck = useMemo(
+    () =>
+      doublePaidGroups.flatMap((group) =>
+        group.some((p) => !p.staff) ? group.filter((p) => p.staff && checked.has(p.user_id)) : [],
+      ),
+    [doublePaidGroups, checked],
+  );
+
   // One card per region over the whole list (search and Show don't change it),
   // with what is checked right now, saved or not.
   const regionSummaries = useMemo(() => {
     const map = new Map<string, RegionSummary>();
-    for (const p of people) {
+    for (const p of listedPeople) {
       const key = regionKeyOf(p);
       let s = map.get(key);
       if (!s) {
@@ -192,21 +253,21 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       if (checked.has(p.user_id)) s.checked += 1;
     }
     return Array.from(map.values()).sort(compareRegions);
-  }, [people, checked]);
+  }, [listedPeople, checked]);
 
   // A region picked for another pay date may have nobody in this list.
   const activeRegion = regionSummaries.some((s) => s.key === regionFilter) ? regionFilter : ALL_REGIONS;
 
   const visiblePeople = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return people.filter((p) => {
+    return listedPeople.filter((p) => {
       if (activeRegion !== ALL_REGIONS && regionKeyOf(p) !== activeRegion) return false;
       if (show === "checked" && !checked.has(p.user_id)) return false;
       if (show === "unchecked" && checked.has(p.user_id)) return false;
-      if (q && !`${p.name} ${p.email} ${p.state} ${regionLabelOf(p)}`.toLowerCase().includes(q)) return false;
+      if (q && !`${p.name} ${p.email} ${p.state} ${regionLabelOf(p)} ${accountLabel(p)}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [people, search, show, checked, activeRegion]);
+  }, [listedPeople, search, show, checked, activeRegion]);
 
   const visibleGroups = useMemo(() => {
     const map = new Map<string, { key: string; label: string; people: Person[] }>();
@@ -218,7 +279,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     return Array.from(map.values()).sort(compareRegions);
   }, [visiblePeople]);
 
-  const eligibleCount = useMemo(() => people.filter((p) => p.eligible).length, [people]);
+  const workerCount = useMemo(() => people.filter((p) => p.eligible && !p.staff).length, [people]);
   const selectableOf = (list: Person[]) => list.filter((p) => canCheck(p) || checked.has(p.user_id));
   const allCheckedOf = (list: Person[]) => {
     const selectable = selectableOf(list);
@@ -227,9 +288,8 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
   const shownSelectable = selectableOf(visiblePeople);
   const allShownChecked = allCheckedOf(visiblePeople);
 
-  // Checked people who can't be paid: staff accounts, or no longer active or onboarded.
+  // Checked people who can't be paid: no longer active or onboarded.
   const blockedChecked = useMemo(() => people.filter((p) => !p.eligible && checked.has(p.user_id)), [people, checked]);
-  const blockedNotWorker = blockedChecked.filter((p) => p.ineligible_reason === "not_worker").length;
 
   // The loaded data matches the date in the field.
   const ready = Boolean(payDate && period && period.payDate === payDate);
@@ -312,9 +372,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       const parts = [`Saved. ${json.added} checked, ${json.removed} unchecked.`];
       const other: string[] = Array.isArray(json.skipped_other_period) ? json.skipped_other_period : [];
       const ineligible: string[] = Array.isArray(json.skipped_ineligible) ? json.skipped_ineligible : [];
-      const notWorker: string[] = Array.isArray(json.skipped_not_worker) ? json.skipped_not_worker : [];
       if (other.length) parts.push(`Skipped ${other.length} already checked for another pay date this month: ${other.join(", ")}.`);
-      if (notWorker.length) parts.push(`Skipped ${notWorker.length} that are not worker accounts: ${notWorker.join(", ")}.`);
       if (ineligible.length) parts.push(`Skipped ${ineligible.length} no longer active or onboarded: ${ineligible.join(", ")}.`);
       setNotice(parts.join(" "));
       onSaved?.();
@@ -335,7 +393,16 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     if (dirty && !window.confirm("You have unsaved changes. The Excel file only has the saved list. Download it anyway?")) return;
     const thisDate = formatPayDate(period.payDate);
     const rowByUser = new Map(monthRows.map((r) => [r.user_id, r] as const));
-    const sorted = [...people].sort(compareByRegionThenName);
+    // Worker accounts, plus staff accounts that are checked this month.
+    const sorted = people.filter((p) => !p.staff || rowByUser.has(p.user_id)).sort(compareByRegionThenName);
+    // Same person saved on another account this month (paid twice).
+    const savedByKey = new Map<string, Person[]>();
+    for (const p of sorted) {
+      if (!rowByUser.has(p.user_id) || !personKey(p)) continue;
+      savedByKey.set(personKey(p), [...(savedByKey.get(personKey(p)) || []), p]);
+    }
+    const alsoSavedAs = (p: Person) =>
+      (savedByKey.get(personKey(p)) || []).filter((o) => o.user_id !== p.user_id).map((o) => o.email).join(", ");
 
     const paidHere = sorted
       .filter((p) => rowByUser.get(p.user_id)?.pay_date === period.payDate)
@@ -343,18 +410,22 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     const payDateRows: Array<Record<string, string | number>> = paidHere.map(({ person, row }) => ({
       Name: person.name,
       Email: person.email,
+      Account: accountLabel(person),
       Region: regionLabelOf(person),
       State: person.state,
       "Pay Date": thisDate,
       Amount: roundCents(row.amount),
+      Warning: alsoSavedAs(person) ? `Also checked as ${alsoSavedAs(person)}` : "",
     }));
     payDateRows.push({
       Name: "Total",
-      Email: `${paidHere.length} ${paidHere.length === 1 ? "person" : "people"}`,
+      Email: `${paidHere.length} ${paidHere.length === 1 ? "account" : "accounts"}`,
+      Account: "",
       Region: "",
       State: "",
       "Pay Date": "",
       Amount: roundCents(paidHere.reduce((s, { row }) => s + row.amount, 0)),
+      Warning: "",
     });
 
     const monthLabel = formatPayMonth(period.month);
@@ -369,21 +440,25 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       return {
         Name: p.name,
         Email: p.email,
+        Account: accountLabel(p),
         Region: regionLabelOf(p),
         State: p.state,
-        Status: row ? (p.eligible ? "Checked" : `Checked, ${ineligibleText(p).toLowerCase()}`) : p.eligible ? "Not checked" : ineligibleText(p),
+        Status: row ? (p.eligible ? "Checked" : `Checked, ${INELIGIBLE_TEXT.toLowerCase()}`) : p.eligible ? "Not checked" : INELIGIBLE_TEXT,
         "Pay Date": row ? formatPayDate(row.pay_date) : "",
         Amount: row ? roundCents(row.amount) : "",
+        Warning: row && alsoSavedAs(p) ? `Also checked as ${alsoSavedAs(p)}` : "",
       };
     });
     vendorRows.push({
       Name: "Total",
       Email: `${monthCount} checked in ${monthLabel}`,
+      Account: "",
       Region: "",
       State: "",
       Status: "",
       "Pay Date": "",
       Amount: roundCents(monthTotal),
+      Warning: "",
     });
 
     const regionTotals = new Map<string, { key: string; label: string; workers: number; paidHere: number; paidHereAmount: number; month: number; monthAmount: number }>();
@@ -391,7 +466,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       const key = regionKeyOf(p);
       if (!regionTotals.has(key)) regionTotals.set(key, { key, label: regionLabelOf(p), workers: 0, paidHere: 0, paidHereAmount: 0, month: 0, monthAmount: 0 });
       const t = regionTotals.get(key)!;
-      if (p.eligible) t.workers += 1;
+      if (p.eligible && !p.staff) t.workers += 1;
       const row = rowByUser.get(p.user_id);
       if (row) {
         t.month += 1;
@@ -424,10 +499,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
       [monthAmountHeader]: roundCents(regionList.reduce((s, t) => s + t.monthAmount, 0)),
     });
 
-    const widths = { Name: 26, Email: 32, Region: 18, State: 8, Status: 34, "Pay Date": 14, Amount: 12 };
+    const widths = { Name: 26, Email: 32, Account: 20, Region: 18, State: 8, Status: 34, "Pay Date": 14, Amount: 12, Warning: 44 };
     downloadExcelSheets(`equipment_reimbursement_paid_${period.payDate}.xlsx`, [
-      { name: `Paid ${formatPayDate(period.payDate)}`.replace(/,/g, ""), headers: ["Name", "Email", "Region", "State", "Pay Date", "Amount"], rows: payDateRows, widths },
-      { name: `All Vendors ${monthLabel}`, headers: ["Name", "Email", "Region", "State", "Status", "Pay Date", "Amount"], rows: vendorRows, widths },
+      { name: `Paid ${formatPayDate(period.payDate)}`.replace(/,/g, ""), headers: ["Name", "Email", "Account", "Region", "State", "Pay Date", "Amount", "Warning"], rows: payDateRows, widths },
+      { name: `All Vendors ${monthLabel}`, headers: ["Name", "Email", "Account", "Region", "State", "Status", "Pay Date", "Amount", "Warning"], rows: vendorRows, widths },
       {
         name: "By Region",
         headers: ["Region", "Worker Accounts", paidHereHeader, paidHereAmountHeader, monthHeader, monthAmountHeader],
@@ -449,8 +524,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
     let note: { text: string; className: string } | null = null;
     if (other) note = { text: `Checked for ${formatPayDate(other.pay_date, { year: false })}`, className: "text-gray-500" };
     else if (!isChecked && saved.has(p.user_id)) note = { text: "Will be unchecked", className: "text-red-600" };
-    else if (!p.eligible) note = { text: ineligibleText(p), className: "text-red-600" };
+    else if (!p.eligible) note = { text: INELIGIBLE_TEXT, className: "text-red-600" };
     else if (isChecked && !saved.has(p.user_id)) note = { text: "Not saved yet", className: "text-green-700" };
+    const twins = otherCheckedAccounts.get(p.user_id);
+    const twinText = twins?.length && (isChecked || other) ? `Paid twice: also checked as ${twins.map((t) => t.email).join(", ")}` : "";
     return (
       <tr
         key={p.user_id}
@@ -468,7 +545,14 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
           />
         </td>
         <td className="px-3 py-2 text-sm text-gray-900">
-          <div className="font-medium">{p.name}</div>
+          <div className="font-medium">
+            {p.name}
+            {p.staff && (
+              <span className="ml-2 rounded bg-purple-50 px-1.5 py-0.5 text-xs font-normal text-purple-700" title="Staff account, not a worker account">
+                Staff · {roleLabel(p.role)}
+              </span>
+            )}
+          </div>
           {p.email && <div className="text-xs text-gray-400">{p.email}</div>}
         </td>
         {!grouped && <td className="px-3 py-2 text-sm text-gray-700">{regionLabelOf(p)}</td>}
@@ -476,7 +560,10 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         <td className="px-3 py-2 text-sm text-right tabular-nums text-gray-900">
           {isChecked ? money(EQUIPMENT_REIMBURSEMENT_AMOUNT) : <span className="text-gray-300">—</span>}
         </td>
-        <td className={`px-3 py-2 text-xs ${note?.className || ""}`}>{note?.text || ""}</td>
+        <td className="px-3 py-2 text-xs">
+          {note && <div className={note.className}>{note.text}</div>}
+          {twinText && <div className="font-medium text-amber-700">{twinText}</div>}
+        </td>
       </tr>
     );
   };
@@ -494,7 +581,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         <div>
           <h2 className="text-xl font-semibold">Equipment Reimbursement</h2>
           <p className="text-sm text-gray-500">
-            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked worker account, paid on the pay date you choose.
+            {money(EQUIPMENT_REIMBURSEMENT_AMOUNT)} a month for each checked account, paid on the pay date you choose. Worker accounts are listed; staff accounts can be added.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -543,7 +630,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
             ))}
           </div>
         ) : (
-          <div className="pb-2 text-sm text-gray-500">Any date. Each worker can be paid once per month.</div>
+          <div className="pb-2 text-sm text-gray-500">Any date. Each account can be paid once per month.</div>
         )}
       </div>
 
@@ -556,17 +643,51 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
         </div>
       ) : (
         <>
-          {/* Checked people who can't be paid (saved before the worker-only rule, or no longer onboarded) */}
+          {/* Same person checked on two accounts this month (company staff account + personal worker account) */}
+          {ready && doublePaidGroups.length > 0 && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span>
+                  <span className="font-semibold">
+                    {doublePaidGroups.length} {doublePaidGroups.length === 1 ? "person is" : "people are"} checked on two accounts in {period ? formatPayMonth(period.month) : "this month"}
+                  </span>{" "}
+                  and would be paid twice. Keep one account per person, then Save.
+                </span>
+                {staffCopiesToUncheck.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setListChecked(staffCopiesToUncheck, false)}
+                    disabled={busy}
+                    className="apple-button apple-button-secondary"
+                    title="Uncheck the staff account of each person who also has a checked worker account."
+                  >
+                    Keep worker accounts only ({staffCopiesToUncheck.length})
+                  </button>
+                )}
+              </div>
+              <ul className="mt-2 grid gap-x-6 gap-y-0.5 text-xs sm:grid-cols-2">
+                {doublePaidGroups.map((group) => (
+                  <li key={group.map((p) => p.user_id).join("-")}>
+                    <span className="font-medium">{group[0].name}</span>:{" "}
+                    {group
+                      .map((p) => {
+                        const other = otherPayDateByUser.get(p.user_id);
+                        const where = other ? `on ${formatPayDate(other.pay_date, { year: false })}` : "on this pay date";
+                        return `${p.email} (${p.staff ? roleLabel(p.role) : "worker"}, ${where})`;
+                      })
+                      .join(" + ")}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Checked people who can't be paid (no longer active or onboarded) */}
           {ready && blockedChecked.length > 0 && (
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               <span>
-                {blockedChecked.length} checked {blockedChecked.length === 1 ? "account" : "accounts"} can't get the equipment reimbursement
-                {blockedNotWorker > 0 && blockedNotWorker === blockedChecked.length
-                  ? " because they are not worker accounts"
-                  : blockedNotWorker > 0
-                    ? ` (${blockedNotWorker} not worker accounts, ${blockedChecked.length - blockedNotWorker} no longer active or onboarded)`
-                    : " because they are no longer active or onboarded"}
-                . Uncheck them, then Save.
+                {blockedChecked.length} checked {blockedChecked.length === 1 ? "account is" : "accounts are"} no longer active or onboarded and
+                can't get the equipment reimbursement. Uncheck them, then Save.
               </span>
               <button
                 type="button"
@@ -660,6 +781,13 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
                   <option value="list">One list</option>
                 </select>
               </div>
+              <label
+                className="flex cursor-pointer items-center gap-2 pb-2 text-sm text-gray-700"
+                title="Add exec, manager and supervisor accounts to the list so they can be checked. Staff already checked this month always show."
+              >
+                <input type="checkbox" checked={showStaff} onChange={(e) => setShowStaff(e.target.checked)} />
+                Show staff accounts ({staffCount})
+              </label>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm text-gray-700 tabular-nums">
@@ -754,7 +882,7 @@ export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: ()
             )}
           </div>
           <div className="mt-2 text-xs text-gray-500">
-            {eligibleCount} onboarded worker accounts · showing {visiblePeople.length}
+            {workerCount} onboarded worker accounts{showStaff ? ` + ${staffCount} staff accounts` : ""} · showing {visiblePeople.length}
             {grouped && visibleGroups.length > 0 ? ` in ${visibleGroups.length} ${visibleGroups.length === 1 ? "region" : "regions"}` : ""}
           </div>
         </>
