@@ -119,7 +119,7 @@ async function authHeaders(): Promise<Record<string, string>> {
   return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
 }
 
-// onSaved lets the Payroll tab refresh the equipment rows it shows for the loaded dates.
+// onSaved is an optional callback run after a save (the Payroll tab no longer uses it).
 export default function EquipmentReimbursementsPanel({ onSaved }: { onSaved?: () => void } = {}) {
   // dateInput is what the date field shows; payDate is the date the list is loaded for.
   const [dateInput, setDateInput] = useState("");
