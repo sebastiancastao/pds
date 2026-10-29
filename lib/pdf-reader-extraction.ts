@@ -8,6 +8,7 @@
 
 import Tesseract from 'tesseract.js';
 import { parseOtherVoluntaryDeductions } from './voluntary-deductions';
+import { fixZeroGrossDeductionLines } from './pdf-reader-zero-gross-deductions';
 
 export type OcrProgress = { page: number; progress: number; total: number };
 
@@ -1392,6 +1393,9 @@ export function extractPayrollData(text: string) {
       };
     }
   }
+
+  // Gross Pay $0.00 (an equipment reimbursement paystub): deduction lines show YTD only.
+  fixZeroGrossDeductionLines(payrollData, lines);
 
   guessMissingDeductions(payrollData, lines);
 

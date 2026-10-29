@@ -209,6 +209,12 @@ export async function POST(
                   <span class="pay-value positive">$${member.tips}</span>
                 </div>
                 ` : ''}
+                ${Number(member.mealPremium) > 0 ? `
+                <div class="pay-item">
+                  <span class="pay-label">Meal Premium</span>
+                  <span class="pay-value positive">$${member.mealPremium}</span>
+                </div>
+                ` : ''}
                 ${Number(member.adjustment) !== 0 ? `
                 <div class="pay-item">
                   <span class="pay-label">Other (Adjustments/Reimbursements)</span>

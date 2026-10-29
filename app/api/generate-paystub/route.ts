@@ -18,6 +18,8 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-d
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
 import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyForVendor, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
+import { getMealPremiumPay, isMealPremiumOn, type MealPremiumsByEvent } from "@/lib/meal-premium";
+import { fetchMealPremiums } from "@/lib/meal-premium-server";
 import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
 import { normalizeEventType } from "@/lib/event-types";
 import {
@@ -197,8 +199,33 @@ export async function POST(req: NextRequest) {
       // { uploadId, periodStart, periodEnd, lines } with this employee's lines. When
       // present, the earnings come from these lines instead of the system calculation.
       uploadedPayroll = null,
+      // "normal" (the default) or "equipment". A normal paystub never pays an equipment
+      // reimbursement: its Equipment Reimbursement line is 0.00 this period, whatever the
+      // database or the system holds. The equipment paystub pays only that (see
+      // isEquipmentPaystub below).
+      paystubType = "normal",
+      // Equipment paystub only: the equipment reimbursement paid this pay date (ADP's "Misc
+      // reimburse Equipment" from the /pdf-reader export, or HR's Equipment Reimbursement list).
+      equipmentReimbursement = 0,
       debug = false
     } = body;
+
+    // Equipment reimbursement paystub: the same statement as a normal paystub (same YTD
+    // figures), but the This Period column shows only the equipment reimbursement, net pay is
+    // that amount, and there is no Other Benefits (sick leave) table, no Important Notes and
+    // no commission report.
+    const isEquipmentPaystub = String(paystubType || "").trim().toLowerCase() === "equipment";
+    const equipmentReimbursementThisPeriod = (() => {
+      if (!isEquipmentPaystub) return 0;
+      const parsed = Number(String(equipmentReimbursement ?? "").replace(/[$,\s]/g, ""));
+      return Number.isFinite(parsed) ? Math.round(Math.abs(parsed) * 100) / 100 : 0;
+    })();
+    if (isEquipmentPaystub && !(equipmentReimbursementThisPeriod > 0)) {
+      return NextResponse.json(
+        { error: "An equipment reimbursement paystub needs an equipment reimbursement above $0.00 for this pay date." },
+        { status: 400 }
+      );
+    }
 
     let uploadedPaystub: { uploadId: string; lines: PaystubUploadLine[]; totals: PaystubUploadTotals } | null = null;
     let uploadedPayrollLinesForYtd: UploadedPayrollLineInput[] = [];
@@ -425,6 +452,17 @@ export async function POST(req: NextRequest) {
     };
     // Loaded from event_rest_breaks just before the PDF is built (eventId -> userId -> count).
     let restBreakCountsByEvent: RestBreakCountsByEvent = {};
+    // Meal Premium toggles an exec switched on, on the event Timesheet tab (event_meal_premiums),
+    // loaded with the rest break counts. Each pays one hour at the Rate in Effect, never below
+    // $28.50 (lib/meal-premium); it goes to the Meal Premium row with the system's other meal
+    // premiums, so uploaded payroll or ADP lines replace it like they replace those.
+    let mealPremiumsByEvent: MealPremiumsByEvent = {};
+    const getToggleMealPremium = (event: any, worker: any, actualHours: number, rateInEffect: number): number =>
+      getMealPremiumPay({
+        on: isMealPremiumOn(mealPremiumsByEvent, event?.id, worker?.user_id),
+        hours: actualHours,
+        rateInEffect,
+      });
     const getRecordedRestBreaks = (event: any, worker: any): number | null => {
       const eventId = (event?.id || "").toString();
       const userId = (worker?.user_id || "").toString();
@@ -1306,6 +1344,10 @@ export async function POST(req: NextRequest) {
       supabaseAdmin,
       (events || []).map((e: any) => e?.id)
     );
+    mealPremiumsByEvent = await fetchMealPremiums(
+      supabaseAdmin,
+      (events || []).map((e: any) => e?.id)
+    );
 
     // Create a new PDF document
     const pdfDoc = await PDFDocument.create();
@@ -1409,7 +1451,8 @@ export async function POST(req: NextRequest) {
         countInTotal?: number;
       }
     ) => {
-      if (rows.length === 0) return;
+      // An equipment reimbursement paystub never has a commission report.
+      if (isEquipmentPaystub || rows.length === 0) return;
       const { rawPayPeriodRateInEffect, payPeriodRateInEffect } = (() => {
         const totals = rows.reduce(
           (acc, row) => ({
@@ -2108,6 +2151,18 @@ export async function POST(req: NextRequest) {
         const other = parsedAdj.bonusAmount;
         const adjustmentMealPremium = parsedAdj.mealPremiumAmount;
         const adjustmentReimbursement = parsedAdj.reimbursementAmount;
+        // Meal Premium toggle: hourly work at its hourly rate, CA/NV/WI commission work at the
+        // pay period's rate in effect, other commission work at the shift's loaded rate.
+        const toggleMealPremium = getToggleMealPremium(
+          event,
+          worker,
+          actualHours,
+          paysHourly
+            ? eventBaseRate
+            : usesPeriodRate
+              ? Number(periodWorker?.rateInEffect || 0)
+              : loadedRateBase
+        );
 
         const regPay = paysHourly ? sdRegPay : Number(paymentData?.regular_pay || 0);
         const otPay = paysHourly ? sdOtPay : Number(paymentData?.overtime_pay || 0);
@@ -2191,7 +2246,7 @@ export async function POST(req: NextRequest) {
         totalFinalCommission += paysHourly ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
-        totalAdjustmentMealPremium += adjustmentMealPremium;
+        totalAdjustmentMealPremium += adjustmentMealPremium + toggleMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;
         totalGross += computedTotalGrossPay;
         totalRegularPayAmount += paysHourly ? sdRegPay : regPay;
@@ -2558,7 +2613,11 @@ export async function POST(req: NextRequest) {
       // it, so this period it only comes from the ADP file's complete lines; otherwise it
       // only shows up in YTD (the /pdf-reader export or the ADP carryover).
       const holidayPayThisPeriod = adpLines ? adpLines.holiday : 0;
+      // Reimbursements entered on the event dashboard Payment tab. They used to print on the
+      // Equipment Reimbursement line; they are not equipment, so they now print on the Misc
+      // Reimbursement line with the page's / uploaded misc reimbursement (net pay unchanged).
       const adjustmentReimbursementRounded = round2(totalAdjustmentReimbursement);
+      const miscReimbursementThisPeriod = round2(reimbursement + adjustmentReimbursementRounded);
       const grossPayThisPeriod = round2(
         // Regular pay is wages on San Diego hourly events and on uploaded payroll lines
         // (hourly and salaried); for system commission work the commission covers it.
@@ -2583,7 +2642,11 @@ export async function POST(req: NextRequest) {
         mealPremiumThisPeriod
       );
       const appliedStatutoryDeductions = round2(Math.min(rawTotalDeductions, grossPayThisPeriod));
-      const netPay = round2(grossPayThisPeriod - appliedStatutoryDeductions + reimbursement + adjustmentReimbursementRounded + totalMileageReimbursementRounded);
+      // An equipment paystub pays the equipment reimbursement only: no earnings, deductions,
+      // misc or mileage this period (the normal paystub for the pay date carries those).
+      const netPay = isEquipmentPaystub
+        ? equipmentReimbursementThisPeriod
+        : round2(grossPayThisPeriod - appliedStatutoryDeductions + miscReimbursementThisPeriod + totalMileageReimbursementRounded);
       const effectiveRate = commissionRateInEffectForEarnings;
       // The Commission earnings line without the Count In / Operation pay. Its rate stays the
       // Rate in Effect, which counts the Count In / Operation pay: (Commission + Count In /
@@ -2883,9 +2946,11 @@ export async function POST(req: NextRequest) {
         : 0;
       const ytdVoluntaryDeduction = round2(runningYtd(priorYtd(calSaversRothRetYtd, ytdSnapshot?.misc_non_taxable_ytd, 'calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
-      const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd', adjustmentReimbursementRounded), adjustmentReimbursementRounded));
+      // Equipment this period: 0 on a normal paystub, the reimbursement on an equipment one.
+      // YTD is the prior equipment YTD (ADP export or carryover) plus that.
+      const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd', equipmentReimbursementThisPeriod), equipmentReimbursementThisPeriod));
       const ytdMileageReimb = round2(runningYtd(carryoverPriorYtd(effectiveMileageReimbYtd, 'mileage_reimb_ytd', totalMileageReimbursementRounded), totalMileageReimbursementRounded));
-      const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), reimbursement));
+      const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), miscReimbursementThisPeriod));
       const {
         accruedThisPeriod: sickAccruedThisPeriod,
         takenThisPeriod: sickTakenThisPeriod,
@@ -3041,6 +3106,12 @@ export async function POST(req: NextRequest) {
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
+        // Equipment paystub: no rate, hours or This Period on earnings lines, only the YTD.
+        // /pdf-reader reads a line's lone number as its YTD, with 0 this period.
+        if (isEquipmentPaystub) {
+          if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
+          continue;
+        }
         if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
         if (row.hours > 0) drawTopText(Number(row.hours).toFixed((row as any).hoursAsCount ? 0 : 2), earningsHoursValueX, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
@@ -3060,9 +3131,12 @@ export async function POST(req: NextRequest) {
       const deductionRowStartY = statutoryDividerY + 13.1;
       const deductionRowGap = 7.4;
 
+      // An equipment reimbursement is not wages, so an equipment paystub's gross pay this
+      // period is $0.00 (printed, so /pdf-reader does not read the YTD gross as this period).
+      const statementGrossThisPeriod = isEquipmentPaystub ? 0 : grossPayThisPeriod;
       drawTopLine(40, earningsBottomLineY, 332);
       drawTopText("Gross Pay", 95, grossPayY, { size: 8, bold: true });
-      drawTopText(money(grossPayThisPeriod), earningsThisPeriodValueX, grossPayY, { size: 8, bold: true });
+      drawTopText(money(statementGrossThisPeriod), earningsThisPeriodValueX, grossPayY, { size: 8, bold: true });
       drawTopText(money(ytdGross), earningsYtdValueX, grossPayY, { size: 8, bold: true });
 
       drawTopText("Statutory Deductions", 112, statutoryHeaderY, { size: 8, bold: true });
@@ -3117,7 +3191,8 @@ export async function POST(req: NextRequest) {
       positionedStatutoryDeductionRows.forEach((row, index) => {
         const appliedThisPeriod = appliedDeductionValues[index] || 0;
         drawTopText(row.label, 112, row.y, { size: 8 });
-        drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
+        // Nothing is withheld from an equipment reimbursement: YTD only.
+        if (!isEquipmentPaystub) drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
         drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
       });
 
@@ -3130,7 +3205,7 @@ export async function POST(req: NextRequest) {
       positionedVoluntaryDeductionRows.forEach((row, index) => {
         const appliedThisPeriod = appliedDeductionValues[positionedStatutoryDeductionRows.length + index] || 0;
         drawTopText(row.label, 112, row.y, { size: 8 });
-        drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
+        if (!isEquipmentPaystub) drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
         drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
       });
 
@@ -3149,48 +3224,57 @@ export async function POST(req: NextRequest) {
       drawTopText("This Period", 233, netAdjustmentsHeaderY, { size: 8 });
       drawTopText("Year to Date", 289, netAdjustmentsHeaderY, { size: 8 });
       drawTopLine(109, netAdjustmentsDividerY, 332);
+      // Equipment Reimbursement this period: always 0.00 on a normal paystub; on an equipment
+      // paystub it is the only This Period amount, and Misc / Mileage show their YTD only.
       drawTopText("Equipment Reimbursement", 112, equipmentReimbursementRowY, { size: 8 });
-      drawTopText(fmt(adjustmentReimbursementRounded), 249, equipmentReimbursementRowY, { size: 8 });
+      drawTopText(fmt(equipmentReimbursementThisPeriod), 249, equipmentReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdEquipmentReimb), 299, equipmentReimbursementRowY, { size: 8 });
       drawTopText("Misc Reimbursement", 112, miscReimbursementRowY, { size: 8 });
-      drawTopText(fmt(reimbursement), 249, miscReimbursementRowY, { size: 8 });
+      if (!isEquipmentPaystub) drawTopText(fmt(miscReimbursementThisPeriod), 249, miscReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdMiscReimbursement), 299, miscReimbursementRowY, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, mileageReimbursementRowY, { size: 8 });
-      drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageReimbursementRowY, { size: 8 });
+      if (!isEquipmentPaystub) drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdMileageReimb), 299, mileageReimbursementRowY, { size: 8 });
       drawTopLine(109, netPayDividerY, 332);
       drawTopText("Net Pay", 112, netPayY, { size: 8, bold: true });
       drawTopText(money(netPay), 240, netPayY, { size: 8, bold: true });
 
-      drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
-      drawTopText("Information", 353, 187, { size: 8, bold: true });
-      drawTopText("This Period", 474, 187, { size: 8 });
-      drawTopText("Year to Date", 530, 187, { size: 8 });
-      drawTopLine(353, 192, 560);
-      drawTopText("Sick", 353, 207.7, { size: 8 });
-      drawTopText("Carry Over", 362.6, 214.9, { size: 8 });
-      drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
-      drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
-      drawTopText("- Balance", 358.2, 237.0, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(0), 492.9, 214.9, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+      // The Other Benefits and Information table (sick leave) is left off an equipment
+      // paystub; its Deposits block moves up into that space.
+      if (!isEquipmentPaystub) {
+        drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
+        drawTopText("Information", 353, 187, { size: 8, bold: true });
+        drawTopText("This Period", 474, 187, { size: 8 });
+        drawTopText("Year to Date", 530, 187, { size: 8 });
+        drawTopLine(353, 192, 560);
+        drawTopText("Sick", 353, 207.7, { size: 8 });
+        drawTopText("Carry Over", 362.6, 214.9, { size: 8 });
+        drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
+        drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
+        drawTopText("- Balance", 358.2, 237.0, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(0), 492.9, 214.9, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+      }
 
-      drawTopText("Deposits", 353.1, 251.4, { size: 8, bold: true });
-      drawTopText("account number", 353, 259.1, { size: 8 });
-      drawTopText("transit/ABA", 471.8, 259.3, { size: 8 });
-      drawTopText("amount", 542.8, 258.6, { size: 8 });
-      drawTopText(accountMask, 353, 269.9, { size: 8 });
-      drawTopText(routingMask, 469.2, 266.3, { size: 8 });
-      drawTopText(fmt(netPay), 544.2, 268.4, { size: 8 });
+      const depositsShiftUp = isEquipmentPaystub ? 251.4 - 182 : 0;
+      drawTopText("Deposits", 353.1, 251.4 - depositsShiftUp, { size: 8, bold: true });
+      drawTopText("account number", 353, 259.1 - depositsShiftUp, { size: 8 });
+      drawTopText("transit/ABA", 471.8, 259.3 - depositsShiftUp, { size: 8 });
+      drawTopText("amount", 542.8, 258.6 - depositsShiftUp, { size: 8 });
+      drawTopText(accountMask, 353, 269.9 - depositsShiftUp, { size: 8 });
+      drawTopText(routingMask, 469.2, 266.3 - depositsShiftUp, { size: 8 });
+      drawTopText(fmt(netPay), 544.2, 268.4 - depositsShiftUp, { size: 8 });
 
-      const hasCommissionReport = caCommissionRows.length > 0;
+      // No commission report and no Important Notes (hours, commission rate) on an
+      // equipment paystub: it pays no work.
+      const hasCommissionReport = !isEquipmentPaystub && caCommissionRows.length > 0;
       const showCommissionRateNote = hasCommissionReport && !showHourlyEarningsRows;
-      const showImportantNotes = totalHoursWorked > 0 && (showHourlyEarningsRows || showCommissionRateNote);
+      const showImportantNotes = !isEquipmentPaystub && totalHoursWorked > 0 && (showHourlyEarningsRows || showCommissionRateNote);
 
       // Important Notes
       if (showImportantNotes) {
@@ -3210,7 +3294,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      drawTopText(`Your federal taxable wages this period are ${money(grossPayThisPeriod)}`, 349.4, 518.0, { size: 8 });
+      drawTopText(`Your federal taxable wages this period are ${money(statementGrossThisPeriod)}`, 349.4, 518.0, { size: 8 });
 
       drawTopText("Print & Design Solutions Inc", 111.9, 562.7, { size: 8 });
       drawTopText("31111 Agoura Road", 112.0, 570.1, { size: 8 });
@@ -3255,8 +3339,9 @@ export async function POST(req: NextRequest) {
         status: 200,
         headers: {
           'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`,
+          'Content-Disposition': `attachment; filename="${isEquipmentPaystub ? 'equipment-reimbursement-paystub' : 'paystub'}-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`,
           'X-Paystub-Payroll-Source': uploadedPaystub ? 'upload' : 'system',
+          'X-Paystub-Type': isEquipmentPaystub ? 'equipment' : 'normal',
         }
       });
     }
@@ -3391,8 +3476,9 @@ export async function POST(req: NextRequest) {
     const nonCaCommissionRows: CommissionReportRow[] = [];
 
     // Draw event rows (system payroll). With uploaded payroll in use, the uploaded
-    // lines are drawn instead, right after this loop.
-    (uploadedPaystub ? [] : (events as any[])).forEach((event: any, index: number) => {
+    // lines are drawn instead, right after this loop. An equipment reimbursement paystub
+    // draws neither: it pays no work (this layout has no YTD to carry).
+    (uploadedPaystub || isEquipmentPaystub ? [] : (events as any[])).forEach((event: any, index: number) => {
       const worker = matchedUserId
         ? (event.workers || []).find((w: any) => w?.user_id === matchedUserId) || event.workers?.[0]
         : event.workers?.[0]; // fallback
@@ -3595,8 +3681,21 @@ export async function POST(req: NextRequest) {
         const reportFinalPay = roundPayrollAmount(
           displayCommissionPay + displayVariableIncentive + tips + restBreak
         );
+        // Meal Premium toggle (see getToggleMealPremium): San Diego hourly work at its hourly
+        // rate, NV commission work at the pay period's rate in effect, NY at the loaded rate.
+        // A saved total_pay already holds it when the Payment tab was saved after the toggle.
+        const toggleMealPremium2 = getToggleMealPremium(
+          event,
+          worker,
+          actualHours,
+          paysSanDiegoHourlyNonCa
+            ? baseRate
+            : usesPeriodRate
+              ? Number(periodWorker?.rateInEffect || 0)
+              : loadedRate
+        );
         const computedTotalPay = reportFinalPay;
-        const computedTotalGrossPay = computedTotalPay + other + adjustmentMealPremium2;
+        const computedTotalGrossPay = computedTotalPay + other + adjustmentMealPremium2 + toggleMealPremium2;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
         const reportRateInEffect = getReportRateInEffect({
           commissionPay: displayCommissionPay,
@@ -3727,7 +3826,7 @@ export async function POST(req: NextRequest) {
     let uploadedMileageNonCA = 0;
     // Uploaded reimbursements are shown as Misc Reimbursement, not Equipment (see below).
     let uploadedReimbursementNonCA = 0;
-    if (uploadedPaystub) {
+    if (uploadedPaystub && !isEquipmentPaystub) {
       for (const line of uploadedPaystub.lines) {
         uploadedReimbursementNonCA += line.reimbursement;
         uploadedMileageNonCA += line.mileage;
@@ -3809,7 +3908,9 @@ export async function POST(req: NextRequest) {
     drawLine(50, yPosition + 10, 560, yPosition + 10);
     yPosition -= 5;
     drawText("This Period", 50, yPosition, { size: 8, bold: true });
-    if (useVendorLayout) {
+    if (isEquipmentPaystub) {
+      // Equipment paystub: no earnings this period, so the totals row stays blank.
+    } else if (useVendorLayout) {
       const colX = includeRestBreakColumn ? vendorColXWithRestBreak : vendorColXNoRestBreak;
       drawText(totalHoursWorked.toFixed(2), colX.hoursWorked, yPosition, { size: 8, bold: true });
       drawText(`$${roundPayrollAmount(totalCommission - totalCountIn).toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
@@ -3833,8 +3934,8 @@ export async function POST(req: NextRequest) {
     yPosition -= 15;
     drawLine(50, yPosition + 10, 560, yPosition + 10);
 
-    const mealPremiumAmt = round2(Math.abs(Number(mealPremium) || 0));
-    const currentGrossPay = round2(totalGross + mealPremiumAmt);
+    const mealPremiumAmt = isEquipmentPaystub ? 0 : round2(Math.abs(Number(mealPremium) || 0));
+    const currentGrossPay = isEquipmentPaystub ? 0 : round2(totalGross + mealPremiumAmt);
 
     // Gross Pay
     yPosition -= 20;
@@ -3870,10 +3971,11 @@ export async function POST(req: NextRequest) {
     let appliedTotalDeductions = 0;
 
     deductions.forEach((deduction, index) => {
-      const appliedValue = appliedDeductionValues[index] || 0;
+      // Nothing is withheld from an equipment reimbursement (gross pay is $0.00).
+      const appliedValue = isEquipmentPaystub ? 0 : appliedDeductionValues[index] || 0;
       appliedTotalDeductions += appliedValue;
       drawText(deduction.label, 50, yPosition, { size: 9 });
-      drawText(`-${appliedValue.toFixed(2)}`, 250, yPosition, { size: 9 });
+      if (!isEquipmentPaystub) drawText(`-${appliedValue.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     });
 
@@ -3891,7 +3993,9 @@ export async function POST(req: NextRequest) {
       : 0;
 
     const sickLeaveDisplayY = yPosition +60;
-    if (sickLeave) {
+    // No sick leave on an equipment reimbursement paystub.
+    const showSickLeaveSummary = !!sickLeave && !isEquipmentPaystub;
+    if (showSickLeaveSummary && sickLeave) {
       drawText("Sick Leave Summary", 360, sickLeaveDisplayY + 12, { bold: true, size: 9 });
       drawText(`Hours Used: ${formatSickLeaveHHMM(sickLeave.total_hours)}`, 360, sickLeaveDisplayY, { size: 8 });
       drawText(`Carry Over: ${formatSickLeaveHHMM(Number(sickLeave.carry_over_hours || 0))}`, 360, sickLeaveDisplayY - 12, { size: 8 });
@@ -3905,18 +4009,22 @@ export async function POST(req: NextRequest) {
     const pageMiscReimbursementNonCA = parseFloat(miscReimbursement || '0') || 0;
     const reimbursement =
       pageMiscReimbursementNonCA !== 0 ? pageMiscReimbursementNonCA : round2(uploadedReimbursementNonCA);
-    const totalReimbursementNonCA = round2(reimbursement + totalAdjustmentReimbursementNonCA);
-    if (totalAdjustmentReimbursementNonCA > 0) {
+    // Event dashboard Payment tab reimbursements are not equipment: they print on the Misc
+    // Reimbursement line (they used to print as Equipment Reimbursement). A normal paystub
+    // never pays equipment; an equipment paystub pays only that, with no misc or mileage.
+    const miscReimbursementNonCA = isEquipmentPaystub ? 0 : round2(reimbursement + totalAdjustmentReimbursementNonCA);
+    const totalReimbursementNonCA = isEquipmentPaystub ? equipmentReimbursementThisPeriod : miscReimbursementNonCA;
+    if (isEquipmentPaystub) {
       drawText("Equipment Reimbursement", 50, yPosition, { size: 9 });
-      drawText(`+${round2(totalAdjustmentReimbursementNonCA).toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`+${equipmentReimbursementThisPeriod.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
-    if (reimbursement > 0) {
+    if (miscReimbursementNonCA > 0) {
       drawText("Misc Reimbursement", 50, yPosition, { size: 9 });
-      drawText(`+${round2(reimbursement).toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`+${miscReimbursementNonCA.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
-    if (uploadedMileageNonCA > 0) {
+    if (uploadedMileageNonCA > 0 && !isEquipmentPaystub) {
       drawText("Mileage Reimbursement", 50, yPosition, { size: 9 });
       drawText(`+${round2(uploadedMileageNonCA).toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
@@ -3926,11 +4034,13 @@ export async function POST(req: NextRequest) {
     yPosition -= 10;
     drawLine(50, yPosition + 10, 350, yPosition + 10);
     yPosition -= 5;
-    const netPay = currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA + round2(uploadedMileageNonCA);
+    const netPay = isEquipmentPaystub
+      ? equipmentReimbursementThisPeriod
+      : currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA + round2(uploadedMileageNonCA);
     drawText("Net Pay", 50, yPosition, { bold: true, size: 12 });
     drawText(`$${netPay.toFixed(2)}`, 250, yPosition, { bold: true, size: 12 });
 
-    if (sickLeave) {
+    if (showSickLeaveSummary && sickLeave) {
       yPosition -= 20;
       drawText("Sick Leave Summary", 50, yPosition, { bold: true, size: 10 });
       yPosition -= 12;
@@ -3942,7 +4052,7 @@ export async function POST(req: NextRequest) {
       yPosition -= 12;
     }
 
-    const hasCommissionReport = nonCaCommissionRows.length > 0;
+    const hasCommissionReport = !isEquipmentPaystub && nonCaCommissionRows.length > 0;
 
     // Important Notes (commission rate explanation)
     if (hasCommissionReport) {
@@ -3995,8 +4105,9 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${payDate}.pdf"`,
+        'Content-Disposition': `attachment; filename="${isEquipmentPaystub ? 'equipment-reimbursement-paystub' : 'paystub'}-${employeeName?.replace(/\s/g, '_')}-${payDate}.pdf"`,
         'X-Paystub-Payroll-Source': uploadedPaystub ? 'upload' : 'system',
+        'X-Paystub-Type': isEquipmentPaystub ? 'equipment' : 'normal',
       }
     });
   } catch (error: any) {

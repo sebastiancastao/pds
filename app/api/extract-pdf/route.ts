@@ -3,6 +3,7 @@ import { PDFDocument, PDFArray } from 'pdf-lib';
 import { extractPayrollDataWithLLM } from '@/app/lib/llm-extraction';
 import { collapseRepeatedText } from '@/lib/adp-statement-ytd';
 import { parseOtherVoluntaryDeductions } from '@/lib/voluntary-deductions';
+import { fixZeroGrossDeductionLines } from '@/lib/pdf-reader-zero-gross-deductions';
 
 export const dynamic = 'force-dynamic';
 
@@ -1147,6 +1148,9 @@ function extractPayrollData(text: string) {
       };
     }
   }
+
+  // Gross Pay $0.00 (an equipment reimbursement paystub): deduction lines show YTD only.
+  fixZeroGrossDeductionLines(payrollData, lines);
 
   guessMissingDeductions(payrollData, lines);
 

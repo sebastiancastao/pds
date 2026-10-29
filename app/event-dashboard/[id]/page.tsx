@@ -13,6 +13,7 @@ import {
   paysSanDiegoHourlyForVendor,
 } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
+import { MEAL_PREMIUM_HOURS, getMealPremiumPay } from "@/lib/meal-premium";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { computeDailyBreakdownList, sumDailyBreakdown } from "@/lib/daily-overtime";
@@ -355,6 +356,8 @@ export default function EventDashboardPage() {
   // supervisor3 and supervisor6 still cannot edit timesheet times (see canEditTimesheetTimes).
   const canEditRestBreaks =
     userRole === "exec" || userRole === "manager" || userRole === "supervisor3" || userRole === "supervisor6";
+  // Only exec sees and flips the Meal Premium toggle on the Timesheet tab; it is hidden from every other role.
+  const canUseMealPremium = userRole === "exec";
   // Only managers and exec can see the reimbursements vendors submitted for this event (view only).
   const canViewEventReimbursements = userRole === "exec" || userRole === "manager";
   const canManageLocations =
@@ -686,6 +689,32 @@ export default function EventDashboardPage() {
   const [restBreakError, setRestBreakError] = useState("");
   // Saving payroll before the counts arrive would price rest breaks off the flat schedule.
   const [restBreakCountsLoaded, setRestBreakCountsLoaded] = useState(false);
+
+  // Vendors with the "Meal Premium" toggle on, on the Timesheet tab (userId -> true). Exec only.
+  // Each pays one extra hour at the Rate in Effect, never below $28.50 (see getMealPremiumAmount).
+  const [mealPremiumUids, setMealPremiumUids] = useState<Record<string, boolean>>({});
+  const [savingMealPremiumUid, setSavingMealPremiumUid] = useState<string | null>(null);
+  const [mealPremiumError, setMealPremiumError] = useState("");
+  // Payment tab saves, emails and exports wait for the toggles, so a meal premium is never left out.
+  const [mealPremiumsLoaded, setMealPremiumsLoaded] = useState(false);
+  // Meal Premium pay on the Payment tab: one hour at the Rate in Effect (the pay period's rate
+  // for CA/NV/WI commission work, the loaded rate in AZ/NY, the hourly rate on hourly rows),
+  // never below $28.50 (lib/meal-premium). 0 unless an exec switched the toggle on.
+  const getMealPremiumAmount = (
+    uid: string,
+    actualHours: number,
+    breakdown: { finalCommissionRate: number; isHourlySanDiego: boolean },
+    hourlyRate: number
+  ): number =>
+    getMealPremiumPay({
+      on: mealPremiumUids[uid] === true,
+      hours: actualHours,
+      rateInEffect: breakdown.isHourlySanDiego ? hourlyRate : breakdown.finalCommissionRate,
+    });
+  // The Payment tab table and export show a Meal Premium column only when someone has one.
+  const paymentTabHasMealPremium = teamMembers.some(
+    (member: any) => mealPremiumUids[(member?.user_id || member?.vendor_id || member?.users?.id || "").toString()] === true
+  );
 
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
@@ -1273,11 +1302,12 @@ export default function EventDashboardPage() {
         loadTimesheetTotals();
         loadTeam(true); // also refresh attestation status
         void loadRestBreakCounts(); // another manager may have recorded rest breaks
+        if (canUseMealPremium) void loadMealPremiums(); // or another exec switched a Meal Premium toggle
       }
     }, 15000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, eventId, editingTimesheetUserId]);
+  }, [activeTab, eventId, editingTimesheetUserId, canUseMealPremium]);
 
   useEffect(() => {
     if (!hideSalesAndMerchandise) return;
@@ -1668,6 +1698,118 @@ export default function EventDashboardPage() {
     } finally {
       setSavingRestBreakUid(null);
     }
+  };
+
+  // --- "Meal Premium" toggle per vendor (Timesheet tab switch next to each name) ---
+  useEffect(() => {
+    // Toggles belong to one event; forget them if the page switches events.
+    setMealPremiumUids({});
+    setMealPremiumError("");
+    setMealPremiumsLoaded(false);
+  }, [eventId]);
+
+  const loadMealPremiums = useCallback(async () => {
+    if (!eventId || !canUseMealPremium) return;
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/meal-premiums?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMealPremiumError(data?.error || "Could not load Meal Premium toggles.");
+        return;
+      }
+      const next: Record<string, boolean> = {};
+      for (const id of Array.isArray(data?.userIds) ? data.userIds : []) {
+        if (id) next[String(id)] = true;
+      }
+      setMealPremiumUids(next);
+      setMealPremiumsLoaded(true);
+      setMealPremiumError("");
+    } catch {
+      setMealPremiumError("Network error loading Meal Premium toggles.");
+    }
+  }, [eventId, canUseMealPremium, getSessionToken]);
+
+  // Needed on the Timesheet tab (the toggle) and the Payment tab (meal premium pay).
+  useEffect(() => {
+    if (!eventId || !canUseMealPremium || (activeTab !== "timesheet" && activeTab !== "hr")) return;
+    void loadMealPremiums();
+  }, [activeTab, eventId, canUseMealPremium, loadMealPremiums]);
+
+  const toggleMealPremium = async (uid: string) => {
+    if (!eventId || !canUseMealPremium || !uid) return;
+    const marked = !mealPremiumUids[uid];
+    setSavingMealPremiumUid(uid);
+    setMealPremiumError("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/meal-premiums`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ userId: uid, marked }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMealPremiumError(data?.error || "Failed to save Meal Premium.");
+        return;
+      }
+      setMealPremiumUids((prev) => {
+        const copy = { ...prev };
+        if (marked) copy[uid] = true;
+        else delete copy[uid];
+        return copy;
+      });
+      // Meal premiums change pay: HR dashboard and paystub generator reload payroll data.
+      markPayrollDataDirty();
+    } catch {
+      setMealPremiumError("Network error saving Meal Premium.");
+    } finally {
+      setSavingMealPremiumUid(null);
+    }
+  };
+
+  // Switch next to the vendor name. Only exec sees it; every other role sees nothing.
+  const renderMealPremiumToggle = (uid: string) => {
+    if (!uid || !canUseMealPremium) return null;
+    const on = !!mealPremiumUids[uid];
+    const saving = savingMealPremiumUid === uid;
+    return (
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Meal Premium"
+        onClick={() => void toggleMealPremium(uid)}
+        disabled={saving}
+        title={on ? "Meal Premium is on. Click to turn it off." : "Turn on Meal Premium for this vendor"}
+        className={`inline-flex items-center gap-1 px-1 py-0.5 rounded border text-[9px] font-bold uppercase leading-none disabled:opacity-50 disabled:cursor-not-allowed ${
+          on ? "bg-orange-50 text-orange-800 border-orange-300 hover:bg-orange-100" : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+        }`}
+      >
+        <span
+          className={`relative inline-block h-3 w-5 flex-shrink-0 rounded-full transition-colors ${
+            on ? "bg-orange-500" : "bg-gray-300"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-2 w-2 rounded-full bg-white shadow transition-all ${
+              on ? "left-[10px]" : "left-0.5"
+            }`}
+          />
+        </span>
+        {saving ? "Saving…" : "Meal Premium"}
+      </button>
+    );
   };
 
   const goToTimesheetSignoff = () => {
@@ -3637,6 +3779,7 @@ export default function EventDashboardPage() {
         regularPay,
         overtimePay,
         doubletimePay,
+        isHourlySanDiego,
       } = getDisplayedPaymentBreakdown({
         uid,
         division,
@@ -3647,8 +3790,9 @@ export default function EventDashboardPage() {
       const proratedTips =
         !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
       const restBreak = getRestBreakAmount(actualHours, eventState, uid);
+      const mealPremium = getMealPremiumAmount(uid, actualHours, { finalCommissionRate, isHourlySanDiego }, baseRate);
       const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
-      const totalGrossPay = totalFinalCommission + proratedTips + restBreak + otherAmount;
+      const totalGrossPay = totalFinalCommission + proratedTips + restBreak + mealPremium + otherAmount;
       const money = (amount: number) => `$${formatPayrollMoney(amount)}`;
 
       const row: Record<string, string | number> = {
@@ -3684,6 +3828,9 @@ export default function EventDashboardPage() {
       if (!hideRestBreakColumn) {
         row["Rest Break"] = money(restBreak);
       }
+      if (paymentTabHasMealPremium) {
+        row["Meal Premium"] = money(mealPremium);
+      }
 
       row.Other = money(otherAmount);
       row["Total Gross Pay"] = money(totalGrossPay);
@@ -3700,6 +3847,10 @@ export default function EventDashboardPage() {
       }
       if (!restBreakCountsLoaded) {
         setMessage(restBreakError || "Rest break counts are still loading. Try again in a moment.");
+        return;
+      }
+      if (canUseMealPremium && !mealPremiumsLoaded) {
+        setMessage(mealPremiumError || "Meal premiums are still loading. Try again in a moment.");
         return;
       }
 
@@ -3780,6 +3931,9 @@ export default function EventDashboardPage() {
       paymentColumns.push({ wch: 16 }); // Tips Mode
       if (!hideRestBreakColumn) {
         paymentColumns.push({ wch: 12 }); // Rest Break
+      }
+      if (paymentTabHasMealPremium) {
+        paymentColumns.push({ wch: 14 }); // Meal Premium
       }
       paymentColumns.push({ wch: 10 }); // Other
       paymentColumns.push({ wch: 14 }); // Total Gross Pay
@@ -5918,6 +6072,10 @@ export default function EventDashboardPage() {
       setMessage(restBreakError || "Rest break counts are still loading. Try again in a moment.");
       return;
     }
+    if (canUseMealPremium && !mealPremiumsLoaded) {
+      setMessage(mealPremiumError || "Meal premiums are still loading. Try again in a moment.");
+      return;
+    }
 
     setSavingPayment(true);
     setMessage("");
@@ -5968,6 +6126,7 @@ export default function EventDashboardPage() {
           distributedCommissionShare,
         });
         const restBreak = getRestBreakAmount(actualHours, eventState, uid);
+        const mealPremium = getMealPremiumAmount(uid, actualHours, breakdown, getPayrollBaseRateForUser(uid));
 
         const tipsOverride = tipsOverrides[uid];
         const proratedTips = tipsOverride === null
@@ -5980,7 +6139,8 @@ export default function EventDashboardPage() {
         // must match the Gross Pay total shown on screen (see totalGrossPay in the
         // Staff Schedule table below), which folds both into gross pay.
         const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
-        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + otherAmount;
+        // Saved total_pay includes the meal premium, like the on-screen Gross Pay.
+        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + mealPremium + otherAmount;
 
         return {
           userId: uid,
@@ -6052,6 +6212,10 @@ export default function EventDashboardPage() {
       setMessage(restBreakError || "Rest break counts are still loading. Try again in a moment.");
       return;
     }
+    if (canUseMealPremium && !mealPremiumsLoaded) {
+      setMessage(mealPremiumError || "Meal premiums are still loading. Try again in a moment.");
+      return;
+    }
 
     if (!window.confirm(`Send payroll details to all ${teamMembers.length} team members via email?`)) {
       return;
@@ -6091,12 +6255,13 @@ export default function EventDashboardPage() {
           distributedCommissionShare,
         });
         const restBreak = getRestBreakAmount(actualHours, eventState, uid);
+        const mealPremium = getMealPremiumAmount(uid, actualHours, breakdown, memberBaseRate);
         const proratedTips = !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
         // "Other" on the Payment tab = Adjustments + Reimbursements combined; both must
         // be included here so the emailed total matches the on-screen Gross Pay.
         const adjustment = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
 
-        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + adjustment;
+        const totalPay = breakdown.totalFinalCommission + proratedTips + restBreak + mealPremium + adjustment;
 
         return {
           email: member.users?.email,
@@ -6112,6 +6277,7 @@ export default function EventDashboardPage() {
           variableIncentive: formatPayrollMoney(breakdown.variableIncentive),
           tips: formatPayrollMoney(proratedTips),
           restBreak: formatPayrollMoney(restBreak),
+          mealPremium: formatPayrollMoney(mealPremium),
           adjustment: formatPayrollMoney(adjustment),
           totalPay: formatPayrollMoney(totalPay),
           baseRate: formatPayrollMoney(memberBaseRate),
@@ -8870,6 +9036,11 @@ export default function EventDashboardPage() {
         {restBreakError}
       </div>
     )}
+    {mealPremiumError && (
+      <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+        {mealPremiumError}
+      </div>
+    )}
 
     {loadingTimesheetTab && (
       <div className="text-center py-6 bg-white border rounded-lg">
@@ -9011,6 +9182,7 @@ export default function EventDashboardPage() {
                                   Event Supervisor
                                 </span>
                               )}
+                              {renderMealPremiumToggle(uid)}
                             </div>
                             <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                               <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -9285,6 +9457,7 @@ export default function EventDashboardPage() {
                               Event Supervisor
                             </span>
                           )}
+                          {renderMealPremiumToggle(uid)}
                         </div>
                         <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                           <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -9804,6 +9977,9 @@ export default function EventDashboardPage() {
                         {!hideRestBreakColumn && (
                           <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
                         )}
+                        {paymentTabHasMealPremium && (
+                          <th className="text-left px-2 py-2 font-semibold text-gray-700" title="One hour at the Rate in Effect, never below $28.50">Meal Premium</th>
+                        )}
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Other</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Gross Pay</th>
                         <th className="text-right px-2 py-2 font-semibold text-gray-700 w-[7.5rem]">Actions</th>
@@ -9817,7 +9993,8 @@ export default function EventDashboardPage() {
                               7 +
                               (paymentTabColumnGroups.showHourly ? 3 : 0) +
                               (paymentTabColumnGroups.showCommission ? 3 : 0) +
-                              (hideRestBreakColumn ? 0 : 1)
+                              (hideRestBreakColumn ? 0 : 1) +
+                              (paymentTabHasMealPremium ? 1 : 0)
                             }
                             className="p-8 text-center text-gray-500"
                           >
@@ -9876,8 +10053,9 @@ export default function EventDashboardPage() {
 
                           // Calculate total gross pay
                           const restBreak = getRestBreakAmount(actualHours, eventState, uid);
+                          const mealPremium = getMealPremiumAmount(uid, actualHours, displayedBreakdown, baseRate);
                           const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
-                          const totalGrossPay = totalBasePay + proratedTips + restBreak + otherAmount;
+                          const totalGrossPay = totalBasePay + proratedTips + restBreak + mealPremium + otherAmount;
 
                           return (
                             <tr key={member.id} className="hover:bg-gray-50 transition-colors">
@@ -10247,6 +10425,23 @@ export default function EventDashboardPage() {
                                       ? `${restBreakCounts[uid]} break${restBreakCounts[uid] === 1 ? '' : 's'} recorded`
                                       : `$${REST_BREAK_RATE.toFixed(2)} per ${REST_BREAK_PERIOD_HOURS}h`}
                                   </div>
+                                </td>
+                              )}
+
+                              {paymentTabHasMealPremium && (
+                                <td className="px-2 py-2 align-top">
+                                  {mealPremium > 0 ? (
+                                    <>
+                                      <div className="text-sm font-medium text-amber-700">
+                                        ${formatPayrollMoney(mealPremium)}
+                                      </div>
+                                      <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
+                                        {MEAL_PREMIUM_HOURS}h × ${formatPayrollMoney(mealPremium / MEAL_PREMIUM_HOURS)}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="text-sm text-gray-400">—</div>
+                                  )}
                                 </td>
                               )}
 

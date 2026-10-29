@@ -142,6 +142,10 @@ type ImportedEmployeeRow = {
   adpCommission: string;
   // Every ADP earnings line this period plus Gross Pay.
   adpEarnings: AdpEarningsInput | null;
+  // ADP "Misc reimburse Equipment" this period: the "Equipment Reimbursement" column of the
+  // /pdf-reader export ('' when the file has no such column). Only an equipment
+  // reimbursement paystub pays it; a normal paystub keeps it at 0.00.
+  equipmentReimbursement: string;
   ssn: string;
   address: string;
   employeeId: string;
@@ -338,6 +342,7 @@ type PaystubFields = YtdOverrideSource & {
   adpSickPay?: string;
   adpCommission?: string;
   adpEarnings?: AdpEarningsInput | null;
+  equipmentReimbursement?: string;
 };
 
 // An imported row as paystub fields. The CalSavers Roth column is the misc deduction
@@ -415,6 +420,8 @@ export default function PaystubGenerator() {
     adpSickPay: '',
     adpCommission: '',
     adpEarnings: null as AdpEarningsInput | null,
+    // Equipment reimbursement paystub amount for the single form ('' = HR's list).
+    equipmentReimbursement: '',
     miscDeduction: '',
     miscReimbursement: '',
     voluntaryDeductions: [] as VoluntaryDeductionInput[],
@@ -496,6 +503,74 @@ export default function PaystubGenerator() {
   const [useSystemPayroll, setUseSystemPayroll] = useState(false);
   const uploadedPayrollRequestIdRef = useRef(0);
   const uploadedPayrollCheckedAtRef = useRef(0);
+
+  // Paystub type. A normal paystub never pays an equipment reimbursement (its Equipment
+  // Reimbursement line is always 0.00 this period). An equipment reimbursement paystub
+  // pays only that: every other This Period amount is blank, and it has no sick leave
+  // table and no commission report. Every button (single, batch, distribute, email)
+  // makes the type chosen here.
+  const [paystubType, setPaystubType] = useState<'normal' | 'equipment'>('normal');
+  const isEquipmentMode = paystubType === 'equipment';
+  const paystubFilePrefix = isEquipmentMode ? 'equipment-reimbursement-paystub' : 'paystub';
+  // HR's Equipment Reimbursement list (HR dashboard Payroll tab) for the pay date on
+  // screen, userId -> amount, plus the month's other pay dates on that list. Loaded for
+  // equipment paystubs only.
+  const [hrEquipment, setHrEquipment] = useState<{
+    payDate: string;
+    byUser: Record<string, number>;
+    otherPayDates: string[];
+  } | null>(null);
+  const [hrEquipmentLoading, setHrEquipmentLoading] = useState(false);
+  const [hrEquipmentError, setHrEquipmentError] = useState<string | null>(null);
+  const hrEquipmentRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    const payDate = formData.payDate || '';
+    if (paystubType !== 'equipment' || !/^\d{4}-\d{2}-\d{2}$/.test(payDate)) {
+      hrEquipmentRequestIdRef.current++;
+      setHrEquipment(null);
+      setHrEquipmentError(null);
+      setHrEquipmentLoading(false);
+      return;
+    }
+    const requestId = ++hrEquipmentRequestIdRef.current;
+    setHrEquipmentLoading(true);
+    setHrEquipmentError(null);
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(
+          `/api/hr/equipment-reimbursements?pay_date=${encodeURIComponent(payDate)}&ts=${Date.now()}`,
+          {
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+          }
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.error || `Could not load the list (${res.status})`);
+        if (requestId !== hrEquipmentRequestIdRef.current) return;
+        const byUser: Record<string, number> = {};
+        const otherPayDates = new Set<string>();
+        for (const row of Array.isArray(body?.month_rows) ? body.month_rows : []) {
+          const amount = Number(row?.amount || 0);
+          const userId = String(row?.user_id || '');
+          if (!userId || !(amount > 0)) continue;
+          if (String(row?.pay_date || '') === payDate) byUser[userId] = (byUser[userId] || 0) + amount;
+          else otherPayDates.add(String(row?.pay_date || ''));
+        }
+        setHrEquipment({ payDate, byUser, otherPayDates: Array.from(otherPayDates).filter(Boolean).sort() });
+      } catch (err: any) {
+        if (requestId !== hrEquipmentRequestIdRef.current) return;
+        setHrEquipment(null);
+        setHrEquipmentError(err?.message || 'Could not load the list');
+      } finally {
+        if (requestId === hrEquipmentRequestIdRef.current) setHrEquipmentLoading(false);
+      }
+    })();
+  }, [paystubType, formData.payDate]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -1466,6 +1541,53 @@ export default function PaystubGenerator() {
     return null;
   };
 
+  // HR's Equipment Reimbursement list amount for this employee on the pay date on screen.
+  const hrEquipmentAmountFor = (userId: string | null): number =>
+    userId && hrEquipment && hrEquipment.payDate === formData.payDate ? hrEquipment.byUser[userId] || 0 : 0;
+
+  // What an equipment reimbursement paystub pays: the imported file's Equipment
+  // Reimbursement column (ADP "Misc reimburse Equipment", what ADP paid) when the file has
+  // that column, or the amount typed on the single form; otherwise HR's list for the pay date.
+  const equipmentAmountFor = (
+    fields: { equipmentReimbursement?: string },
+    userId: string | null
+  ): { amount: number; source: 'file' | 'hr' | null } => {
+    const raw = String(fields.equipmentReimbursement ?? '').trim();
+    if (raw !== '') {
+      const parsed = Math.abs(parseFloat(raw.replace(/[$,\s]/g, '')));
+      return { amount: Number.isFinite(parsed) ? roundMoney(parsed) : 0, source: 'file' };
+    }
+    const hrAmount = hrEquipmentAmountFor(userId);
+    return hrAmount > 0 ? { amount: roundMoney(hrAmount), source: 'hr' } : { amount: 0, source: null };
+  };
+
+  // Why an employee gets no equipment reimbursement paystub, or null when they get one.
+  const equipmentSkipReason = (fields: { equipmentReimbursement?: string }, userId: string | null): string | null => {
+    const { amount, source } = equipmentAmountFor(fields, userId);
+    if (amount > 0) return null;
+    const hrAmount = hrEquipmentAmountFor(userId);
+    if (source === 'file' && hrAmount > 0) {
+      return `no equipment reimbursement in the imported file (HR's Equipment Reimbursement list has $${hrAmount.toFixed(2)} for this pay date)`;
+    }
+    return 'no equipment reimbursement for this pay date';
+  };
+
+  // Batch rows left out: no pay data for a normal paystub, no equipment reimbursement for
+  // an equipment paystub (which needs no events: it pays no work).
+  const rowSkipReason = (emp: ImportedEmployeeRow): string | null => {
+    if (!emp.matchedUserId) return null;
+    return isEquipmentMode
+      ? equipmentSkipReason(paystubFieldsFromRow(emp), emp.matchedUserId)
+      : batchSkipReason(emp.matchedUserId);
+  };
+
+  // Equipment paystubs wait for HR's list, so nobody on it is skipped while it loads.
+  const equipmentListStillLoading = () => {
+    if (!isEquipmentMode || !hrEquipmentLoading) return false;
+    alert("Still loading HR's Equipment Reimbursement list for this pay date. Try again in a moment.");
+    return true;
+  };
+
   // Asked before any paystub is made, single or batch, with the same rules: when an
   // employee's uploaded lines need a look (they disagree with the ADP Payroll Summary,
   // carry "paid"/"short" notes, only hold reimbursements...), when employees are not in
@@ -1570,6 +1692,12 @@ export default function PaystubGenerator() {
       adpCommission: fields.adpCommission || '',
       // Every ADP earnings line and Gross Pay: when they add up, the PDF prints ADP's lines.
       adpEarnings: fields.adpEarnings || null,
+
+      // Paystub type. A normal paystub never pays an equipment reimbursement; an equipment
+      // paystub pays only this amount (the same YTD figures, no sick leave table, no
+      // commission report).
+      paystubType,
+      ...(isEquipmentMode ? { equipmentReimbursement: equipmentAmountFor(fields, userId).amount } : {}),
 
       // Events this employee worked in the period, plus linked commission partners
       events: filterEventsForUserIdWithHours(userId),
@@ -1789,7 +1917,7 @@ export default function PaystubGenerator() {
       .replace(/[^a-zA-Z0-9._-]/g, '');
 
   const handleGenerate = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
     setGenerating(true);
     try {
       const debugMode =
@@ -1804,7 +1932,13 @@ export default function PaystubGenerator() {
         setMatchedUserId(resolvedUserId);
       }
 
-      if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
+      if (isEquipmentMode) {
+        const skip = equipmentSkipReason(formData, resolvedUserId);
+        if (skip) {
+          alert(`No equipment reimbursement paystub for ${formData.employeeName}: ${skip}.`);
+          return;
+        }
+      } else if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
         return;
       }
 
@@ -1845,7 +1979,7 @@ export default function PaystubGenerator() {
       const bytes = await requestPaystubPdf(payload);
       downloadBlob(
         new Blob([bytes], { type: 'application/pdf' }),
-        `paystub-${formData.employeeName?.replace(/\s/g, '_')}-${formData.payDate}.pdf`
+        `${paystubFilePrefix}-${formData.employeeName?.replace(/\s/g, '_')}-${formData.payDate}.pdf`
       );
     } catch (error: any) {
       console.error('Error generating paystub:', error);
@@ -1870,7 +2004,7 @@ export default function PaystubGenerator() {
   // Each row is built exactly like the single paystub (buildPaystubRequest). Rows left
   // out: no name, no matching profile, or no events and no uploaded lines in the period.
   const handleGenerateBatch = async (mode: 'merge' | 'separate') => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
     setBatchMessage(null);
     setBatchErrors([]);
 
@@ -1882,7 +2016,7 @@ export default function PaystubGenerator() {
       alert('Missing pay period start/end.');
       return;
     }
-    if ((!events || events.length === 0) && !activeUploadedPayroll) {
+    if (!isEquipmentMode && (!events || events.length === 0) && !activeUploadedPayroll) {
       alert('No events loaded for the selected pay period.');
       return;
     }
@@ -1891,6 +2025,7 @@ export default function PaystubGenerator() {
     // Same name lookup as the single button, for every row still unmatched.
     const rows = await matchUnmatchedImportedNow();
     if (
+      !isEquipmentMode &&
       !confirmPaystubRun(
         rows
           .filter((emp) => !!emp.matchedUserId && !batchSkipReason(emp.matchedUserId))
@@ -1929,7 +2064,7 @@ export default function PaystubGenerator() {
             errors.push(`Row ${emp.rowIndex} (${employeeName}): not found in database`);
             continue;
           }
-          const skipReason = batchSkipReason(emp.matchedUserId);
+          const skipReason = rowSkipReason(emp);
           if (skipReason) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): ${skipReason}`);
@@ -1946,7 +2081,7 @@ export default function PaystubGenerator() {
             const blob = new Blob([bytes], { type: 'application/pdf' });
             const safeName = employeeName ? sanitizeFilePart(employeeName) : `row_${emp.rowIndex}`;
             const safePayDate = (emp.payDate || formData.payDate) ? sanitizeFilePart(emp.payDate || formData.payDate) : new Date().toISOString().split('T')[0];
-            downloadBlob(blob, `paystub-${safeName}-${safePayDate}.pdf`);
+            downloadBlob(blob, `${paystubFilePrefix}-${safeName}-${safePayDate}.pdf`);
             // Reduce the chance the browser blocks multiple downloads triggered too quickly.
             await new Promise((r) => setTimeout(r, 200));
           } else if (outPdf) {
@@ -1968,7 +2103,11 @@ export default function PaystubGenerator() {
       }
 
       if (generated === 0) {
-        throw new Error('No paystubs were generated. Check that employees are matched and have events in the selected period.');
+        throw new Error(
+          isEquipmentMode
+            ? 'No equipment reimbursement paystubs were generated. Check that employees are matched and have an equipment reimbursement for this pay date.'
+            : 'No paystubs were generated. Check that employees are matched and have events in the selected period.'
+        );
       }
 
       const safePayDate = formData.payDate ? sanitizeFilePart(formData.payDate) : new Date().toISOString().split('T')[0];
@@ -1976,15 +2115,15 @@ export default function PaystubGenerator() {
         const outBytes = await outPdf.save();
         // pdf-lib returns Uint8Array<ArrayBufferLike>; normalize to a Uint8Array for Blob compatibility in TS.
         const blob = new Blob([Uint8Array.from(outBytes)], { type: 'application/pdf' });
-        downloadBlob(blob, `paystubs-${safePayDate}.pdf`);
+        downloadBlob(blob, `${isEquipmentMode ? 'equipment-reimbursement-paystubs' : 'paystubs'}-${safePayDate}.pdf`);
       }
 
-      const sourceNote = activeUploadedPayroll
+      const sourceNote = activeUploadedPayroll && !isEquipmentMode
         ? ` ${generatedFromUpload} from the uploaded payroll, ${generated - generatedFromUpload} from the system calculation (not in the upload).`
         : '';
       const msg = mode === 'merge'
-        ? `Generated ${generated} paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.${sourceNote}`
-        : `Generated ${generated} paystub(s) as separate PDF downloads. Skipped ${skipped}.${sourceNote}`;
+        ? `Generated ${generated} ${isEquipmentMode ? 'equipment reimbursement ' : ''}paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.${sourceNote}`
+        : `Generated ${generated} ${isEquipmentMode ? 'equipment reimbursement ' : ''}paystub(s) as separate PDF downloads. Skipped ${skipped}.${sourceNote}`;
       setBatchMessage(msg);
       setBatchErrors(errors);
       if (debugMode && errors.length) {
@@ -2014,7 +2153,7 @@ export default function PaystubGenerator() {
     formPayload.append(
       'pdf',
       new Blob([pdfBytes], { type: 'application/pdf' }),
-      `paystub-${employeeName.replace(/\s+/g, '_')}-${payDate}.pdf`
+      `${paystubFilePrefix}-${employeeName.replace(/\s+/g, '_')}-${payDate}.pdf`
     );
     if (userId) formPayload.append('userId', userId);
     formPayload.append('employeeName', employeeName);
@@ -2036,7 +2175,7 @@ export default function PaystubGenerator() {
   };
 
   const handleDistribute = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
     setDistributing(true);
     setDistributeMessage(null);
     setDistributeError(null);
@@ -2057,7 +2196,14 @@ export default function PaystubGenerator() {
         throw new Error('Could not match this employee to a user profile. Make sure the employee name matches exactly.');
       }
 
-      if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
+      if (isEquipmentMode) {
+        const skip = equipmentSkipReason(formData, resolvedUserId);
+        if (skip) {
+          setDistributeStep(null);
+          setDistributeError(`No equipment reimbursement paystub for ${formData.employeeName}: ${skip}.`);
+          return;
+        }
+      } else if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
         setDistributeStep(null);
         return;
       }
@@ -2081,7 +2227,7 @@ export default function PaystubGenerator() {
       );
 
       setDistributeStep(null);
-      setDistributeMessage(`Done — paystub saved to employee profile (user: ${resolvedUserId.slice(0, 8)}…)`);
+      setDistributeMessage(`Done — ${isEquipmentMode ? 'equipment reimbursement paystub' : 'paystub'} saved to employee profile (user: ${resolvedUserId.slice(0, 8)}…)`);
     } catch (err: any) {
       setDistributeStep(null);
       setDistributeError(`Step failed: ${err.message}`);
@@ -2094,7 +2240,7 @@ export default function PaystubGenerator() {
   // same way. Rows left out: unticked in the dropdown, no name, no matching profile, or
   // no events and no uploaded lines in the period.
   const handleDistributeBatch = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
     if ((importedEmployees || []).length === 0) {
       alert('No employees imported from Excel yet.');
       return;
@@ -2118,6 +2264,7 @@ export default function PaystubGenerator() {
     const rows = allRows.filter(isRowInBatch);
     const notTickedNote = allRows.length > rows.length ? ` ${allRows.length - rows.length} unticked employee(s) left out.` : '';
     if (
+      !isEquipmentMode &&
       !confirmPaystubRun(
         rows
           .filter((emp) => !!emp.matchedUserId && !batchSkipReason(emp.matchedUserId))
@@ -2147,7 +2294,7 @@ export default function PaystubGenerator() {
             errors.push(`Row ${emp.rowIndex} (${employeeName || 'unknown'}): no matched user`);
             continue;
           }
-          const skipReason = batchSkipReason(emp.matchedUserId);
+          const skipReason = rowSkipReason(emp);
           if (skipReason) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): ${skipReason}`);
@@ -2171,7 +2318,7 @@ export default function PaystubGenerator() {
         }
       }
 
-      setBatchDistributeMessage(`Distributed ${sent} paystub(s) to employee profiles. Skipped ${skipped}.${notTickedNote}`);
+      setBatchDistributeMessage(`Distributed ${sent} ${isEquipmentMode ? 'equipment reimbursement ' : ''}paystub(s) to employee profiles. Skipped ${skipped}.${notTickedNote}`);
       setBatchDistributeErrors(errors);
     } catch (err: any) {
       alert(`Error: ${err.message}`);
@@ -2183,8 +2330,9 @@ export default function PaystubGenerator() {
   // Each selected employee's paystub is built exactly like the single one
   // (buildPaystubRequest), from their Excel row or from the single form.
   const handleSendEmails = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
     if (
+      !isEquipmentMode &&
       !confirmPaystubRun(
         emailCandidates.filter((c) => emailSelectedIds.has(c.key)).map((c) => ({ userId: c.userId, name: c.name })),
         'Email the paystubs'
@@ -2208,6 +2356,11 @@ export default function PaystubGenerator() {
         const candidate = selected[i];
         try {
           const fields = candidate.empRow ? paystubFieldsFromRow(candidate.empRow) : formData;
+          const equipmentSkip = isEquipmentMode ? equipmentSkipReason(fields, candidate.userId) : null;
+          if (equipmentSkip) {
+            results.push({ name: candidate.name, success: false, error: `No equipment reimbursement paystub: ${equipmentSkip}` });
+            continue;
+          }
           const { payload } = await buildPaystubRequest(fields, candidate.userId, { debugMode, summaryCache });
 
           let pdfBytes: ArrayBuffer;
@@ -2223,13 +2376,14 @@ export default function PaystubGenerator() {
           emailFormData.append(
             'pdf',
             new Blob([pdfBytes], { type: 'application/pdf' }),
-            `paystub-${candidate.name.replace(/\s+/g, '_')}-${formData.payDate || 'recent'}.pdf`
+            `${paystubFilePrefix}-${candidate.name.replace(/\s+/g, '_')}-${formData.payDate || 'recent'}.pdf`
           );
           emailFormData.append('userId', candidate.userId);
           emailFormData.append('employeeName', candidate.name);
           emailFormData.append('payDate', formData.payDate);
           emailFormData.append('payPeriodStart', formData.payPeriodStart);
           emailFormData.append('payPeriodEnd', formData.payPeriodEnd);
+          emailFormData.append('paystubType', paystubType);
 
           const emailRes = await fetch('/api/distribute-paystub/send-email', {
             method: 'POST',
@@ -3289,6 +3443,14 @@ export default function PaystubGenerator() {
           // ADP Commission this period (exact header: "Commission YTD" is the YTD column).
           adpCommission: getExactAbsoluteValue(valuesRow, ['commission']),
           adpEarnings: adpEarningsFromRow(valuesRow),
+          // ADP "Misc reimburse Equipment" this period (exact header: the YTD column is
+          // "Equipment Reimbursement YTD"). Only the equipment reimbursement paystub uses it.
+          equipmentReimbursement: getExactAbsoluteValue(valuesRow, [
+            'equipment reimbursement',
+            'misc reimburse equipment',
+            'misc reimbursement equipment',
+            'equipment reimb',
+          ]),
 
           miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
           miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
@@ -3350,6 +3512,7 @@ export default function PaystubGenerator() {
           adpSickPay: first.adpSickPay,
           adpCommission: first.adpCommission,
           adpEarnings: first.adpEarnings,
+          equipmentReimbursement: first.equipmentReimbursement,
         }));
       }
 
@@ -3696,6 +3859,106 @@ export default function PaystubGenerator() {
                 </div>
               </div>
             </div>
+
+            {/* Paystub type: normal (never pays equipment) or equipment reimbursement only */}
+            {(() => {
+              const singleHrAmount = hrEquipmentAmountFor(importedEmployees.length === 0 ? matchedUserId : importedEmployees[0]?.matchedUserId ?? null);
+              const hrCount = hrEquipment && hrEquipment.payDate === formData.payDate ? Object.keys(hrEquipment.byUser).length : 0;
+              const importedWithEquipment = importedEmployees.filter(
+                (emp) => !!emp.matchedUserId && equipmentAmountFor(paystubFieldsFromRow(emp), emp.matchedUserId).amount > 0
+              ).length;
+              const fileHasEquipmentColumn = importedEmployees.some((emp) => String(emp.equipmentReimbursement ?? '').trim() !== '');
+              return (
+                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+                  <h2 className="text-lg font-semibold text-slate-900 mb-1">Paystub Type</h2>
+                  <p className="text-sm text-slate-600 mb-4">
+                    Normal paystubs never pay an equipment reimbursement: their Equipment Reimbursement line is always 0.00 this period.
+                  </p>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {([
+                      {
+                        value: 'normal',
+                        label: 'Normal paystub',
+                        note: 'Earnings, deductions and reimbursements for the pay period. Equipment Reimbursement stays 0.00.',
+                      },
+                      {
+                        value: 'equipment',
+                        label: 'Equipment reimbursement paystub',
+                        note: 'This Period shows only the equipment reimbursement. No sick leave table and no commission report.',
+                      },
+                    ] as const).map((option) => (
+                      <label
+                        key={option.value}
+                        className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                          paystubType === option.value ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="paystubType"
+                          value={option.value}
+                          checked={paystubType === option.value}
+                          onChange={() => setPaystubType(option.value)}
+                          className="mt-1 accent-blue-600"
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-900">{option.label}</span>
+                          <span className="block text-xs text-slate-600 mt-0.5">{option.note}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {isEquipmentMode && (
+                    <div className="mt-4 space-y-3">
+                      <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                        <p>
+                          Each employee is paid the imported file&apos;s Equipment Reimbursement column (ADP &quot;Misc reimburse Equipment&quot;) when the file has it,
+                          otherwise HR&apos;s Equipment Reimbursement list for the pay date. Employees with neither are skipped.
+                        </p>
+                        {!formData.payDate ? (
+                          <p>Pick the pay date to load HR&apos;s list.</p>
+                        ) : hrEquipmentLoading ? (
+                          <p>Loading HR&apos;s list for {formData.payDate}...</p>
+                        ) : hrEquipmentError ? (
+                          <p className="text-red-700">HR&apos;s list could not be loaded: {hrEquipmentError}</p>
+                        ) : (
+                          <p>
+                            HR&apos;s list for {formData.payDate}: {hrCount} employee{hrCount === 1 ? '' : 's'}.
+                            {hrEquipment && hrEquipment.otherPayDates.length > 0
+                              ? ` This month's list also has ${hrEquipment.otherPayDates.join(', ')}.`
+                              : ''}
+                          </p>
+                        )}
+                        {importedEmployees.length > 0 && (
+                          <p>
+                            Imported rows with an equipment reimbursement: {importedWithEquipment} of {importedEmployees.length}
+                            {fileHasEquipmentColumn ? ' (from the file).' : ' (the file has no Equipment Reimbursement column, so HR\'s list is used).'}
+                          </p>
+                        )}
+                      </div>
+                      <div className="max-w-xs">
+                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                          Equipment Reimbursement (single paystub)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          name="equipmentReimbursement"
+                          value={formData.equipmentReimbursement}
+                          onChange={handleInputChange}
+                          placeholder={singleHrAmount > 0 ? `${singleHrAmount.toFixed(2)} (HR list)` : '0.00'}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                        <p className="text-xs text-slate-500 mt-1">
+                          Leave blank to use HR&apos;s list{singleHrAmount > 0 ? ` ($${singleHrAmount.toFixed(2)} for this employee)` : ''}.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Payroll Source: uploaded payroll in use for this period, or the system calculation */}
             {(formData.payPeriodStart && formData.payPeriodEnd) && (() => {
@@ -4355,8 +4618,10 @@ export default function PaystubGenerator() {
                       rowNote: (row) =>
                         !row.matchedUserId
                           ? { text: 'Unmatched', title: 'Skipped when distributing unless the name matches a profile' }
-                          : batchSkipReason(row.matchedUserId)
-                            ? { text: 'No pay data', title: 'Skipped when distributing, even if ticked' }
+                          : rowSkipReason(row)
+                            ? isEquipmentMode
+                              ? { text: 'No equipment', title: 'No equipment reimbursement for this pay date: skipped when distributing, even if ticked' }
+                              : { text: 'No pay data', title: 'Skipped when distributing, even if ticked' }
                             : null,
                     })}
                     {batchDistributeMessage && (
@@ -4431,8 +4696,10 @@ export default function PaystubGenerator() {
                         rowNote: (row) =>
                           !row.matchedUserId
                             ? { text: 'Unmatched', title: 'Not emailed unless the name matches a profile' }
-                            : batchSkipReason(row.matchedUserId)
-                              ? { text: 'No pay data', title: 'No events and no uploaded lines in this period, so the paystub would show no earnings' }
+                            : rowSkipReason(row)
+                              ? isEquipmentMode
+                                ? { text: 'No equipment', title: 'No equipment reimbursement for this pay date: not emailed, even if ticked' }
+                                : { text: 'No pay data', title: 'No events and no uploaded lines in this period, so the paystub would show no earnings' }
                               : null,
                       })}
                     </div>

@@ -10,6 +10,7 @@ import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 import { normalizeEventEndDate, getInclusiveDateSpanDays } from '@/lib/non-event-timesheets';
 import { getRestBreakPay } from '@/lib/rest-breaks';
 import { fetchPayableRestBreakCounts } from '@/lib/rest-breaks-server';
+import { fetchMealPremiums } from '@/lib/meal-premium-server';
 import { fetchRegionNameByUserId } from '@/lib/vendor-region-server';
 
 const supabaseAdmin = createClient(
@@ -469,6 +470,9 @@ export async function GET(req: NextRequest) {
     // Rest breaks recorded by managers on the event Timesheet tab (eventId -> userId -> count).
     // Attached to every returned row so /hr-dashboard prices rest break pay from them.
     const restBreakCountsByEvent = await fetchPayableRestBreakCounts(supabaseAdmin, fetchAllEvents ? null : eventIds);
+    // Meal Premium toggles an exec switched on, on the event Timesheet tab (eventId -> userId).
+    // Attached to every returned row so /hr-dashboard pays the meal premium (lib/meal-premium).
+    const mealPremiumsByEvent = await fetchMealPremiums(supabaseAdmin, fetchAllEvents ? null : eventIds);
 
     console.log('[VENDOR-PAYMENTS] adjustments fetched', {
       count: adjustments?.length || 0,
@@ -895,6 +899,8 @@ export async function GET(req: NextRequest) {
         row.meal_deduction_hours = mealDeduct;
         // null = no count recorded, so the flat per-shift rest break schedule applies.
         row.rest_break_count = restBreakCountsByEvent[eventId]?.[row.user_id] ?? null;
+        // true = one extra hour at the Rate in Effect (never below $28.50), see lib/meal-premium.
+        row.meal_premium = mealPremiumsByEvent[eventId]?.[row.user_id] === true;
 
         const hasTimesheetHours = Object.prototype.hasOwnProperty.call(eventEffectiveHours, row.user_id);
         if (hasTimesheetHours) {
