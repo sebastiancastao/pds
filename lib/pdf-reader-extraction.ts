@@ -1285,19 +1285,6 @@ export function extractPayrollData(text: string) {
   const commResult = extractEarningsLine(/Commission\b/i);
   if (commResult) payrollData.earnings.commission = commResult;
 
-  // "Count In / Operation" is only on /paystub-generator stubs (never ADP): the flat $150
-  // no-commission shift pay, printed apart from Commission with one amount and no YTD
-  // (Commission's YTD already includes it). It is commission pay, so it goes back in here.
-  const countInResult = extractEarningsLine(/Count\s+In\s*\/\s*Operation\b/i);
-  if (countInResult && payrollData.earnings.commission) {
-    // A lone number reads as YTD; on this line it is this period's amount.
-    const countInThisPeriod = countInResult.thisPeriod || countInResult.yearToDate;
-    payrollData.earnings.commission = {
-      ...payrollData.earnings.commission,
-      thisPeriod: Math.round((payrollData.earnings.commission.thisPeriod + countInThisPeriod) * 100) / 100,
-    };
-  }
-
   // Extract Variable Incentive
   const viResult = extractEarningsLine(/Variable\s+Incentive\b/i);
   if (viResult) payrollData.earnings.variableIncentive = viResult;

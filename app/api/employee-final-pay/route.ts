@@ -13,7 +13,6 @@ import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } 
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
 import { attachRegionMetadataToEvents } from '@/lib/event-region';
-import { COUNT_IN_SETUP_FLAT_PAY, isCountInFlatPayOn, normalizeEventType } from '@/lib/event-types';
 
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
@@ -154,7 +153,7 @@ export async function GET(req: NextRequest) {
 
     const { data: rawEvents, error: eventsError } = await supabaseAdmin
       .from('events')
-      .select('id, name:event_name, event_date, event_type, count_in_flat_pay_enabled, linked_commission_event_id, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
+      .select('id, name:event_name, event_date, event_type, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income, tips_distribution_mode')
       .gte('event_date', startDate)
       .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
@@ -446,48 +445,6 @@ export async function GET(req: NextRequest) {
         Number(reimbursement.approved_amount || 0);
     }
 
-    // Count In / Operation: the flat $150 commission for this employee's shift with hours at an
-    // event that pays them no pool share, the same rule as /api/generate-paystub. Period-rate
-    // states only (CA, NV, WI); never San Diego hourly work, non-event timesheets, Trailers,
-    // non-vendors, a deleted commission, or a Count In Setup Day whose $150 an exec switched
-    // off. Shared-commission events are skipped: their share comes from the whole linked group,
-    // which this route does not merge. It goes into the pay-period calculation as this shift's
-    // commission share, so it counts in the Rate in Effect and the Variable Incentive.
-    const linkedCommissionEventIds = new Set<string>();
-    for (const ev of events || []) {
-      if (ev?.linked_commission_event_id) {
-        linkedCommissionEventIds.add(String(ev.id));
-        linkedCommissionEventIds.add(String(ev.linked_commission_event_id));
-      }
-    }
-    const getCountInOperationPay = (ev: any, row: any): number => {
-      if ((row?.user_id || '').toString() !== userId) return 0;
-      const eventType = normalizeEventType(ev?.event_type);
-      if (
-        !isPeriodRateState(ev?.state) ||
-        paysSanDiegoHourly(ev) ||
-        eventType === 'special' ||
-        (eventType === 'count_in_setup' && !isCountInFlatPayOn(ev)) ||
-        linkedCommissionEventIds.has(String(ev?.id)) ||
-        isExplicitNonVendorDivision(row?.users?.division) ||
-        isTrailersDivision(row?.users?.division) ||
-        row?.commission_deleted === true ||
-        roundHours(getEffectiveHours(row)) <= 0 ||
-        Number(distributionByEvent[ev.id]?.commissionSharesByUser?.[userId] || 0) > 0
-      ) {
-        return 0;
-      }
-      return COUNT_IN_SETUP_FLAT_PAY;
-    };
-    const countInOperationPayByEvent: Record<string, number> = {};
-    for (const ev of events || []) {
-      const row = (allVendorPaymentsByEvent[ev.id] || []).find(
-        (candidate: any) => (candidate?.user_id || '').toString() === userId
-      );
-      const pay = row ? getCountInOperationPay(ev, row) : 0;
-      if (pay > 0) countInOperationPayByEvent[ev.id] = pay;
-    }
-
     const payPeriodCommission = computePayPeriodCommission({
       events: (events || []).map((ev: any) => ({
         eventId: (ev?.id || '').toString(),
@@ -506,11 +463,7 @@ export async function GET(req: NextRequest) {
           // Only this employee's results are read. Paid San Diego hourly at this event, they get
           // nothing from its pool (it is the Los Angeles vendors' pool) but still count in its split.
           commissionShare:
-            (row?.user_id || '').toString() === userId && paysSanDiegoHourly(ev)
-              ? 0
-              : (row?.user_id || '').toString() === userId && countInOperationPayByEvent[ev.id]
-                ? countInOperationPayByEvent[ev.id]
-                : null,
+            (row?.user_id || '').toString() === userId && paysSanDiegoHourly(ev) ? 0 : null,
           forceEvenSplit: row?.commission_even_split ?? undefined,
         })),
       })),
@@ -618,13 +571,6 @@ export async function GET(req: NextRequest) {
               : loadedRate
         );
         const commissions = paysHourlySD ? 0 : commissionPay;
-        // The Count In / Operation part of commissionPay (shown in its own report column).
-        const countInPay =
-          usesPeriodRate &&
-          countInOperationPayByEvent[ev.id] &&
-          Math.abs(commissionPay - countInOperationPayByEvent[ev.id]) < 0.005
-            ? commissionPay
-            : 0;
         const regularPay = paysHourlySD
           ? Number(sanDiegoHourlyBreakdown?.regularPay || 0)
           : Number(vp.regular_pay || 0);
@@ -658,7 +604,6 @@ export async function GET(req: NextRequest) {
           doubletimePay,
           commissions,
           commissionPay,
-          countInPay,
           rateInEffect,
           variableIncentive,
           manualVariableIncentive,

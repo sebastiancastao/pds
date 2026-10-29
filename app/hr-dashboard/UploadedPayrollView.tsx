@@ -10,7 +10,6 @@ import {
   type PayrollUploadFieldKey,
   type PayrollUploadRow,
 } from "@/lib/payroll-upload";
-import { getLowCommissionShare, LowCommissionShareBadge, LowCommissionShareSummary, type LowCommissionShare } from "./LowCommissionShareFlag";
 
 // Uploaded payroll laid out exactly like the system payroll on the HR
 // dashboard Payroll tab: View by Vendor (one card per employee, one row per
@@ -570,27 +569,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
     return list.sort(byLastName);
   }, [entries]);
 
-  // Commission Pay under 50% of Commission Pay + Variable Incentive, on each
-  // person's whole-upload totals (like the system views), keyed by person.
-  const lowCommissionShareByPerson = useMemo(() => {
-    const out = new Map<string, LowCommissionShare>();
-    vendors.forEach((v) => {
-      if (!v.entries.some((e) => e.commission)) return;
-      const flag = getLowCommissionShare(v.totals.commission, v.totals.variableIncentive);
-      if (flag) out.set(v.key, flag);
-    });
-    return out;
-  }, [vendors]);
-  const lowCommissionShareList = useMemo(
-    () =>
-      vendors.flatMap((v) => {
-        const flag = lowCommissionShareByPerson.get(v.key);
-        return flag ? [{ key: v.key, name: `${v.firstName} ${v.lastName}`.trim() || v.email, flag }] : [];
-      }),
-    [vendors, lowCommissionShareByPerson]
-  );
-  const flagSummary = <LowCommissionShareSummary vendors={lowCommissionShareList} />;
-
   // ---------- View by Event: venue -> events -> employees ----------
   const venues = useMemo(() => {
     type EventGroup = { key: string; name: string; multiDay: boolean; date: string; state: string; entries: Entry[]; totals: Totals };
@@ -652,7 +630,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
   if (groupBy === "vendor") {
     return (
       <div className="space-y-4">
-        {flagSummary}
         {vendors.map((vendor) => {
           const t = vendor.totals;
           const vendorLines = vendor.entries.flatMap((e) => e.lines);
@@ -671,7 +648,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                       {vendor.firstName || vendor.lastName ? `${vendor.firstName} ${vendor.lastName}` : "(no name)"}
                     </Editable>
                     <LineFlags lines={vendorLines} />
-                    <LowCommissionShareBadge flag={lowCommissionShareByPerson.get(vendor.key)} className="ml-2" />
                   </h3>
                   <p className="text-sm text-gray-500">{vendor.email || (editingOn ? "No email" : "")}</p>
                 </div>
@@ -945,7 +921,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
   if (groupBy === "venueSummary") {
     return (
       <div className="space-y-4">
-        {flagSummary}
         {venueSummaries.map((vs) => {
           const t = vs.totals;
           return (
@@ -1001,7 +976,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                                 {emp.firstName || emp.lastName ? `${emp.firstName} ${emp.lastName}` : "(no name)"}
                               </Editable>
                               <LineFlags lines={emp.lines} />
-                              <LowCommissionShareBadge flag={lowCommissionShareByPerson.get(emp.key)} className="ml-1.5" />
                             </div>
                             <div className="text-xs text-gray-500">{emp.email}</div>
                           </td>
@@ -1053,7 +1027,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
   const notInFile = "Not in the uploaded files";
   return (
     <div className="space-y-4">
-      {flagSummary}
       {venues.map((v) => (
         <div key={v.venue} className="apple-card">
           <div className="mb-3 flex items-center justify-between">
@@ -1211,7 +1184,6 @@ function PayrollViews({ rows, groupBy, editingOn, showActions }: { rows: Payroll
                                                   <LineFlags lines={L} />
                                                 </div>
                                                 <div className="text-xs text-gray-500">{e.email}</div>
-                                                <LowCommissionShareBadge flag={lowCommissionShareByPerson.get(e.personKey)} className="mt-0.5" />
                                               </>
                                             )}
                                             {isDay && <LineFlags lines={row.lines} />}

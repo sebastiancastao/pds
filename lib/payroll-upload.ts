@@ -17,13 +17,12 @@ import { matchName, normalizeName, prepareDirectory } from "./employee-name-matc
 export const PAYROLL_UPLOAD_TEXT_FIELDS = [
   { key: "first_name", label: "First Name", aliases: ["first name", "firstname", "first", "employee first name"] },
   { key: "last_name", label: "Last Name", aliases: ["last name", "lastname", "last", "surname", "employee last name"] },
-  // HR's 10/30 workbook types helper labels ("Commission subtotal") in an "Email / Summary" column.
-  { key: "email", label: "Email", aliases: ["vendor email", "email", "employee email", "e mail", "email address", "email summary"] },
+  { key: "email", label: "Email", aliases: ["vendor email", "email", "employee email", "e mail", "email address"] },
   { key: "category", label: "Category", aliases: ["category", "pay type", "type"] },
   { key: "venue", label: "Venue", aliases: ["venue", "location"] },
   { key: "city", label: "City", aliases: ["city"] },
   { key: "state", label: "State", aliases: ["state"] },
-  { key: "event_name", label: "Event", aliases: ["event name", "event", "event work", "artist show", "show"] },
+  { key: "event_name", label: "Event", aliases: ["event name", "event", "artist show", "show"] },
   { key: "event_date", label: "Event Date", aliases: ["event date", "show date", "date", "work date"] },
 ] as const;
 
@@ -65,8 +64,8 @@ export const PAYROLL_UPLOAD_NUMERIC_FIELDS = [
   { key: "mileage_pay", label: "Mileage Pay", money: true, aliases: ["mileage pay", "mileage"] },
   { key: "travel_pay", label: "Travel Pay", money: true, aliases: ["travel pay"] },
   { key: "reimbursement", label: "Reimbursement", money: true, aliases: ["reimbursement", "reimbursements"] },
-  { key: "other", label: "Other", money: true, aliases: ["other", "other bonus", "adjustment", "adjustments"] },
-  { key: "bonus", label: "Bonus", money: true, aliases: ["bonus", "bonus pay", "count in pay", "count in bonus"] },
+  { key: "other", label: "Other", money: true, aliases: ["other", "adjustment", "adjustments"] },
+  { key: "bonus", label: "Bonus", money: true, aliases: ["bonus", "bonus pay"] },
   { key: "sick_pay", label: "Sick Pay", money: true, aliases: ["sick pay", "sick leave pay", "sick leave", "sick"] },
   { key: "total_gross_pay", label: "Total Gross", money: true, aliases: ["total gross pay", "gross pay", "total gross", "gross", "total pay", "total paid"] },
 ] as const;
@@ -330,29 +329,6 @@ export const detectPayrollHeaderRow = (rows: unknown[][]): { index: number; scor
   return best;
 };
 
-// Columns of the Reimbursements table on the HR dashboard (and the event
-// dashboard), as HR copies it into the payroll workbook.
-const REIMBURSEMENT_TABLE_HEADER = ["Vendor", "Event", "Purchased", "Description", "Requested", "Approved", "Status", "Payroll", "Receipt"];
-const REIMBURSEMENT_STATUS_RE = /^(approved|pending|rejected|denied|cancell?ed|paid)$/i;
-
-// A sheet with no header row whose rows are that table's records: the vendor's
-// name with the Approved amount and the Status in their columns, then a row
-// starting with the vendor's email. Most filled rows must be such records.
-const looksLikeHeaderlessReimbursements = (rows: unknown[][]): boolean => {
-  const filled = rows.filter((row) => (row || []).some((c) => c !== null && c !== undefined && String(c).trim() !== ""));
-  let records = 0;
-  for (let i = 0; i + 1 < filled.length; i += 1) {
-    const row = filled[i];
-    const name = typeof row[0] === "string" ? row[0].trim() : "";
-    const nextFirst = typeof filled[i + 1][0] === "string" ? String(filled[i + 1][0]).trim() : "";
-    const status = typeof row[6] === "string" ? row[6].trim() : "";
-    if (name && !EMAIL_RE.test(name) && EMAIL_RE.test(nextFirst) && REIMBURSEMENT_STATUS_RE.test(status) && typeof parsePayrollNumber(row[5]) === "number") {
-      records += 1;
-    }
-  }
-  return records > 0 && records * 2 >= Math.floor(filled.length * 0.75);
-};
-
 const splitFullName = (full: string): { first: string | null; last: string | null } => {
   const text = full.replace(/\s+/g, " ").trim();
   if (!text) return { first: null, last: null };
@@ -372,11 +348,7 @@ export type ParsedPayrollSheet = {
   key: string;
   fileName: string;
   sheetName: string;
-  headerRowNumber: number; // 1-based, as Excel shows it; 0 when headerAssumed
-  // The sheet has no header row and was read as the HR dashboard's
-  // Reimbursements table (Vendor, Event, Purchased, Description, Requested,
-  // Approved, Status, Payroll, Receipt).
-  headerAssumed: boolean;
+  headerRowNumber: number; // 1-based, as Excel shows it
   layout: "payroll" | "reimbursements" | "register";
   rows: PayrollUploadRow[];
   totalGross: number;
@@ -392,8 +364,6 @@ export type ParsedPayrollSheet = {
   totalRowAdjustments: number;
   // Rows with text the parser doesn't understand, such as "paid" or "short".
   notes: SheetNote[];
-  // Sentences explaining the sheet (formulas, corrections made), not tied to lines.
-  explanations: SheetNote[];
   unreadableCells: number;
   recognizedColumns: string[];
   unrecognizedColumns: string[];
@@ -417,53 +387,15 @@ const headerScore = (cells: unknown[]): number => {
 // employee's block open, since a "Variable incentive" and a "Total" row can
 // follow it; "grand" is the whole sheet's total.
 type HelperKind = "rate" | "vi" | "subtotal" | "total" | "grand";
-type HelperLabel = { kind: HelperKind; name: string | null };
-
-// The label words on their own (normalized), such as "total", "commission
-// subtotal" or "hourly total". The first word says which pay the block holds.
-const helperKindOfWords = (t: string): HelperKind | null => {
+const helperKindOf = (text: string): HelperKind | null => {
+  const t = normalizeHeader(text);
   if (t === "rate in effect" || t === "rate") return "rate";
   if (t === "variable incentive" || t === "variable" || t === "vi") return "vi";
-  if (/\bgrand totals?$/.test(t)) return "grand"; // "GRAND TOTAL", "LA + SD + OTHER GRAND TOTAL"
-  const w = t.replace(/^(commission|commissions|comm|hourly)\s+/, "");
-  if (w === "subtotal" || w === "sub total") return "subtotal";
-  if (w === "total" || w === "totals") return "total";
+  if (t === "subtotal" || t === "sub total") return "subtotal";
+  if (t === "total" || t === "totals") return "total";
+  if (t === "grand total" || t === "grand totals") return "grand";
   return null;
 };
-
-// Words after a dash that describe the block rather than name an employee
-// ("Variable incentive — commission only").
-const LABEL_DESCRIPTOR_RE = /^(commission|commissions|comm|hourly)( only)?$/;
-const labelName = (text: string): string | null => {
-  const t = text.replace(/\s+/g, " ").trim();
-  if (!t || !/[a-z]/i.test(t) || LABEL_DESCRIPTOR_RE.test(normalizeHeader(t))) return null;
-  return t;
-};
-
-// Reads a helper label, with the employee's name when the label carries it:
-// "Total", "Commission subtotal", "COMMISSION TOTAL — Jane Doe",
-// "HOURLY TOTAL — Jane Doe", "Jane Doe — TOTAL", "Total for Jane Doe",
-// "Variable incentive — commission only". Only an em or en dash splits a label
-// from a name: this dashboard's export writes "TOTAL - Jane Doe" (a plain hyphen)
-// on rows that are skipped as totals.
-const parseHelperLabel = (text: unknown): HelperLabel | null => {
-  if (typeof text !== "string") return null;
-  const raw = text.replace(/\s+/g, " ").trim();
-  if (!raw) return null;
-  const whole = helperKindOfWords(normalizeHeader(raw));
-  if (whole) return { kind: whole, name: null };
-  const parts = raw.split(/\s*[\u2014\u2013]\s*/).filter((part) => part.trim() !== "");
-  if (parts.length === 2) {
-    const left = helperKindOfWords(normalizeHeader(parts[0]));
-    const right = helperKindOfWords(normalizeHeader(parts[1]));
-    if (left && !right) return { kind: left, name: left === "grand" ? null : labelName(parts[1]) };
-    if (right && !left) return { kind: right, name: right === "grand" ? null : labelName(parts[0]) };
-  }
-  const forName = /^(?:(?:commission|hourly)\s+)?(sub\s?total|total)s?\s+for\s+(.+)$/i.exec(raw);
-  if (forName) return { kind: /^sub/i.test(forName[1]) ? "subtotal" : "total", name: labelName(forName[2]) };
-  return null;
-};
-const helperKindOf = (text: unknown): HelperKind | null => parseHelperLabel(text)?.kind ?? null;
 
 // Columns where HR types a helper label. The Email column is the usual place
 // (with the employee's name sometimes repeated in the name columns); the
@@ -479,22 +411,6 @@ const IGNORED_NOTE_WORDS = new Set(["rates", "rate", "hourly", "commission", "co
 
 // Set on a sick leave sheet's line whose hourly pay was read as sick pay.
 export const SICK_FROM_REGULAR_KEY = "Read as sick pay";
-// Set on a line read with an earlier header of its sheet (see headerForRow).
-export const HEADER_REFIT_KEY = "Columns read with the header on row";
-// Set on a line whose hours came from the "Hours" column.
-export const HOURS_FROM_COLUMN_KEY = "Hours in decimal";
-
-// Columns that add up a line's Reg/OT/DT pay (hours x rate), so they are not
-// pay of their own.
-const HOURLY_SUM_HEADERS = new Set(["ext pay", "hourly pay", "total hourly pay"]);
-
-// Whether two lines are the same employee: same email when both have one,
-// otherwise the same name.
-const samePersonLines = (a: PayrollUploadRow, b: PayrollUploadRow): boolean => {
-  if (a.email && b.email) return a.email === b.email;
-  const nameA = normalizeName(payrollRowName(a));
-  return nameA !== "" ? nameA === normalizeName(payrollRowName(b)) : payrollRowPersonKey(a) === payrollRowPersonKey(b);
-};
 
 const cellText = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -529,79 +445,18 @@ const TOTAL_ROW_KEYS: PayrollUploadNumericKey[] = [
 // - TOTAL / subtotal rows, which are skipped;
 // - helper rows under an employee ("Rate in effect", "Variable incentive",
 //   "Total"), where the "Total" row is the final pay for that employee's block;
-// - reimbursement exports, where each record takes two rows (name, then email),
-//   also when pasted without their header row.
-// firstRow is the Excel row number of rows[0]: sheet_to_json starts at the top
-// of the sheet's used range, which is not always row 1.
-export const parsePayrollSheet = (
-  sheetName: string,
-  sheetRows: unknown[][],
-  fileName = "",
-  firstRow = 1
-): ParsedPayrollSheet | null => {
-  let rows = sheetRows;
-  let rowBase = firstRow;
-  let header = detectPayrollHeaderRow(rows);
-  let headerAssumed = false;
-  if (header.index < 0 && looksLikeHeaderlessReimbursements(rows)) {
-    rows = [REIMBURSEMENT_TABLE_HEADER, ...rows];
-    rowBase -= 1;
-    header = { index: 0, score: 0 };
-    headerAssumed = true;
-  }
+// - reimbursement exports, where each record takes two rows (name, then email).
+export const parsePayrollSheet = (sheetName: string, rows: unknown[][], fileName = ""): ParsedPayrollSheet | null => {
+  const header = detectPayrollHeaderRow(rows);
   if (header.index < 0) return null;
-  // Excel row number of rows[r].
-  const rowNo = (r: number) => r + rowBase;
 
-  let currentHeaderCells: unknown[] = rows[header.index] || [];
-  let currentMapping = mapPayrollHeaders(currentHeaderCells);
-  const firstMapping = currentMapping;
-  const recognized = new Set<string>(currentMapping.recognized);
-  const unrecognized = new Set<string>(currentMapping.unrecognized);
-  // Every distinct header seen so far in the sheet (row number 1-based), for
-  // rows pasted under another block's header (see headerForRow).
-  const seenHeaders: Array<{ cells: unknown[]; mapping: HeaderMapping; row: number; signature: string }> = [];
-  const rememberHeader = (cells: unknown[], mapping: HeaderMapping, row: number) => {
-    const signature = JSON.stringify(mapping.byColumn);
-    const at = seenHeaders.findIndex((h) => h.signature === signature);
-    if (at >= 0) seenHeaders.splice(at, 1);
-    seenHeaders.push({ cells, mapping, row, signature });
-  };
-  rememberHeader(currentHeaderCells, currentMapping, rowNo(header.index));
-  // The header to read a row with. Usually the one above it; but HR sometimes
-  // pastes a block in another layout under a header without repeating its own
-  // header (commission lines under an hourly header). When the row has nothing
-  // in this header's Total Gross Pay column and its pay columns add up to its
-  // total under another header of the sheet, that header is used instead.
-  const headerForRow = (cells: unknown[]): { cells: unknown[]; mapping: HeaderMapping; refitFrom: number | null } => {
-    const current = { cells: currentHeaderCells, mapping: currentMapping, refitFrom: null };
-    const totalCol = (m: HeaderMapping) => Object.keys(m.byColumn).map(Number).find((c) => m.byColumn[c] === "total_gross_pay");
-    const ownTotal = totalCol(currentMapping);
-    if (ownTotal === undefined || parsePayrollNumber(cells[ownTotal]) !== null) return current;
-    for (let i = seenHeaders.length - 1; i >= 0; i -= 1) {
-      const candidate = seenHeaders[i];
-      if (candidate.mapping === currentMapping || candidate.mapping.layout !== currentMapping.layout) continue;
-      const col = totalCol(candidate.mapping);
-      const total = col === undefined ? undefined : parsePayrollNumber(cells[col]);
-      if (typeof total !== "number") continue;
-      let sum = 0;
-      let parts = 0;
-      Object.entries(candidate.mapping.byColumn).forEach(([c, key]) => {
-        if (!(GROSS_COMPONENT_KEYS as string[]).includes(key)) return;
-        const value = parsePayrollNumber(cells[Number(c)]);
-        if (typeof value !== "number") return;
-        sum += value;
-        parts += 1;
-      });
-      if (parts > 0 && Math.abs(roundMoney(sum) - total) <= GROSS_MISMATCH_TOLERANCE) {
-        return { cells: candidate.cells, mapping: candidate.mapping, refitFrom: candidate.row };
-      }
-    }
-    return current;
-  };
+  let headerCells: unknown[] = rows[header.index] || [];
+  let mapping = mapPayrollHeaders(headerCells);
+  const firstMapping = mapping;
+  const recognized = new Set<string>(mapping.recognized);
+  const unrecognized = new Set<string>(mapping.unrecognized);
   const out: PayrollUploadRow[] = [];
   const notes: SheetNote[] = [];
-  const explanations: SheetNote[] = [];
   let skipped = 0;
   const skippedList: ParsedPayrollSheet["skipped"] = [];
   const skipRow = (row: number, reason: string, fields: Record<string, string | number | null>, texts: string[]) => {
@@ -647,17 +502,8 @@ export const parsePayrollSheet = (
     pendingVi = null;
     block = [];
   };
-  // Sentences (six words or more) explain how the sheet works, such as "Rate in
-  // effect = commission ÷ hours." next to the first employee: they are kept as
-  // the sheet's explanations and not tied to lines. Short notes ("paid",
-  // "short") flag the lines of the block above them.
-  const noteOnBlock = (row: number, texts: string[], attach = true) => {
-    const short: string[] = [];
-    texts.forEach((t) => (t.split(/ +/).length >= 6 ? explanations.push({ row, text: t }) : short.push(t)));
-    if (short.length === 0) return;
-    const text = short.join(", ");
+  const noteOnBlock = (row: number, text: string) => {
     notes.push({ row, text });
-    if (!attach) return;
     block.forEach((line) => {
       const prior = line.extra["Notes in file"];
       line.extra["Notes in file"] = prior ? `${prior}; ${text}` : text;
@@ -670,19 +516,16 @@ export const parsePayrollSheet = (
 
     if (headerScore(cells) >= 3) {
       closeBlock();
-      currentHeaderCells = cells;
-      currentMapping = mapPayrollHeaders(cells);
-      currentMapping.recognized.forEach((h) => recognized.add(h));
-      currentMapping.unrecognized.forEach((h) => unrecognized.add(h));
-      rememberHeader(cells, currentMapping, rowNo(r));
+      headerCells = cells;
+      mapping = mapPayrollHeaders(cells);
+      mapping.recognized.forEach((h) => recognized.add(h));
+      mapping.unrecognized.forEach((h) => unrecognized.add(h));
       repeatedHeaders += 1;
       continue;
     }
 
-    const { cells: headerCells, mapping, refitFrom } = headerForRow(cells);
     const fields = emptyPayrollFields() as Record<string, string | number | null>;
     const extra: PayrollUploadRow["extra"] = {};
-    if (refitFrom !== null) extra[HEADER_REFIT_KEY] = refitFrom;
     let hasAmount = false;
     let hasNonZeroAmount = false;
     let hasAnyValue = false;
@@ -754,56 +597,53 @@ export const parsePayrollSheet = (
     // "Total", "Grand total") on a row with no email. It is read from the Email
     // or a name column, or from Event Name / Venue / an unnamed column when the
     // row names no employee.
-    // The label can carry the employee's name ("COMMISSION TOTAL — Jane Doe").
-    type FoundLabel = { kind: HelperKind; column: string | null; name: string | null };
-    let label = null as FoundLabel | null;
-    let sideLabel = null as FoundLabel | null;
+    let label = null as { kind: HelperKind; column: string | null } | null;
+    let sideLabel = null as { kind: HelperKind; column: string | null } | null;
     if (!email) {
       for (let c = 0; c < cells.length && !label; c += 1) {
-        const parsedLabel = parseHelperLabel(cells[c]);
-        if (!parsedLabel) continue;
+        const cell = cells[c];
+        if (typeof cell !== "string") continue;
+        const kind = helperKindOf(cell);
+        if (!kind) continue;
         const column = mapping.byColumn[c] ?? null;
-        const found = { kind: parsedLabel.kind, column, name: parsedLabel.name };
-        if (column && LABEL_COLUMNS.has(column)) label = found;
-        else if (!sideLabel && (!column || SIDE_LABEL_COLUMNS.has(column))) sideLabel = found;
+        if (column && LABEL_COLUMNS.has(column)) label = { kind, column };
+        else if (!sideLabel && (!column || SIDE_LABEL_COLUMNS.has(column))) sideLabel = { kind, column };
       }
     }
     // The employee named on the row, leaving out a label typed in a name column.
     const namePart = (v: unknown) => (typeof v === "string" && !helperKindOf(v) ? v : "");
     const nameText = `${namePart(fields.first_name)} ${namePart(fields.last_name)}`.replace(/\s+/g, " ").trim();
     if (!label && sideLabel && !nameText) label = sideLabel;
-    // Who a helper row is for: the name columns, else the name inside the label.
-    const labelWho = nameText || label?.name || "";
 
     // ---- helper rows under an employee's lines ----
     if (label) {
       const nameTexts = new Set([fields.first_name, fields.last_name].filter(Boolean).map(String));
       const otherTexts = texts.filter((t) => !helperKindOf(t) && !nameTexts.has(t) && !IGNORED_NOTE_WORDS.has(normalizeHeader(t)));
       if (label.kind === "rate") {
-        if (otherTexts.length) noteOnBlock(rowNo(r), otherTexts);
+        if (otherTexts.length) noteOnBlock(r + 1, otherTexts.join(", "));
         continue;
       }
       if (label.kind === "grand") {
         closeBlock();
-        if (hasNonZeroAmount) skipRow(rowNo(r), "Grand total row (the whole sheet's total, not an employee line)", fields, texts);
+        if (hasNonZeroAmount) skipRow(r + 1, "Grand total row (the whole sheet's total, not an employee line)", fields, texts);
         continue;
       }
       const what = label.kind === "vi" ? "Variable incentive" : label.kind === "subtotal" ? "Subtotal" : "Total";
       if (block.length === 0) {
-        if (hasNonZeroAmount) skipRow(rowNo(r), `${what} row with no employee lines above it`, fields, texts);
+        if (hasNonZeroAmount) skipRow(r + 1, `${what} row with no employee lines above it`, fields, texts);
         continue;
       }
       const last = block[block.length - 1];
-      // A name next to the label (or inside it) must be the employee whose lines are above it.
-      if (labelWho && normalizeName(labelWho) !== normalizeName(payrollRowName(last))) {
+      // A name next to the label must be the employee whose lines are above it.
+      if (nameText && normalizeName(nameText) !== normalizeName(payrollRowName(last))) {
         closeBlock();
-        skipRow(rowNo(r), `${what} row for ${labelWho} comes right after ${payrollRowName(last) || "another employee"}'s lines`, fields, texts);
+        skipRow(r + 1, `${what} row for ${nameText} comes right after ${payrollRowName(last) || "another employee"}'s lines`, fields, texts);
         continue;
       }
       if (label.kind === "vi") {
         const amount = Number(fields.variable_incentive ?? fields.total_gross_pay ?? 0);
         const gross = Number(fields.total_gross_pay ?? amount);
-        pendingVi = { amount: (pendingVi?.amount || 0) + amount, gross: (pendingVi?.gross || 0) + gross, row: rowNo(r) };
+        pendingVi = { amount: (pendingVi?.amount || 0) + amount, gross: (pendingVi?.gross || 0) + gross, row: r + 1 };
         continue;
       }
       // "Subtotal" / "Total": the block's final figures. A label in the Email
@@ -816,9 +656,9 @@ export const parsePayrollSheet = (
       const explained =
         typeof grossTarget === "number" &&
         Math.abs(grossTarget - blockSum("total_gross_pay") - (pendingVi?.gross || 0)) <= GROSS_MISMATCH_TOLERANCE;
-      if (!(label.column === "email" || labelWho || explained)) {
+      if (!(label.column === "email" || nameText || explained)) {
         closeBlock();
-        skipRow(rowNo(r), "TOTAL row (not an employee line)", fields, texts);
+        skipRow(r + 1, "TOTAL row (not an employee line)", fields, texts);
         continue;
       }
       const changes: string[] = [];
@@ -834,12 +674,12 @@ export const parsePayrollSheet = (
       });
       if (changes.length > 0) {
         const prior = last.extra["Adjusted to Total row"];
-        const note = `Row ${rowNo(r)}: ${changes.join(", ")}`;
+        const note = `Row ${r + 1}: ${changes.join(", ")}`;
         last.extra["Adjusted to Total row"] = prior ? `${prior}; ${note}` : note;
         refreshOriginal(last);
         totalRowAdjustments += 1;
       }
-      if (otherTexts.length) noteOnBlock(rowNo(r), otherTexts, false);
+      if (otherTexts.length) notes.push({ row: r + 1, text: otherTexts.join(", ") });
       if (label.kind === "total") {
         pendingVi = null;
         block = [];
@@ -853,10 +693,10 @@ export const parsePayrollSheet = (
     // ---- rows without an employee: continuation, subtotal or note rows ----
     if (!nameText && !email) {
       const otherTexts = texts.filter((t) => !helperKindOf(t) && !IGNORED_NOTE_WORDS.has(normalizeHeader(t)));
-      if (otherTexts.length && mapping.layout !== "register") noteOnBlock(rowNo(r), otherTexts);
+      if (otherTexts.length && mapping.layout !== "register") noteOnBlock(r + 1, otherTexts.join(", "));
       if (hasNonZeroAmount || mapping.layout === "register") {
         skipRow(
-          rowNo(r),
+          r + 1,
           mapping.layout !== "register" && fields.total_gross_pay === null && texts.length === 0 && nextIsHeader(r)
             ? "Numbers just above a header row (usually pay rates), not an employee line"
             : "Amounts with no employee name or email (usually a subtotal row)",
@@ -889,7 +729,7 @@ export const parsePayrollSheet = (
     const isTotalRow = /^(grand\s+)?(sub)?totals?\b/i.test(nameText) || /^(grand\s+)?(sub)?totals?\b/i.test(String(fields.venue ?? ""));
     if (isTotalRow) {
       closeBlock();
-      skipRow(rowNo(r), "TOTAL row (not an employee line)", fields, [nameText || String(fields.venue ?? "")].filter(Boolean));
+      skipRow(r + 1, "TOTAL row (not an employee line)", fields, [nameText || String(fields.venue ?? "")].filter(Boolean));
       continue;
     }
 
@@ -933,11 +773,9 @@ export const parsePayrollSheet = (
       const description = extra["Description"];
       if (typeof description === "string" && description.trim()) fields.event_name = `${fields.event_name}: ${description.trim()}`;
     }
-    // "Ext pay", "Hourly Pay" and "Total Hourly Pay" (hours x rate) repeat Reg/OT/DT
-    // pay on hourly sheets. Use one as the regular pay only when a line has no
-    // hourly pay of its own.
-    const hourlySumLabel = Object.keys(extra).find((k) => HOURLY_SUM_HEADERS.has(normalizeHeader(k)));
-    const extPay = hourlySumLabel ? parsePayrollNumber(extra[hourlySumLabel]) : null;
+    // "Ext pay" (hours x rate) repeats Reg/OT/DT pay on hourly sheets. Use it as the
+    // regular pay only when a line has no hourly pay of its own.
+    const extPay = parsePayrollNumber(extra["Ext pay"] ?? extra["Ext Pay"] ?? null);
     if (
       typeof extPay === "number" &&
       extPay > 0 &&
@@ -946,17 +784,7 @@ export const parsePayrollSheet = (
       !Number(fields.doubletime_pay || 0)
     ) {
       fields.regular_pay = extPay;
-      extra["Regular pay"] = `taken from ${hourlySumLabel}`;
-    }
-    // Decimal hours left blank while the "Hours" column (next to it) has them,
-    // as on the WI 4-hour minimum callout sheet.
-    if (fields.hours === null) {
-      const hoursLabel = Object.keys(extra).find((k) => normalizeHeader(k) === "hours");
-      const typedHours = hoursLabel ? parsePayrollNumber(extra[hoursLabel], true) : null;
-      if (typeof typedHours === "number" && typedHours > 0) {
-        fields.hours = typedHours;
-        extra[HOURS_FROM_COLUMN_KEY] = `taken from the ${hoursLabel} column`;
-      }
+      extra["Regular pay"] = "taken from Ext pay";
     }
     const typed = fields as unknown as PayrollUploadFields;
     if (!mapping.hasTotalColumn && typed.total_gross_pay === null && hasAnyGrossComponent(typed)) {
@@ -970,15 +798,13 @@ export const parsePayrollSheet = (
       sort_order: out.length,
       source_file: fileName || null,
       source_sheet: sheetName,
-      source_row: rowNo(r),
+      source_row: r + 1,
       user_id: null,
       extra,
       original: { ...typed },
     };
-    // A line with no email (an hourly "PDS Operations" line, say) stays in the
-    // block of the same-named employee above it, so their Total row covers it.
     const lastInBlock = block[block.length - 1];
-    if (lastInBlock && !samePersonLines(lastInBlock, line)) closeBlock();
+    if (lastInBlock && payrollRowPersonKey(lastInBlock) !== payrollRowPersonKey(line)) closeBlock();
     block.push(line);
     out.push(line);
   }
@@ -1004,8 +830,7 @@ export const parsePayrollSheet = (
     key: fileName ? `${fileName}::${sheetName}` : sheetName,
     fileName,
     sheetName,
-    headerRowNumber: headerAssumed ? 0 : rowNo(header.index),
-    headerAssumed,
+    headerRowNumber: header.index + 1,
     layout: firstMapping.layout,
     rows: out,
     totalGross: roundMoney(out.reduce((s, l) => s + Number(l.total_gross_pay || 0), 0)),
@@ -1014,7 +839,6 @@ export const parsePayrollSheet = (
     repeatedHeaders,
     totalRowAdjustments,
     notes,
-    explanations,
     unreadableCells: unreadable,
     recognizedColumns: Array.from(recognized),
     unrecognizedColumns: Array.from(unrecognized).filter((h) => !recognized.has(h)),
@@ -1182,8 +1006,6 @@ const PARSER_EXTRA_KEYS = new Set<string>([
   "Company email replaced",
   "Payroll Summary name fits more than one employee",
   SICK_FROM_REGULAR_KEY,
-  HEADER_REFIT_KEY,
-  HOURS_FROM_COLUMN_KEY,
   SHIFTED_FIXED_KEY,
   REGISTER_KEY,
   REGISTER_NAME_KEY,
@@ -1211,7 +1033,6 @@ export const unreadAmountColumns = (row: Pick<PayrollUploadRow, "extra">): Array
 // to rates, taxes, net pay or Ext pay, which repeats Reg pay).
 export const looksLikePayColumn = (label: string): boolean => {
   const h = normalizeHeader(label);
-  if (HOURLY_SUM_HEADERS.has(h)) return false;
   return (
     /\b(premium|premiums|prem|holiday|vacation|pto|bonus|incentive|tip|tips|commission|differential|retro|severance|wage|wages|earning|earnings|bereavement|jury|penalty|pay|gross)\b/.test(h) &&
     !/\b(net|ext|rate|ytd|deduction|deductions|tax|taxes|liability|expense|expenses|withheld|frequency|details|check)\b/.test(h)
@@ -1296,12 +1117,7 @@ export const duplicateLineIds = (rows: PayrollUploadRow[]): Set<string> => {
   const dupes = new Set<string>();
   rows.forEach((row) => {
     if (!row.event_name && !row.event_date) return;
-    // Reimbursements have no event date; two purchases with the same description
-    // on different days are different records.
-    const purchased = row.extra?.["Purchased"];
-    const key = `${payrollRowPersonKey(row)}|${(row.event_name || "").toLowerCase()}|${row.event_date || ""}${
-      purchased ? `|${String(purchased)}` : ""
-    }`;
+    const key = `${payrollRowPersonKey(row)}|${(row.event_name || "").toLowerCase()}|${row.event_date || ""}`;
     const prior = seen.get(key);
     if (prior) {
       dupes.add(prior);

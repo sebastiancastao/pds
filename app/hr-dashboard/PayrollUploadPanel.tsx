@@ -100,11 +100,8 @@ async function readPayrollFiles(files: File[], takenNames: string[] = []) {
     fileNames.push(name);
     const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true, dense: true });
     workbook.SheetNames.forEach((sheetName) => {
-      const sheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, raw: true });
-      // Rows start at the top of the sheet's used range, so line row numbers match Excel's.
-      const firstRow = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]).s.r + 1 : 1;
-      const parsed = parsePayrollSheet(sheetName, rows, name, firstRow);
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], { header: 1, defval: null, raw: true });
+      const parsed = parsePayrollSheet(sheetName, rows, name);
       if (parsed && parsed.rows.length > 0) sheets.push(parsed);
       else ignoredSheets.push(files.length > 1 || takenNames.length > 0 ? `${name} › ${sheetName.trim()}` : sheetName.trim());
     });
@@ -414,12 +411,7 @@ function SheetPicker({
             {sheets.map((sheet) => {
               const checked = selected.includes(sheet.key);
               const details: string[] = [];
-              if (sheet.layout === "reimbursements")
-                details.push(
-                  sheet.headerAssumed
-                    ? "Reimbursement list with no header row, read as the Reimbursements table (Vendor, Event, Purchased, Description, Requested, Approved, Status): the Approved amount is paid"
-                    : "Reimbursement list: the Approved amount is paid"
-                );
+              if (sheet.layout === "reimbursements") details.push("Reimbursement list: the Approved amount is paid");
               if (sheet.layout === "register")
                 details.push(
                   "Payroll Summary (everyone paid): employees with lines on the other checked sheets are checked against it, and employees with no lines there are added from it"
@@ -453,11 +445,6 @@ function SheetPicker({
                     {sheet.notes.length > 0 && (
                       <div className="mt-0.5 text-red-700">
                         Notes the upload couldn&apos;t read: {sheet.notes.map((n) => `row ${n.row} "${n.text}"`).join(", ")}. The lines next to them are flagged.
-                      </div>
-                    )}
-                    {sheet.explanations.length > 0 && (
-                      <div className="mt-0.5 text-gray-500">
-                        Explanations in the sheet (not tied to a line): {sheet.explanations.map((n) => `row ${n.row} "${n.text}"`).join(", ")}.
                       </div>
                     )}
                   </td>

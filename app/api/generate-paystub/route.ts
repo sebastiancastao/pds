@@ -1366,29 +1366,8 @@ export async function POST(req: NextRequest) {
       poolUnknown?: boolean;
       // The "Adjustment / Per ADP" row: counted in the stub's totals, not printed on the report.
       adpAdjustment?: boolean;
-      // Shift at an event with no commission, paid the flat ZERO_COMMISSION_SHIFT_PAY. Its
-      // commissionPerEmployee holds that pay, printed under "Count In / Operation".
+      // Shift at an event with no commission, paid the flat ZERO_COMMISSION_SHIFT_PAY.
       zeroCommissionShift?: boolean;
-    };
-
-    // The flat ZERO_COMMISSION_SHIFT_PAY (count-in / no-commission shift) part of a row's
-    // commission. It is printed in its own "Count In / Operation" column and earnings line,
-    // but stays inside commissionPerEmployee, so the rate in effect, variable incentive and
-    // gross are worked out exactly as before.
-    const countInPayOf = (row: CommissionReportRow): number =>
-      row.zeroCommissionShift ? roundPayrollAmount(row.commissionPerEmployee) : 0;
-
-    // An uploaded payroll line that pays the matched event's flat no-commission shift pay:
-    // the same shift getZeroCommissionShiftPay pays, and exactly that amount as commission.
-    const uploadLineIsCountInPay = (line: PaystubUploadLine, event: any): boolean => {
-      if (!event || !matchedUserId) return false;
-      if (Math.abs(Number(line.commission || 0) - ZERO_COMMISSION_SHIFT_PAY) >= 0.005) return false;
-      if (!isPeriodRateState(normalizeStateCode(line.state || event?.state) || paystubState)) return false;
-      const worker = (Array.isArray(event?.workers) ? event.workers : []).find(
-        (w: any) => (w?.user_id || "").toString() === matchedUserId
-      );
-      const shares = getPayrollInputsForEventWithLinkedCommission(event).commissionSharesByUser || {};
-      return getZeroCommissionShiftPay(event, worker, shares[matchedUserId]) > 0;
     };
 
     const addCommissionReportPage = (
@@ -1405,8 +1384,6 @@ export async function POST(req: NextRequest) {
         rateInEffect?: number;
         hoursTotal?: number;
         variableRate?: number;
-        // Count In / Operation pay inside commissionTotal (printed in its own column).
-        countInTotal?: number;
       }
     ) => {
       if (rows.length === 0) return;
@@ -1467,7 +1444,7 @@ export async function POST(req: NextRequest) {
       const drawRL = (x1: number, y1: number, x2: number) => {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
-      const C = { date: 20, show: 54, venue: 98, pool: 142, numEmp: 196, comm: 231, countIn: 270, hours: 302, rate: 327, varRate: 352, varInc: 385, tips: 427, restPay: 457, bonus: 486, finalPay: 516 };
+      const C = { date: 20, show: 56, venue: 101, pool: 147, numEmp: 212, comm: 250, hours: 288, rate: 321, varRate: 353, varInc: 393, tips: 435, restPay: 465, bonus: 495, finalPay: 525 };
       const splitReportAddressLines = (rawAddress?: string | null) => {
         const str = (rawAddress || "").toString().trim();
         if (!str) return ["", "", ""] as const;
@@ -1494,18 +1471,9 @@ export async function POST(req: NextRequest) {
           identityBottomY = lineY;
         });
       }
-      const legendLines = [
-        "Commission = Commission Pool / # of Employees",
-        ...(displayRows.some((row) => countInPayOf(row) !== 0)
-          ? [
-              `Count In / Operation = flat $${ZERO_COMMISSION_SHIFT_PAY} for a shift worked at an event with no commission`,
-              "Rate in Effect = (Commission + Count In / Operation) / Hours Worked",
-            ]
-          : []),
-      ];
       const legendY = y - 16;
-      legendLines.forEach((line, index) => drawR(line, 25, legendY - index * 8, { size: 7 }));
-      y = Math.min(legendY - (legendLines.length - 1) * 8 - 8, identityBottomY - 10);
+      drawR("Commission = Commission Pool / # of Employees", 25, legendY, { size: 7 });
+      y = Math.min(legendY - 8, identityBottomY - 10);
       drawRL(20, y, 592);
       y -= 13;
       // Header row 1
@@ -1515,7 +1483,6 @@ export async function POST(req: NextRequest) {
       drawR("Commission Pool", C.pool, y, { bold: true, size: 6 });
       drawR("# of", C.numEmp, y, { bold: true, size: 6 });
       drawR("Commission", C.comm, y, { bold: true, size: 6 });
-      drawR("Count In /", C.countIn, y, { bold: true, size: 6 });
       drawR("Hours", C.hours, y, { bold: true, size: 6 });
       drawR("Rate in", C.rate, y, { bold: true, size: 6 });
       drawR("Variable", C.varRate, y, { bold: true, size: 6 });
@@ -1529,7 +1496,6 @@ export async function POST(req: NextRequest) {
       drawR("Per Agreement", C.pool, y, { bold: true, size: 6 });
       drawR("Employees", C.numEmp, y, { bold: true, size: 6 });
       drawR("Paid", C.comm, y, { bold: true, size: 6 });
-      drawR("Operation", C.countIn, y, { bold: true, size: 6 });
       drawR("Worked", C.hours, y, { bold: true, size: 6 });
       drawR("Effect", C.rate, y, { bold: true, size: 6 });
       drawR("Rate ($/hr)", C.varRate, y, { bold: true, size: 6 });
@@ -1541,7 +1507,6 @@ export async function POST(req: NextRequest) {
       let grandCommissionPool = 0;
       let grandEmployees = 0;
       let grandCommission = 0;
-      let grandCountIn = 0;
       let grandHoursWorked = 0;
       let grandRowVariableIncentive = 0;
       let grandTips = 0;
@@ -1557,11 +1522,7 @@ export async function POST(req: NextRequest) {
         drawR(venueT, C.venue, y, { size: 6 });
         drawR(row.poolUnknown ? "-" : fmtMoney(row.commissionPoolDollars), C.pool, y, { size: 6 });
         drawR(row.poolUnknown ? "-" : row.numEmployees.toString(), C.numEmp, y, { size: 6 });
-        // A count-in / no-commission shift's flat pay goes under Count In / Operation, not
-        // Commission Paid; Final Gross still adds both.
-        const rowCountIn = countInPayOf(row);
-        drawR(fmtMoney(roundPayrollAmount(row.commissionPerEmployee - rowCountIn)), C.comm, y, { size: 6 });
-        drawR(fmtMoney(rowCountIn), C.countIn, y, { size: 6 });
+        drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
         drawR(Number(row.hoursWorked).toFixed(2), C.hours, y, { size: 6 });
         drawR(maskedCommissionRowValue, C.rate, y, { size: 6 });
         drawR(maskedCommissionRowValue, C.varRate, y, { size: 6 });
@@ -1573,7 +1534,6 @@ export async function POST(req: NextRequest) {
         grandCommissionPool += row.commissionPoolDollars;
         grandEmployees += row.numEmployees;
         grandCommission += row.commissionPerEmployee;
-        grandCountIn += rowCountIn;
         grandHoursWorked += row.hoursWorked;
         grandRowVariableIncentive += row.variableIncentive;
         grandTips += row.tips;
@@ -1604,8 +1564,6 @@ export async function POST(req: NextRequest) {
           : 0;
       const totalVariableIncentive = roundPayrollAmount(reportVariableIncentive);
       if (options?.commissionTotal !== undefined) grandCommission = options.commissionTotal;
-      if (options?.countInTotal !== undefined) grandCountIn = options.countInTotal;
-      grandCountIn = roundPayrollAmount(grandCountIn);
       if (options?.tipsTotal !== undefined) grandTips = options.tipsTotal;
       if (options?.restBreakTotal !== undefined) grandRestPay = options.restBreakTotal;
       if (options?.bonusTotal !== undefined) grandBonus = options.bonusTotal;
@@ -1642,7 +1600,6 @@ export async function POST(req: NextRequest) {
             variableIncentiveDifference: roundPayrollAmount(
               row.variableIncentive - expectedVariableIncentive
             ),
-            countInPay: countInPayOf(row),
             finalPay: roundPayrollAmount(row.finalPay),
           };
         });
@@ -1653,7 +1610,6 @@ export async function POST(req: NextRequest) {
           paystubState,
           rowCount: displayRows.length,
           totalCommission: roundPayrollAmount(grandCommission),
-          totalCountIn: grandCountIn,
           totalHoursWorked: roundPayrollAmount(grandHoursWorked),
           totalRateInEffect: averageRateInEffect,
           totalVariableIncentive,
@@ -1662,10 +1618,7 @@ export async function POST(req: NextRequest) {
         });
       }
       drawR("Total for Pay Period", C.date, y, { bold: true, size: 6 });
-      // grandCommission includes the Count In / Operation pay (Final Gross adds it once);
-      // the Commission column shows the rest.
-      drawR(fmtMoney(roundPayrollAmount(grandCommission - grandCountIn)), C.comm, y, { bold: true, size: 6 });
-      drawR(fmtMoney(grandCountIn), C.countIn, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandCommission), C.comm, y, { bold: true, size: 6 });
       drawR(Number(grandHoursWorked).toFixed(2), C.hours, y, { bold: true, size: 6 });
       drawR(`$${averageRateInEffect.toFixed(2)}`, C.rate, y, { bold: true, size: 6 });
       drawR(`$${totalVariableRate.toFixed(2)}`, C.varRate, y, { bold: true, size: 6 });
@@ -1708,7 +1661,6 @@ export async function POST(req: NextRequest) {
             finalPay: roundPayrollAmount(line.commission + line.tips + line.restBreak + line.bonus),
             fromUpload: true,
             poolUnknown: !event,
-            zeroCommissionShift: uploadLineIsCountInPay(line, event),
           };
         });
 
@@ -2311,7 +2263,6 @@ export async function POST(req: NextRequest) {
         for (const row of countInDayRows) {
           row.commissionPerEmployee = ZERO_COMMISSION_SHIFT_PAY;
           row.finalPay = roundPayrollAmount(row.finalPay + ZERO_COMMISSION_SHIFT_PAY);
-          row.zeroCommissionShift = true;
         }
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] ADP count-in commission on its rows", {
@@ -2334,7 +2285,6 @@ export async function POST(req: NextRequest) {
           row.commissionPerEmployee = 0;
           row.rateInEffect = 0;
           row.finalPay = roundPayrollAmount(row.finalPay - ZERO_COMMISSION_SHIFT_PAY);
-          row.zeroCommissionShift = false;
         }
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] ADP did not pay the no-commission shift pay", {
@@ -2450,11 +2400,6 @@ export async function POST(req: NextRequest) {
       const commissionTotalForEarnings = adpLines
         ? adpLines.commission
         : roundPayrollAmount(rawCommissionTotalForEarnings);
-      // Count In / Operation: the flat no-commission shift pay inside the commission above.
-      // It gets its own earnings line; the Commission line shows the rest. Pay is unchanged.
-      const countInTotalForEarnings = roundPayrollAmount(
-        caCommissionRows.reduce((sum, row) => sum + countInPayOf(row), 0)
-      );
 
       // Uploaded payroll: Variable Incentive as uploaded, not recomputed from the period rate.
       // Arizona is paid per shift, not per pay period: each shift row carries its own
@@ -2585,11 +2530,6 @@ export async function POST(req: NextRequest) {
       const appliedStatutoryDeductions = round2(Math.min(rawTotalDeductions, grossPayThisPeriod));
       const netPay = round2(grossPayThisPeriod - appliedStatutoryDeductions + reimbursement + adjustmentReimbursementRounded + totalMileageReimbursementRounded);
       const effectiveRate = commissionRateInEffectForEarnings;
-      // The Commission earnings line without the Count In / Operation pay. Its rate stays the
-      // Rate in Effect, which counts the Count In / Operation pay: (Commission + Count In /
-      // Operation) / hours, the same rate the Variable Incentive and the Commission Report use.
-      const commissionLineThisPeriod = round2(totalCommissionRounded - countInTotalForEarnings);
-      const commissionLineRate = effectiveRate;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -3005,11 +2945,7 @@ export async function POST(req: NextRequest) {
         { label: "Regular", color: black, rate: regularRateForEarnings, hours: regularHoursForEarnings, thisPeriod: regularPayForEarnings, ytd: ytdRegularPay, hideThisPeriod: !showHourlyEarningsRows },
         { label: "Overtime", color: black, rate: overtimeRateAvg, hours: overtimeHoursForEarnings, thisPeriod: overtimePayForEarnings, ytd: ytdOvertimePay },
         { label: "Double Time", color: black, rate: doubletimeRateAvg, hours: doubletimeHoursForEarnings, thisPeriod: doubletimePayForEarnings, ytd: ytdDoubletimePay },
-        { label: "Commission", color: black, rate: commissionLineRate, hours: commissionHoursForEarnings, thisPeriod: commissionLineThisPeriod, ytd: ytdCommission },
-        // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none).
-        // ADP pays it as Commission, so it has no YTD of its own (Commission's YTD includes
-        // it), and /pdf-reader adds this line back into Commission.
-        { label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 },
+        { label: "Commission", color: black, rate: effectiveRate, hours: commissionHoursForEarnings, thisPeriod: totalCommissionRounded, ytd: ytdCommission },
         { label: "Variable Incentive", color: black, rate: round2(variableRateForEarnings), hours: commissionHoursForEarnings, thisPeriod: totalVariableIncentiveRounded, ytd: ytdVariableIncentive },
         { label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
         // Hours column holds this period's rest break count (a count, not hours): rest break pay / $4.50, rounded down.
@@ -3198,14 +3134,7 @@ export async function POST(req: NextRequest) {
         drawTopText("Total Hours Worked:", 353, 300, { size: 8 });
         drawTopText(Number(totalHoursWorked).toFixed(2), 492.9, 300, { size: 8 });
         if (showCommissionRateNote) {
-          drawTopText(
-            countInTotalForEarnings !== 0
-              ? "** Effective Rate = (Commissions + Count In / Operation) / Total Hours"
-              : "** Effective Rate = Total Commissions / Total Hours Worked",
-            353,
-            312,
-            { size: 7 }
-          );
+          drawTopText("** Effective Rate = Total Commissions / Total Hours Worked", 353, 312, { size: 7 });
           drawTopText("See Attached Commission Report in Employee Portal", 353, 322, { size: 7 });
         }
       }
@@ -3246,7 +3175,6 @@ export async function POST(req: NextRequest) {
           rateInEffect: effectiveRate,
           hoursTotal: commissionHoursForEarnings,
           variableRate: round2(variableRateForEarnings),
-          countInTotal: countInTotalForEarnings,
         }
       );
       const pdfBytes = await pdfDoc.save();
@@ -3295,19 +3223,17 @@ export async function POST(req: NextRequest) {
     yPosition -= 20;
 
     // Table column headers (compact vendor layout: CA/NV/WI)
-    // countIn: the flat no-commission shift pay (Count In / Operation), apart from Comm Amt.
     const vendorColXWithRestBreak = {
       event: 50,
       eventName: 78,
       regRate: 183,
       otRate: 228,
       hoursWorked: 273,
-      comm: 323,
-      countIn: 369,
-      tips: 405,
-      restBreak: 438,
-      other: 477,
-      totalGross: 517,
+      comm: 330,
+      tips: 395,
+      restBreak: 435,
+      other: 475,
+      totalGross: 515,
     } as const;
 
     const vendorColXNoRestBreak = {
@@ -3316,9 +3242,8 @@ export async function POST(req: NextRequest) {
       regRate: 193,
       otRate: 238,
       hoursWorked: 283,
-      comm: 333,
-      countIn: 380,
-      tips: 418,
+      comm: 340,
+      tips: 405,
       other: 460,
       totalGross: 515,
     } as const;
@@ -3345,8 +3270,6 @@ export async function POST(req: NextRequest) {
       drawText("OT RATE", (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8, bold: true });
       drawText("Hours Worked", colX.hoursWorked, yPosition, { size: 7, bold: true });
       drawText("Comm Amt", colX.comm, yPosition, { size: 8, bold: true });
-      drawText("Count In /", colX.countIn, yPosition + 6, { size: 6, bold: true });
-      drawText("Operation", colX.countIn, yPosition - 1, { size: 6, bold: true });
       drawText("Tips", colX.tips, yPosition, { size: 8, bold: true });
       if (includeRestBreakColumn) {
         drawText("Rest Break", (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 7, bold: true });
@@ -3381,8 +3304,6 @@ export async function POST(req: NextRequest) {
     let totalHoursWorked = 0;
     let totalTips = 0;
     let totalCommission = 0;
-    // Count In / Operation pay inside totalCommission (shown in its own column).
-    let totalCountIn = 0;
     let totalVariableIncentive = 0;
     let totalRestBreak = 0;
     let totalOther = 0;
@@ -3552,15 +3473,6 @@ export async function POST(req: NextRequest) {
         const displayCommissionPay = roundPayrollAmount(reportCommissionShare);
         const displayVariableIncentive = roundPayrollAmount(reportVariableIncentive);
         const commission = displayCommissionPay;
-        // A count-in / no-commission shift's flat pay shows under Count In / Operation instead
-        // of Comm Amt (same test as the California statement). Pay is unchanged.
-        const zeroCommissionShiftNonCa =
-          usesPeriodRate &&
-          !paysSanDiegoHourlyNonCa &&
-          getZeroCommissionShiftPay(event, worker, commissionSharesByUser[workerUserId]) > 0 &&
-          Math.abs(displayCommissionPay - ZERO_COMMISSION_SHIFT_PAY) < 0.005;
-        const countInPay = zeroCommissionShiftNonCa ? displayCommissionPay : 0;
-        const commissionLessCountIn = roundPayrollAmount(displayCommissionPay - countInPay);
 
         // Vendor layout REG/OT rate display
         // REG RATE is the rate actually paid for the shift (commission pay incl. variable
@@ -3634,7 +3546,6 @@ export async function POST(req: NextRequest) {
             restBreak,
             bonus: other,
             finalPay: commissionReportFinalPay,
-            zeroCommissionShift: zeroCommissionShiftNonCa,
           });
         }
 
@@ -3644,7 +3555,6 @@ export async function POST(req: NextRequest) {
         totalHoursWorked += displayHours;
         totalTips += tips;
         totalCommission += displayCommissionPay;
-        totalCountIn += countInPay;
         totalVariableIncentive += displayVariableIncentive;
         totalRestBreak += restBreak;
         totalOther += other;
@@ -3695,8 +3605,7 @@ export async function POST(req: NextRequest) {
           if (regRate > 0) drawText(`$${regRate.toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
           if (otRate > 0) drawText(`$${otRate.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8 });
           if (displayHours > 0) drawText(displayHours.toFixed(2), colX.hoursWorked, yPosition, { size: 8 });
-          if (commissionLessCountIn > 0) drawText(`$${commissionLessCountIn.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
-          if (countInPay > 0) drawText(`$${countInPay.toFixed(2)}`, colX.countIn, yPosition, { size: 8 });
+          if (commission > 0) drawText(`$${commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
           if (tips > 0) drawText(`$${tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
           if (includeRestBreakColumn) {
             // Always render rest break so it's visible (even when $0.00).
@@ -3751,12 +3660,6 @@ export async function POST(req: NextRequest) {
         totalHoursWorked += line.hours;
         totalTips += line.tips;
         totalCommission += line.commission;
-        const lineCountIn =
-          line.isCommission && uploadLineIsCountInPay(line, matchUploadLineToEvent(line, Array.isArray(events) ? events : []))
-            ? roundPayrollAmount(line.commission)
-            : 0;
-        totalCountIn += lineCountIn;
-        const lineCommissionLessCountIn = roundPayrollAmount(line.commission - lineCountIn);
         totalVariableIncentive += line.variableIncentive;
         totalRestBreak += line.restBreak;
         // This layout has no Meal Premium row: uploaded meal premium shows under Other.
@@ -3779,8 +3682,7 @@ export async function POST(req: NextRequest) {
           if (regRate > 0) drawText(`$${regRate.toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
           if (otRate > 0) drawText(`$${otRate.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8 });
           if (line.hours > 0) drawText(line.hours.toFixed(2), colX.hoursWorked, yPosition, { size: 8 });
-          if (lineCommissionLessCountIn > 0) drawText(`$${lineCommissionLessCountIn.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
-          if (lineCountIn > 0) drawText(`$${lineCountIn.toFixed(2)}`, colX.countIn, yPosition, { size: 8 });
+          if (line.commission > 0) drawText(`$${line.commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
           if (line.tips > 0) drawText(`$${line.tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
           if (includeRestBreakColumn) {
             drawText(`$${line.restBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8 });
@@ -3812,8 +3714,7 @@ export async function POST(req: NextRequest) {
     if (useVendorLayout) {
       const colX = includeRestBreakColumn ? vendorColXWithRestBreak : vendorColXNoRestBreak;
       drawText(totalHoursWorked.toFixed(2), colX.hoursWorked, yPosition, { size: 8, bold: true });
-      drawText(`$${roundPayrollAmount(totalCommission - totalCountIn).toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
-      drawText(`$${roundPayrollAmount(totalCountIn).toFixed(2)}`, colX.countIn, yPosition, { size: 8, bold: true });
+      drawText(`$${totalCommission.toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
       drawText(`$${totalTips.toFixed(2)}`, colX.tips, yPosition, { size: 8, bold: true });
       if (includeRestBreakColumn) {
         drawText(`$${totalRestBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8, bold: true });
@@ -3951,14 +3852,7 @@ export async function POST(req: NextRequest) {
       yPosition -= 12;
       drawText(`Total Hours Worked: ${totalHoursWorked.toFixed(2)}`, 50, yPosition, { size: 8 });
       yPosition -= 11;
-      drawText(
-        totalCountIn !== 0
-          ? "** Effective Rate = (Total Commissions + Count In / Operation) / Total Hours Worked"
-          : "** Effective Rate = Total Commissions / Total Hours Worked",
-        50,
-        yPosition,
-        { size: 8 }
-      );
+      drawText("** Effective Rate = Total Commissions / Total Hours Worked", 50, yPosition, { size: 8 });
       yPosition -= 11;
       drawText("See Attached Commission Report in Employee Portal", 50, yPosition, { size: 8 });
     }
