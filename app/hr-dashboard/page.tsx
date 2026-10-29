@@ -1539,11 +1539,15 @@ function HRDashboardContent() {
           ? eventCommissionDollars
           : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
         const isAZorNY = eventState === "AZ" || eventState === "NY";
-        // Count In Setup Day: each vendor who clocked hours gets a flat COUNT_IN_SETUP_FLAT_PAY
-        // commission share while the event pays them no pool share (it has no sales of its own),
-        // unless an exec switched it off for this event. Same rule and exclusions as the $0-pool
-        // shift pay in /api/generate-paystub, so it applies in the period-rate states (CA, NV, WI).
-        const appliesCountInFlatPay = isCountInFlatPayOn(eventInfo) && isPeriodRateState(eventState);
+        // Count In / Operation: each vendor who clocked hours at an event that pays them no pool
+        // share gets a flat COUNT_IN_SETUP_FLAT_PAY commission share. That covers Count In Setup
+        // Days and the count-in / setup days still saved as normal events with no sales. A Count
+        // In Setup Day whose $150 an exec switched off pays nothing. Same rule and exclusions as
+        // the $0-pool shift pay in /api/generate-paystub, in the period-rate states (CA, NV, WI).
+        // The share goes into the pay-period calculation, so it counts in the Rate in Effect.
+        const appliesCountInFlatPay =
+          isPeriodRateState(eventState) &&
+          (normalizeEventType(eventInfo?.event_type) !== "count_in_setup" || isCountInFlatPayOn(eventInfo));
 
         // Vendor count for commission allocation
         const vendorCountEligible = vendorPayments.reduce((count: number, p: any) => {

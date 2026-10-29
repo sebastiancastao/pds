@@ -165,6 +165,7 @@ EXTRACTION RULES:
     - "Overtime" / "OT": last two → overtime.thisPeriod and overtime.yearToDate
     - "Double Time" / "DT": last two → doubleTime.thisPeriod and doubleTime.yearToDate
     - "Commission": last two → commission.thisPeriod / commission.yearToDate
+    - "Count In / Operation": has ONE amount (this period, no YTD). ADD it to commission.thisPeriod; leave commission.yearToDate as read from the Commission row
     - "Variable Incentive": last two → variableIncentive.thisPeriod / yearToDate
     - "Credit card tips owed": last two → creditCardTips.thisPeriod / yearToDate
     - "Rest Break Pay" or "Rest Pay": last two → restBreakPay.thisPeriod / yearToDate
