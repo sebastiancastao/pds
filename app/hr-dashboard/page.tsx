@@ -8,6 +8,7 @@ import { isLosAngelesRegionName, isSanDiegoRegion, LOS_ANGELES_COMMISSION_POOL_P
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
+import { computeHourlyOverrideBreakdown, getHourlyOverrideRate } from "@/lib/hourly-pay-override";
 import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown, type DailyPayBreakdown } from "@/lib/daily-overtime";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
@@ -18,6 +19,14 @@ import EquipmentReimbursementsPanel from "./EquipmentReimbursementsPanel";
 import PayrollUploadPanel, { type SystemPayrollTotal } from "./PayrollUploadPanel";
 import UploadedPayrollView from "./UploadedPayrollView";
 import PayrollCompareView from "./PayrollCompareView";
+import {
+  getLowCommissionShare,
+  HourlyPayToggle,
+  LowCommissionShareBadge,
+  LowCommissionShareSummary,
+  type HourlyPayToggleInfo,
+  type LowCommissionShare,
+} from "./LowCommissionShareFlag";
 import type { CompareAmounts, SystemCompareLine, SystemCompareVendor } from "@/lib/payroll-compare";
 import { downloadUploadedPayroll } from "./payroll-upload-export";
 import type { PayrollUploadRow, PayrollUploadSummary } from "@/lib/payroll-upload";
@@ -161,11 +170,17 @@ const isNonEventPayrollEvent = (eventLike?: any): boolean =>
     .trim()
     .toLowerCase() === "special";
 
+// Same vendor key paymentsByVendor groups by, so a payment row in any view can
+// look up its vendor's pay-period flags.
+const payrollVendorKey = (p: any): string => p?.userId || p?.email || `${p?.firstName || ''}_${p?.lastName || ''}`;
+
 // Pass `paymentLike` whenever the question is about one worker's row. San Diego events pay
 // hourly, except for Los Angeles-region vendors: their rows carry sanDiegoLaCommission and
-// stay on commission pay, so the event alone does not decide it.
+// stay on commission pay, so the event alone does not decide it. A row HR switched to
+// "Pay hourly" (payHourlyOverride) is hourly on any event.
 const isHourlyPayrollEvent = (eventLike?: any, paymentLike?: any): boolean => {
   if (isNonEventPayrollEvent(eventLike)) return true;
+  if (paymentLike?.payHourlyOverride === true) return true;
   if (paymentLike?.sanDiegoLaCommission === true) return false;
   return (
     eventLike?.isSanDiegoHourly === true ||
@@ -639,6 +654,7 @@ function HRDashboardContent() {
   const [savingCountInFlatPayEventId, setSavingCountInFlatPayEventId] = useState<string | null>(null);
   // Signed-in role; only exec may switch a Count In Setup Day's flat $150 on or off.
   const [viewerRole, setViewerRole] = useState<string>("");
+  const [savingHourlyPayVendorKey, setSavingHourlyPayVendorKey] = useState<string | null>(null);
   const [mileagePayOverrides, setMileagePayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' } | null>(null);
   const [editingMileageValue, setEditingMileageValue] = useState<string>('');
@@ -1209,11 +1225,43 @@ function HRDashboardContent() {
 
       console.log('[HR PAYMENTS] Processing filtered events:', { filteredCount: filtered.length, withPaymentData: Object.keys(paymentsByEventId).length });
 
-      // AZ/NY: fetch prior weekly hours for OT rate display (Mon..day before event)
+      // HR "Pay hourly" toggle: vendors paid hourly instead of commission on an event
+      // (eventId -> userId -> hourly rate saved when HR switched it on).
+      const hourlyOverrideRates: Record<string, Record<string, number>> = {};
+      const commissionEventIds = filtered
+        .filter((e: any) => !isNonEventPayrollEvent(e))
+        .map((e: any) => (e?.id || '').toString())
+        .filter(Boolean);
+      if (commissionEventIds.length > 0) {
+        try {
+          const overridesRes = await fetch('/api/hr/payroll-hourly-overrides', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+            body: JSON.stringify({ action: 'list', event_ids: commissionEventIds }),
+          });
+          const overridesJson = await overridesRes.json().catch(() => ({}));
+          if (!overridesRes.ok) throw new Error(overridesJson?.error || 'Failed to load hourly pay settings');
+          for (const row of overridesJson?.overrides || []) {
+            const rate = Number(row?.hourly_rate || 0);
+            if (!row?.event_id || !row?.user_id || !(rate > 0)) continue;
+            if (!hourlyOverrideRates[row.event_id]) hourlyOverrideRates[row.event_id] = {};
+            hourlyOverrideRates[row.event_id][row.user_id] = rate;
+          }
+        } catch (err: any) {
+          console.error('[HR PAYMENTS] Failed to load hourly pay overrides:', err);
+          setPaymentsError(`Could not load which vendors are switched to hourly pay (${err?.message || 'unknown error'}). They show commission pay until the payroll loads again.`);
+        }
+      }
+
+      // AZ/NY: fetch prior weekly hours for OT rate display (Mon..day before event).
+      // San Diego hourly shifts and "Pay hourly" vendors need them for weekly overtime too.
       let weeklyHoursMap: Record<string, Record<string, number>> = {};
       const weeklyTrackedEvents = filtered.filter((e: any) => {
         const st = normalizeState(e.state);
-        return st === "AZ" || st === "NY" || isSanDiegoRegion(e);
+        return st === "AZ" || st === "NY" || isSanDiegoRegion(e) || Boolean(hourlyOverrideRates[e.id]);
       });
       if (weeklyTrackedEvents.length > 0) {
         const weeklyHoursRequests = weeklyTrackedEvents.map((e: any) => {
@@ -1444,6 +1492,9 @@ function HRDashboardContent() {
                       finalPay: daySums ? daySums.totalPay : 0,
                       isSanDiegoHourly: isEventSD && !memberLaCommission,
                       sanDiegoLaCommission: memberLaCommission,
+                      commissionBasedRow: !isNonEventPayroll && !(isEventSD && !memberLaCommission),
+                      payHourlyOverride: !isNonEventPayroll && !(isEventSD && !memberLaCommission) && Number(hourlyOverrideRates[eventId]?.[uid] || 0) > 0,
+                      hourlyOverrideRate: Number(hourlyOverrideRates[eventId]?.[uid] || 0) || null,
                       status: member.status // Include confirmation status
                     };
                   })
@@ -1466,6 +1517,7 @@ function HRDashboardContent() {
                   commissionPoolDollars: eventCommissionDollars,
                   adjustedGrossAmount,
                   ticketSales,
+                  ticketCount: eventInfo.ticket_count ?? null,
                   totalSales,
                   salesTax: tax,
                   salesFees: eventFees,
@@ -1502,6 +1554,7 @@ function HRDashboardContent() {
             commissionPoolDollars: eventCommissionDollars,
             adjustedGrossAmount,
             ticketSales,
+            ticketCount: eventInfo.ticket_count ?? null,
             totalSales,
             salesTax: tax,
             salesFees: eventFees,
@@ -1626,7 +1679,11 @@ function HRDashboardContent() {
             // paid commission; every other worker there is paid hourly.
             const isSanDiegoLaCommissionRow = sanDiegoLaCommissionUserIds.has(paymentUserId);
             const isSanDiegoHourlyRow = isEventSD && !isSanDiegoLaCommissionRow;
-            const isHourlyRow = isSanDiegoHourlyRow || isNonEventPayroll;
+            // A row that would be paid commission; HR can switch these to hourly ("Pay hourly").
+            const isCommissionBasedRow = !isSanDiegoHourlyRow && !isNonEventPayroll;
+            const hourlyOverrideRate = isCommissionBasedRow ? Number(hourlyOverrideRates[eventId]?.[paymentUserId] || 0) : 0;
+            const isHourlyOverrideRow = hourlyOverrideRate > 0;
+            const isHourlyRow = isSanDiegoHourlyRow || isNonEventPayroll || isHourlyOverrideRow;
             const rowBaseRate = isSanDiegoHourlyRow ? baseRate : commissionBaseRate;
             const poolCommissionShare = (isHourlyRow || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
             const countInFlatPay =
@@ -1639,7 +1696,7 @@ function HRDashboardContent() {
               poolCommissionShare <= 0;
             const commissionShare = countInFlatPay ? COUNT_IN_SETUP_FLAT_PAY : poolCommissionShare;
 
-            const priorWeeklyHours = (isAZorNY || isSanDiegoHourlyRow) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
+            const priorWeeklyHours = (isAZorNY || isSanDiegoHourlyRow || isHourlyOverrideRow) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
             const extAmtRegular = Math.round(roundedPayrollHours * rowBaseRate * 100) / 100;
             const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * rowBaseRate * 1.5 * 100) / 100;
@@ -1659,7 +1716,28 @@ function HRDashboardContent() {
             let regularPay = extAmtOnRegRateNonAzNy;
             let dailyBreakdown: DailyPayBreakdown[] = [];
 
-            if (isSanDiegoHourlyRow) {
+            if (isHourlyOverrideRow) {
+              // HR switched this vendor to hourly: the saved rate (California $28.50) with
+              // daily + weekly overtime in California, weekly overtime elsewhere. Their pool
+              // share is not paid; the split for everyone else is unchanged.
+              const overrideBreakdown = computeHourlyOverrideBreakdown(
+                roundedPayrollHours,
+                hourlyOverrideRate,
+                priorWeeklyHours,
+                eventState
+              );
+              regularHours = overrideBreakdown.regularHours;
+              overtimeHours = overrideBreakdown.overtimeHours;
+              overtimePay = overrideBreakdown.overtimePay;
+              doubletimeHours = overrideBreakdown.doubletimeHours;
+              doubletimePay = overrideBreakdown.doubletimePay;
+              regularPay = overrideBreakdown.regularPay;
+              extAmtOnRegRate = overrideBreakdown.totalPay;
+              totalFinalCommissionAmt = overrideBreakdown.totalPay;
+              loadedRate = overrideBreakdown.blendedRate;
+              commissionAmt = 0;
+              effectiveRegRate = hourlyOverrideRate;
+            } else if (isSanDiegoHourlyRow) {
               const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(
                 roundedPayrollHours,
                 baseRate,
@@ -1737,7 +1815,7 @@ function HRDashboardContent() {
               totalFinalCommissionAmt = roundedPayrollHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
             }
 
-            if (!isSanDiegoHourlyRow) {
+            if (!isSanDiegoHourlyRow && !isHourlyOverrideRow) {
               regularPay = extAmtOnRegRate;
             }
 
@@ -1808,6 +1886,9 @@ function HRDashboardContent() {
               isSanDiegoHourly: isSanDiegoHourlyRow,
               sanDiegoLaCommission: isSanDiegoLaCommissionRow,
               isNonEventHourly: isNonEventPayroll,
+              commissionBasedRow: isCommissionBasedRow,
+              payHourlyOverride: isHourlyOverrideRow,
+              hourlyOverrideRate: isHourlyOverrideRow ? hourlyOverrideRate : null,
               dailyBreakdown,
               countInFlatPay,
             };
@@ -1817,7 +1898,7 @@ function HRDashboardContent() {
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
-        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + ((p.isSanDiegoHourly || p.isNonEventHourly) ? 0 : Number(p.restBreak || 0)), 0);
+        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + ((p.isSanDiegoHourly || p.isNonEventHourly || p.payHourlyOverride) ? 0 : Number(p.restBreak || 0)), 0);
         const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const vendorsWithHoursByDivision = eventPayments.reduce((count: number, p: any) => {
           const hours = Number(p.actualHours || 0);
@@ -1850,6 +1931,7 @@ function HRDashboardContent() {
           commissionPoolDollars: safeCommissionPoolDollars,
           adjustedGrossAmount,
           ticketSales,
+          ticketCount: eventInfo.ticket_count ?? null,
           totalSales,
           salesTax: tax,
           salesFees: eventFees,
@@ -2092,6 +2174,7 @@ function HRDashboardContent() {
           commissionDeleted: payment?.commissionDeleted === true,
           commissionOverride: payment?.commissionOverride ?? null,
           forceEvenSplit: payment?.commissionEvenSplit,
+          payHourly: payment?.payHourlyOverride === true,
           // Only when this event's commission is genuinely shared with a linked partner,
           // pass the already-resolved per-vendor share (computed in the main fetch loop via
           // buildLinkedCommissionDistribution) so computePayPeriodCommission uses it directly
@@ -2508,6 +2591,111 @@ function HRDashboardContent() {
     return result;
   }, [getDisplayedPaymentBreakdown, getDisplayedMileagePay, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
 
+  // Vendors whose Commission Pay is under 50% of Commission Pay + Variable Incentive
+  // for the loaded period, from the same totals the vendor card shows (Commission Pay
+  // total and the Variable Incentive row). Only vendors with a commission event count;
+  // hourly-only staff have no commission to compare.
+  const lowCommissionShareByVendor = useMemo(() => {
+    const out: Record<string, LowCommissionShare> = {};
+    paymentsByVendor.forEach((vendor) => {
+      if (!vendor.events.some(({ event, payment }) => !isHourlyPayrollEvent(event, payment))) return;
+      const totals = getDisplayedVendorTotals(vendor);
+      const flag = getLowCommissionShare(totals.totalCommissionPay, totals.totalVariableIncentive);
+      if (flag) out[payrollVendorKey(vendor)] = flag;
+    });
+    return out;
+  }, [paymentsByVendor, getDisplayedVendorTotals]);
+
+  const lowCommissionShareVendors = useMemo(
+    () =>
+      paymentsByVendor.flatMap((vendor) => {
+        const key = payrollVendorKey(vendor);
+        const flag = lowCommissionShareByVendor[key];
+        return flag ? [{ key, name: `${vendor.firstName} ${vendor.lastName}`.trim() || vendor.email, flag }] : [];
+      }),
+    [paymentsByVendor, lowCommissionShareByVendor]
+  );
+
+  // "Pay hourly" switch for flagged vendors, and for vendors already switched (no longer
+  // flagged once hourly) so HR can switch them back. It covers the vendor's commission
+  // events in the loaded period: every row that would be paid commission.
+  const hourlyPayToggleByVendor = useMemo(() => {
+    const out: Record<string, HourlyPayToggleInfo & { userId: string; eventIds: string[] }> = {};
+    paymentsByVendor.forEach((vendor) => {
+      if (!vendor.userId) return;
+      const key = payrollVendorKey(vendor);
+      const rows = vendor.events.filter(({ payment }) => payment?.commissionBasedRow === true);
+      const hourlyCount = rows.filter(({ payment }) => payment?.payHourlyOverride === true).length;
+      if (rows.length === 0 || (!lowCommissionShareByVendor[key] && hourlyCount === 0)) return;
+      const rateByState = new Map<string, number>();
+      rows.forEach(({ event, payment }) => {
+        const st = normalizeState(event?.state) || 'CA';
+        const rate = Number(payment?.hourlyOverrideRate || 0) || getHourlyOverrideRate(st);
+        if (!rateByState.has(st)) rateByState.set(st, rate);
+      });
+      const distinctRates = Array.from(new Set(rateByState.values()));
+      const rateLabel = distinctRates.length === 1
+        ? `$${distinctRates[0].toFixed(2)}/hr`
+        : Array.from(rateByState.entries()).map(([st, rate]) => `${st} $${rate.toFixed(2)}/hr`).join(', ');
+      out[key] = {
+        userId: vendor.userId,
+        name: `${vendor.firstName} ${vendor.lastName}`.trim() || vendor.email,
+        eventIds: Array.from(new Set(rows.map(({ event }) => (event?.id || '').toString()).filter(Boolean))),
+        eventCount: rows.length,
+        hourlyCount,
+        rateLabel,
+      };
+    });
+    return out;
+  }, [paymentsByVendor, lowCommissionShareByVendor]);
+
+  // Saves the switch for every commission event of the vendor in the loaded period, then
+  // reloads the payroll so every view, export and payment email uses the new pay.
+  const setVendorHourlyPay = useCallback(async (vendorKey: string, enabled: boolean) => {
+    const info = hourlyPayToggleByVendor[vendorKey];
+    if (!info) return;
+    const events = `${info.eventIds.length} commission ${info.eventIds.length === 1 ? 'event' : 'events'} in this payroll`;
+    const message = enabled
+      ? `Pay ${info.name} hourly at ${info.rateLabel} instead of commission on ${events}?\n\n` +
+        `Their commission share and variable incentive are not paid on those events, and rest breaks are not paid separately. ` +
+        `Other vendors' commission does not change.`
+      : `Switch ${info.name} back to commission pay on ${events}?`;
+    if (!window.confirm(message)) return;
+    setSavingHourlyPayVendorKey(vendorKey);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/hr/payroll-hourly-overrides', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ action: 'set', user_id: info.userId, event_ids: info.eventIds, enabled }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to save the hourly pay setting');
+      }
+      await loadPaymentsData();
+    } catch (err: any) {
+      setPaymentsError(err?.message || 'Failed to save the hourly pay setting');
+    } finally {
+      setSavingHourlyPayVendorKey(null);
+    }
+  }, [hourlyPayToggleByVendor, loadPaymentsData]);
+
+  const renderHourlyPayToggle = (vendorLike: any, className = '') => {
+    const key = payrollVendorKey(vendorLike);
+    return (
+      <HourlyPayToggle
+        info={hourlyPayToggleByVendor[key]}
+        saving={savingHourlyPayVendorKey === key}
+        onChange={(enabled) => { void setVendorHourlyPay(key, enabled); }}
+        className={className}
+      />
+    );
+  };
+
   // Per-employee totals from the loaded payroll, matching the Vendor view, so the
   // Upload Payroll panel can compare an uploaded spreadsheet against them.
   const uploadComparePayroll = useMemo<SystemPayrollTotal[] | null>(() => {
@@ -2901,8 +3089,10 @@ function HRDashboardContent() {
         const dayReimbursement = isLastDay ? Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)) : 0;
         const dayOther = isLastDay ? Number(roundUpThousandsToNextHundred(other).toFixed(2)) : 0;
         const dayCommissionGrossPay = dayCommissionPay + dayTips + (typeof dayRestBreak === 'number' ? dayRestBreak : 0) + dayMileagePay + dayReimbursement + dayOther;
+        // An hourly row's Variable Incentive is only the manual bonus from the event's Payment
+        // tab (on the last day); it is part of that row's gross, as on screen.
         const dayTotalGrossPay = isHourlyEvent
-          ? Number(formatExactMoney(dayRegularPay + dayOvertimePay + dayDoubletimePay + dayTips + dayMileagePay + (isLastDay ? adjustmentAmt : 0)))
+          ? Number(formatExactMoney(dayRegularPay + dayOvertimePay + dayDoubletimePay + dayVariableIncentive + dayTips + dayMileagePay + (isLastDay ? adjustmentAmt : 0)))
           : Number(formatExactMoney(dayCommissionGrossPay));
 
         const baseRow: any = {
@@ -3060,8 +3250,10 @@ function HRDashboardContent() {
         }, 0);
         const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
+          // Hourly wages without the manual bonus: every Variable Incentive is added once, on
+          // the TOTAL row (payPeriodVariableIncentiveTotal), for hourly and commission rows alike.
           const eventRowBasePay = isHourlyPayrollEvent(event, p)
-            ? breakdown.commissionPaidTotal
+            ? breakdown.commissionPaidTotal - breakdown.variableIncentive
             : breakdown.commissionPay;
           return sum + eventRowBasePay + getDisplayedTips(event, p) + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
         }, 0) + totalDisplayedMileagePay;
@@ -3170,6 +3362,9 @@ function HRDashboardContent() {
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
           const commPay = isHourlyEvent ? 0 : Number(breakdown.commissionPay.toFixed(2));
           const varIncentive = isHourlyEvent ? 0 : Number(breakdown.variableIncentive.toFixed(2));
+          // An hourly row's Variable Incentive is the manual bonus only; it is already inside
+          // that row's Total Gross Pay (commissionPaidTotal), so it is shown, not added again.
+          const hourlyBonus = isHourlyEvent ? Number(breakdown.variableIncentive.toFixed(2)) : 0;
           const tipsRaw = getDisplayedTips(event, payment);
           const tips = Number(tipsRaw.toFixed(2));
           const restBreak = isHourlyEvent ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
@@ -3187,7 +3382,7 @@ function HRDashboardContent() {
           ));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
-          bveTotals.variableIncentive += varIncentive;
+          bveTotals.variableIncentive += varIncentive + hourlyBonus;
           bveTotals.tips += tips;
           bveTotals.restBreak += typeof restBreak === 'number' ? restBreak : 0;
           bveTotals.mileagePay += mileagePay;
@@ -3208,7 +3403,7 @@ function HRDashboardContent() {
             'Hours': formatHoursHHMM(breakdown.hours),
             'Hours in Decimal': hoursInDecimal,
             'Commission Pay': commPay,
-            'Variable Incentive': isHourlyEvent ? varIncentive : '',
+            'Variable Incentive': isHourlyEvent ? hourlyBonus : '',
             'Tips': tips,
             'Rest Break': restBreak,
             'Mileage Miles': !mileagePaid ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
@@ -3260,7 +3455,8 @@ function HRDashboardContent() {
     };
 
     appendDetailSheet('Vendor Payments', vendorRows);
-    appendDetailSheet('Hourly Users', hourlyRows, ['Commission Pay', 'Variable Incentive']);
+    const hourlyRowsHaveIncentive = hourlyRows.some((row) => Number(row['Variable Incentive'] || 0) !== 0);
+    appendDetailSheet('Hourly Users', hourlyRows, hourlyRowsHaveIncentive ? ['Commission Pay'] : ['Commission Pay', 'Variable Incentive']);
     appendDetailSheet('Commission', commissionRows);
 
     if (byVenueEventRows.length > 0) {
@@ -3322,7 +3518,8 @@ function HRDashboardContent() {
   // Non-event payroll is collapsed into a single "All" row, and a closing row
   // carries the grand total in the Credit column.
   // A 2nd "Adj Gross Detail" sheet breaks down each show: sales math behind
-  // adjusted gross plus every pay component (including the excluded ones).
+  // adjusted gross (Total Collected and Number of Tickets/People, named as on the
+  // event's Sales tab) plus every pay component (including the excluded ones).
   const exportVenueViewToExcel = useCallback(() => {
     if (paymentsByVenue.length === 0) {
       alert('No payment data to export. Please load payments first.');
@@ -3357,7 +3554,7 @@ function HRDashboardContent() {
     // journal leaves out (mileage, travel, sick pay).
     const detailEntries: Array<{
       venue: string; name: string; date: string; isNonEvent: boolean;
-      ticketSales: number; tipsDeducted: number; totalSales: number; tax: number; fees: number; otherIncome: number; adjustedGross: number;
+      ticketSales: number; ticketCount: number | null; tipsDeducted: number; totalSales: number; tax: number; fees: number; otherIncome: number; adjustedGross: number;
       commission: number; restBreak: number; reimbursement: number; other: number; tips: number;
       showPay: number; variableIncentive: number; mileagePay: number; sickPay: number; totalGross: number;
     }> = [];
@@ -3385,6 +3582,7 @@ function HRDashboardContent() {
           date: ev.date || '',
           isNonEvent,
           ticketSales,
+          ticketCount: ev.ticketCount != null && Number.isFinite(Number(ev.ticketCount)) ? Number(ev.ticketCount) : null,
           tipsDeducted: Math.max(ticketSales - totalSales, 0),
           totalSales,
           tax: Number(ev.salesTax || 0),
@@ -3513,7 +3711,9 @@ function HRDashboardContent() {
       'Venue': d.venue,
       'Artist / Show': d.isNonEvent ? `${d.name} (Non-Event)`.trim() : d.name,
       'Show Date': formatShowDate(d.date),
-      'Ticket Sales': money3(d.ticketSales),
+      // Same names as the /event-dashboard Sales tab fields.
+      'Total Collected': money3(d.ticketSales),
+      'Number of Tickets/People': d.ticketCount ?? '',
       'Tips (Deducted)': money3(d.tipsDeducted),
       'Total Sales': money3(d.totalSales),
       'Tax': money3(d.tax),
@@ -3536,6 +3736,10 @@ function HRDashboardContent() {
       const sumDetailCol = (key: string) => money3(detailRows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0));
       const detailTotalRow: any = { 'Venue': 'TOTAL', 'Artist / Show': '', 'Show Date': '' };
       detailHeader.slice(3).forEach(key => { detailTotalRow[key] = sumDetailCol(key); });
+      detailTotalRow['Number of Tickets/People'] = detailRows.reduce(
+        (s, r) => s + (typeof r['Number of Tickets/People'] === 'number' ? r['Number of Tickets/People'] : 0),
+        0
+      );
       detailRows.push(detailTotalRow);
       const detailSheet = XLSX.utils.json_to_sheet(detailRows, { header: detailHeader });
       detailSheet['!cols'] = detailHeader.map((key, idx) => (
@@ -5884,6 +6088,7 @@ function HRDashboardContent() {
               <UploadedPayrollView rows={activeUploadedPayroll.rows} groupBy={payrollGroupBy} />
             ) : (
             <div className="space-y-4">
+              {paymentsByVenue.length > 0 && <LowCommissionShareSummary vendors={lowCommissionShareVendors} />}
               {paymentsByVenue.length === 0 && !loadingPayments ? (
                 <div className="apple-empty-state">
                   <p className="text-gray-500">No payment data to show. Load a date range.</p>
@@ -5914,6 +6119,12 @@ function HRDashboardContent() {
                         <div>
                           <h3 className="text-lg font-semibold text-gray-900">{vendor.firstName} {vendor.lastName}</h3>
                           <p className="text-sm text-gray-500">{vendor.email}</p>
+                          {(lowCommissionShareByVendor[payrollVendorKey(vendor)] || hourlyPayToggleByVendor[payrollVendorKey(vendor)]) && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              <LowCommissionShareBadge flag={lowCommissionShareByVendor[payrollVendorKey(vendor)]} />
+                              {renderHourlyPayToggle(vendor)}
+                            </div>
+                          )}
                         </div>
                         <div className="text-right">
                           <div className="text-2xl font-bold text-gray-900">${formatVendorMoney(vendorDisplayedTotal)}</div>
@@ -6265,8 +6476,12 @@ function HRDashboardContent() {
                             {employeeRows.map(({ emp, totals }) => (
                               <tr key={emp.userId || emp.email} className="hover:bg-gray-50">
                                 <td className="px-4 py-2 text-sm">
-                                  <div className="font-medium text-gray-900">{emp.firstName} {emp.lastName}</div>
+                                  <div className="font-medium text-gray-900">
+                                    {emp.firstName} {emp.lastName}
+                                    <LowCommissionShareBadge flag={lowCommissionShareByVendor[payrollVendorKey(emp)]} className="ml-1.5" />
+                                  </div>
                                   <div className="text-xs text-gray-500">{emp.email}</div>
+                                  {renderHourlyPayToggle(emp, 'mt-0.5')}
                                 </td>
                                 <td className="px-4 py-2 text-sm text-right text-gray-700">{emp.events.length}</td>
                                 <td className="px-4 py-2 text-sm text-right">{renderCombinedHours(totals.totalHours, totals.totalSickHours, "right")}</td>
@@ -6488,6 +6703,10 @@ function HRDashboardContent() {
                                                   <div>
                                                     <div className="text-sm font-medium text-gray-900">{p.firstName} {p.lastName}</div>
                                                     <div className="text-xs text-gray-500">{p.email}</div>
+                                                    <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                                      <LowCommissionShareBadge flag={lowCommissionShareByVendor[payrollVendorKey(p)]} />
+                                                      {renderHourlyPayToggle(p)}
+                                                    </div>
                                                     {p.sanDiegoLaCommission === true && (
                                                       <span
                                                         className="mt-0.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200"

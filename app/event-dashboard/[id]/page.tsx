@@ -687,11 +687,6 @@ export default function EventDashboardPage() {
   // Saving payroll before the counts arrive would price rest breaks off the flat schedule.
   const [restBreakCountsLoaded, setRestBreakCountsLoaded] = useState(false);
 
-  // Vendors marked "No Meal Waiver" on the Timesheet tab (userId -> true). Record only, never used in pay.
-  const [noMealWaiverUids, setNoMealWaiverUids] = useState<Record<string, boolean>>({});
-  const [savingNoMealWaiverUid, setSavingNoMealWaiverUid] = useState<string | null>(null);
-  const [noMealWaiverError, setNoMealWaiverError] = useState("");
-
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
@@ -1278,7 +1273,6 @@ export default function EventDashboardPage() {
         loadTimesheetTotals();
         loadTeam(true); // also refresh attestation status
         void loadRestBreakCounts(); // another manager may have recorded rest breaks
-        void loadNoMealWaivers(); // or marked No Meal Waiver
       }
     }, 15000);
     return () => clearInterval(interval);
@@ -1674,110 +1668,6 @@ export default function EventDashboardPage() {
     } finally {
       setSavingRestBreakUid(null);
     }
-  };
-
-  // --- "No Meal Waiver" marks per vendor (Timesheet tab button next to each name) ---
-  useEffect(() => {
-    // Marks belong to one event; forget them if the page switches events.
-    setNoMealWaiverUids({});
-    setNoMealWaiverError("");
-  }, [eventId]);
-
-  const loadNoMealWaivers = useCallback(async () => {
-    if (!eventId) return;
-    try {
-      const token = await getSessionToken();
-      const res = await fetch(`/api/events/${eventId}/no-meal-waivers?ts=${Date.now()}`, {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          "Cache-Control": "no-cache",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setNoMealWaiverError(data?.error || "Could not load No Meal Waiver marks.");
-        return;
-      }
-      const next: Record<string, boolean> = {};
-      for (const id of Array.isArray(data?.userIds) ? data.userIds : []) {
-        if (id) next[String(id)] = true;
-      }
-      setNoMealWaiverUids(next);
-      setNoMealWaiverError("");
-    } catch {
-      setNoMealWaiverError("Network error loading No Meal Waiver marks.");
-    }
-  }, [eventId, getSessionToken]);
-
-  useEffect(() => {
-    if (!eventId || !userRole || activeTab !== "timesheet") return;
-    void loadNoMealWaivers();
-  }, [activeTab, eventId, userRole, loadNoMealWaivers]);
-
-  const toggleNoMealWaiver = async (uid: string) => {
-    if (!eventId || !canEditRestBreaks || !uid) return;
-    const marked = !noMealWaiverUids[uid];
-    setSavingNoMealWaiverUid(uid);
-    setNoMealWaiverError("");
-    try {
-      const token = await getSessionToken();
-      const res = await fetch(`/api/events/${eventId}/no-meal-waivers`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ userId: uid, marked }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setNoMealWaiverError(data?.error || "Failed to save No Meal Waiver.");
-        return;
-      }
-      setNoMealWaiverUids((prev) => {
-        const copy = { ...prev };
-        if (marked) copy[uid] = true;
-        else delete copy[uid];
-        return copy;
-      });
-    } catch {
-      setNoMealWaiverError("Network error saving No Meal Waiver.");
-    } finally {
-      setSavingNoMealWaiverUid(null);
-    }
-  };
-
-  // Button next to the vendor name. Managers, exec, supervisor3 and supervisor6 click it to
-  // mark or unmark; everyone else only sees the red tag on vendors already marked.
-  const renderNoMealWaiverButton = (uid: string) => {
-    if (!uid) return null;
-    const marked = !!noMealWaiverUids[uid];
-    if (!canEditRestBreaks) {
-      return marked ? (
-        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-600 text-white border border-red-700 leading-none uppercase">
-          No Meal Waiver
-        </span>
-      ) : null;
-    }
-    const saving = savingNoMealWaiverUid === uid;
-    return (
-      <button
-        type="button"
-        onClick={() => void toggleNoMealWaiver(uid)}
-        disabled={saving}
-        aria-pressed={marked}
-        title={marked ? "Marked No Meal Waiver. Click to remove the mark." : "Mark this vendor No Meal Waiver"}
-        className={`px-1.5 py-0.5 rounded text-[9px] font-bold border leading-none uppercase disabled:opacity-50 disabled:cursor-not-allowed ${
-          marked
-            ? "bg-red-600 text-white border-red-700 hover:bg-red-700"
-            : "bg-white text-red-700 border-red-300 hover:bg-red-50"
-        }`}
-      >
-        {saving ? "Saving…" : marked ? "✓ No Meal Waiver" : "No Meal Waiver"}
-      </button>
-    );
   };
 
   const goToTimesheetSignoff = () => {
@@ -8980,11 +8870,6 @@ export default function EventDashboardPage() {
         {restBreakError}
       </div>
     )}
-    {noMealWaiverError && (
-      <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-        {noMealWaiverError}
-      </div>
-    )}
 
     {loadingTimesheetTab && (
       <div className="text-center py-6 bg-white border rounded-lg">
@@ -9126,7 +9011,6 @@ export default function EventDashboardPage() {
                                   Event Supervisor
                                 </span>
                               )}
-                              {renderNoMealWaiverButton(uid)}
                             </div>
                             <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                               <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -9401,7 +9285,6 @@ export default function EventDashboardPage() {
                               Event Supervisor
                             </span>
                           )}
-                          {renderNoMealWaiverButton(uid)}
                         </div>
                         <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                           <span className={`text-xs font-medium ${attestationStatusClass}`}>
