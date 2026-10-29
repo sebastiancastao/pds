@@ -5,7 +5,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
-import { EVENT_TYPE_LABELS } from '@/lib/event-types';
+import { COUNT_IN_SETUP_FLAT_PAY, EVENT_TYPE_LABELS, isCountInFlatPayOn, normalizeEventType } from '@/lib/event-types';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
 import {
@@ -109,6 +109,8 @@ interface Event {
   workers?: Worker[];
   tips_distribution_mode?: string | null;
   linked_commission_event_id?: string | null;
+  // false = an exec switched off a Count In Setup Day's flat $150.
+  count_in_flat_pay_enabled?: boolean | null;
 }
 
 // ADP's earnings lines this period plus Gross Pay, as read from the /pdf-reader export
@@ -225,6 +227,8 @@ interface FinalPayEvent {
   doubletimePay: number;
   commissions: number;
   commissionPay: number;
+  // The flat $150 Count In / Operation part of commissionPay. Absent from older responses.
+  countInPay?: number;
   rateInEffect: number;
   variableIncentive: number;
   manualVariableIncentive?: number;
@@ -2405,7 +2409,9 @@ export default function PaystubGenerator() {
         adjustedGrossPercent: number;
         grossCommission: number;
         employeeCount: number | string;
+        // Includes countInPay, which the sheet prints in its own Count In / Operation column.
         commission: number;
+        countInPay: number;
         hoursWorked: number;
         rateInEffect: number;
         variableRate: number | '';
@@ -2496,6 +2502,11 @@ export default function PaystubGenerator() {
                 grossCommission: shares ? shares.grossCommission : 0,
                 employeeCount: event && shares ? shares.employeeCount || getCommissionVendorCountForEvent(event) : '-',
                 commission: line.commission,
+                // Count In / Operation: exactly the flat $150 on a matched event with no pool.
+                countInPay:
+                  event && shares && roundMoney(shares.grossCommission) === 0 && Math.abs(line.commission - 150) < 0.005
+                    ? line.commission
+                    : 0,
                 hoursWorked: roundHours(line.hours),
                 rateInEffect: line.hours > 0 ? roundMoney(line.commission / line.hours) : 0,
                 variableRate:
@@ -2551,9 +2562,32 @@ export default function PaystubGenerator() {
           const commissionPaidTotal = roundMoney(
             Number(finalPayData?.commissionPaidTotal ?? fallbackCommissionPaidTotal)
           );
-          const commission = roundMoney(
+          const commissionBeforeCountIn = roundMoney(
             isEventSD ? 0 : Number(finalPayData?.commissionPay ?? commissionShareRaw)
           );
+          // Count In / Operation: the flat $150 for a shift with hours at an event that pays this
+          // employee no pool share (same rule as the paystub PDF). /api/employee-final-pay adds
+          // it when the shift has saved payment data; otherwise it is added here, so it still
+          // counts in the Rate in Effect and Variable Incentive below.
+          const workerDivision = normalizeDivision(worker?.division);
+          const fallbackCountInPay =
+            usesPeriodRate &&
+            !(Number(finalPayData?.countInPay || 0) > 0) &&
+            commissionBeforeCountIn <= 0 &&
+            commissionShareRaw <= 0 &&
+            hoursWorked > 0 &&
+            normalizeEventType(event.event_type) !== 'special' &&
+            (normalizeEventType(event.event_type) !== 'count_in_setup' || isCountInFlatPayOn(event)) &&
+            !(workerDivision !== '' && !isVendorDivision(workerDivision)) &&
+            !isTrailersDivision(worker?.division) &&
+            worker?.payment_data?.commission_deleted !== true
+              ? COUNT_IN_SETUP_FLAT_PAY
+              : 0;
+          const countInPay = roundMoney(
+            (isEventSD ? 0 : Number(finalPayData?.countInPay || 0)) + fallbackCountInPay
+          );
+          // Includes the Count In / Operation pay.
+          const commission = roundMoney(commissionBeforeCountIn + fallbackCountInPay);
           const variableIncentiveValue = roundMoney(
             isEventSD ? 0 : Number(finalPayData?.variableIncentive ?? Math.max(0, commissionPaidTotal - commission))
           );
@@ -2599,6 +2633,7 @@ export default function PaystubGenerator() {
             grossCommission,
             employeeCount,
             commission,
+            countInPay,
             hoursWorked,
             rateInEffect,
             variableRate,
@@ -2723,7 +2758,8 @@ export default function PaystubGenerator() {
         adjusted_gross_percent: row.adjustedGrossPercent,
         gross_commission: row.grossCommission,
         employee_count: row.employeeCount,
-        commission: row.commission,
+        commission: roundMoney(row.commission - row.countInPay),
+        count_in_operation: row.countInPay,
         hours_worked: row.hoursWorked,
         rate_in_effect: maskedCommissionRowValue,
         variable_rate: maskedCommissionRowValue,
@@ -2744,7 +2780,9 @@ export default function PaystubGenerator() {
           'Gross Commission',
           '# of Employees',
           'Commission',
+          'Count In / Operation',
           'Hours Worked',
+          // (Commission + Count In / Operation) / Hours Worked
           'Rate in Effect',
           'Variable Rate ($/hr)',
           'Variable Incentive',
@@ -2760,7 +2798,8 @@ export default function PaystubGenerator() {
           row.adjustedGrossPercent,
           row.grossCommission,
           row.employeeCount,
-          row.commission,
+          roundMoney(row.commission - row.countInPay),
+          row.countInPay,
           row.hoursWorked,
           maskedCommissionRowValue,
           maskedCommissionRowValue,
@@ -2780,6 +2819,7 @@ export default function PaystubGenerator() {
         const bonus = typeof row.bonus === 'number' ? row.bonus : 0;
         return {
           commission: acc.commission + row.commission,
+          countIn: acc.countIn + row.countInPay,
           hoursWorked: acc.hoursWorked + row.hoursWorked,
           rowVariableIncentive: acc.rowVariableIncentive + rowVariableIncentive,
           tips: acc.tips + tips,
@@ -2789,6 +2829,7 @@ export default function PaystubGenerator() {
         };
       }, {
         commission: 0,
+        countIn: 0,
         hoursWorked: 0,
         rowVariableIncentive: 0,
         tips: 0,
@@ -2796,6 +2837,7 @@ export default function PaystubGenerator() {
         bonus: 0,
         finalPay: 0,
       });
+      // totals.commission includes the Count In / Operation pay, so the rate counts it.
       const totalRateInEffect =
         totals.hoursWorked > 0 ? roundMoney(totals.commission / totals.hoursWorked) : 0;
       const totalVariableRate =
@@ -2865,7 +2907,8 @@ export default function PaystubGenerator() {
         '',
         '',
         'TOTALS',
-        roundMoney(totals.commission),
+        roundMoney(totals.commission - totals.countIn),
+        roundMoney(totals.countIn),
         roundHours(totals.hoursWorked),
         totalRateInEffect,
         totalVariableRate,
@@ -2885,6 +2928,7 @@ export default function PaystubGenerator() {
         { wch: 18 },
         { wch: 14 },
         { wch: 14 },
+        { wch: 20 },
         { wch: 14 },
         { wch: 14 },
         { wch: 16 },
@@ -2895,12 +2939,13 @@ export default function PaystubGenerator() {
         { wch: 24 },
       ];
       commissionReportSheet['!autofilter'] = {
-        ref: `A1:O${commissionReportSheetData.length}`,
+        ref: `A1:P${commissionReportSheetData.length}`,
       };
 
-      // E=GrossComm, G=Commission, I=RateInEffect, J=VariableRate, K=VariableIncentive, L=Tips, M=RestPay, N=Bonus, O=FinalPay
-      const currencyColumns = ['E', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O'];
-      const numericColumns = ['H'];
+      // E=GrossComm, G=Commission, H=CountIn/Operation, J=RateInEffect, K=VariableRate,
+      // L=VariableIncentive, M=Tips, N=RestPay, O=Bonus, P=FinalPay
+      const currencyColumns = ['E', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+      const numericColumns = ['I'];
       for (let rowIndex = 2; rowIndex <= commissionReportSheetData.length; rowIndex += 1) {
         for (const column of currencyColumns) {
           const cell = commissionReportSheet[`${column}${rowIndex}`] as XLSX.CellObject | undefined;

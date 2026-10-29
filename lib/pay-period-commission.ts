@@ -18,6 +18,10 @@ export type PayPeriodCommissionWorkerInput = {
   commissionOverride?: number | null;
   commissionShare?: number | null;
   forceEvenSplit?: boolean;
+  // Paid hourly instead of commission on this event (HR "Pay hourly" toggle). The worker
+  // still counts in the event's pool split, like San Diego hourly workers, so nobody else's
+  // share moves, but gets no period rate, commission pay or variable incentive here.
+  payHourly?: boolean;
 };
 
 export type PayPeriodCommissionEventInput = {
@@ -175,6 +179,7 @@ export function computePayPeriodCommission({
         isVendor &&
         !isTrailers &&
         !commissionDeleted &&
+        worker?.payHourly !== true &&
         hours > 0;
 
       byEvent[eventId][userId] = {
