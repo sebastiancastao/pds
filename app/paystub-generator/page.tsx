@@ -20,8 +20,6 @@ import {
   PAYROLL_UPLOAD_FIELD_KEYS,
   REGISTER_KEY,
   REGISTER_PAID_KEY,
-  payrollRowName,
-  roundMoney as roundUploadMoney,
   type PayrollUploadRow,
 } from '@/lib/payroll-upload';
 import {
@@ -282,9 +280,6 @@ type EmployeeUploadedPayroll = {
   warnings: UploadedPayrollWarning[];
   hasCommissionLines: boolean;
 };
-
-const formatUploadMoney = (n: number) =>
-  `$${roundUploadMoney(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const YTD_OVERRIDE_KEYS = [
   'federalIncomeYtd',
@@ -832,13 +827,51 @@ export default function PaystubGenerator() {
   const [hrEquipmentLoading, setHrEquipmentLoading] = useState(false);
   const [hrEquipmentError, setHrEquipmentError] = useState<string | null>(null);
   const hrEquipmentRequestIdRef = useRef(0);
-  // Equipment paystubs: the /pdf-reader export(s) of the last regular pay date (one file per
-  // ADP batch). ADP's equipment reimbursement statement has no Federal Income, Social
-  // Security, Medicare or State DI lines, so an equipment paystub takes its deduction YTD
-  // (and any YTD the imported file lacks) from the employee's row in these files.
-  const [lastCycleFiles, setLastCycleFiles] = useState<Array<{ fileName: string; rows: ImportedEmployeeRow[] }>>([]);
-  const [lastCycleError, setLastCycleError] = useState<string | null>(null);
-  const lastCycleInputRef = useRef<HTMLInputElement>(null);
+  // Equipment paystubs: the saved YTD baselines (/adp-ytd-import), userId -> as-of date and
+  // whether Federal Income or Medicare YTD is saved. ADP's equipment reimbursement statement
+  // has no Federal Income, Social Security, Medicare or State DI lines, so generate-paystub
+  // takes an equipment paystub's deduction YTD (and any YTD the imported file lacks) from the
+  // employee's saved baseline. Loaded for equipment paystubs only, to warn before a run.
+  const [savedYtdBaselines, setSavedYtdBaselines] = useState<Map<string, { asOfDate: string | null; hasTaxYtd: boolean }> | null>(null);
+  const [savedYtdBaselinesLoading, setSavedYtdBaselinesLoading] = useState(false);
+  const [savedYtdBaselinesError, setSavedYtdBaselinesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (paystubType !== 'equipment') return;
+    let cancelled = false;
+    setSavedYtdBaselinesLoading(true);
+    setSavedYtdBaselinesError(null);
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/employee-ytd-carryover?ts=${Date.now()}`, {
+          cache: 'no-store',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+        const map = new Map<string, { asOfDate: string | null; hasTaxYtd: boolean }>();
+        for (const row of Array.isArray(body?.rows) ? body.rows : []) {
+          if (!row?.user_id) continue;
+          map.set(String(row.user_id), {
+            asOfDate: row.as_of_date ? String(row.as_of_date).slice(0, 10) : null,
+            hasTaxYtd: row.federal_income_ytd != null || row.medicare_ytd != null,
+          });
+        }
+        if (!cancelled) setSavedYtdBaselines(map);
+      } catch (err: any) {
+        if (!cancelled) {
+          setSavedYtdBaselines(null);
+          setSavedYtdBaselinesError(err?.message || 'Could not read the saved YTD baselines.');
+        }
+      } finally {
+        if (!cancelled) setSavedYtdBaselinesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paystubType]);
 
   useEffect(() => {
     const payDate = formData.payDate || '';
@@ -1904,108 +1937,57 @@ export default function PaystubGenerator() {
     return true;
   };
 
-  // The employee's row in the last paystub cycle files: the same name (letters only), else
-  // the same SSN last 4 digits and last name. Rows paid after this paystub's pay date are
-  // ignored; the latest pay date wins.
-  const lastCycleRowFor = (fields: { employeeName?: string; ssn?: string }): ImportedEmployeeRow | null => {
-    if (lastCycleFiles.length === 0) return null;
-    const lettersOnly = (value: string) => String(value || '').toLowerCase().replace(/[^a-z]/g, '');
-    const last4Of = (ssn: string) => String(ssn || '').match(/(\d{4})\s*$/)?.[1] || '';
-    const nameKey = lettersOnly(fields.employeeName || '');
-    const lastName = lettersOnly(String(fields.employeeName || '').trim().split(/\s+/).pop() || '');
-    const last4 = last4Of(fields.ssn || '');
-    const rows = lastCycleFiles
-      .flatMap((file) => file.rows)
-      .filter((row) => !formData.payDate || !row.payDate || row.payDate <= formData.payDate);
-    const latest = (candidates: ImportedEmployeeRow[]) =>
-      candidates.reduce<ImportedEmployeeRow | null>((best, row) => (!best || (row.payDate || '') > (best.payDate || '') ? row : best), null);
-    const byName = nameKey ? rows.filter((row) => lettersOnly(row.employeeName) === nameKey) : [];
-    if (byName.length > 0) return latest(byName);
-    if (!last4 || !lastName) return null;
-    return latest(rows.filter((row) => last4Of(row.ssn) === last4 && lettersOnly(row.employeeName).endsWith(lastName)));
-  };
-
-  // An equipment paystub's YTD figures: the imported file's, with the last paystub cycle row
-  // filling in what it lacks. When the file is ADP's equipment statement (no Federal Income or
-  // Medicare YTD), every deduction YTD comes from the last cycle row: the statement leaves those
-  // lines out, and the PDF reader could pick up a stray number for them.
-  const withLastCycleYtd = (fields: PaystubFields, equipmentAmount: number): PaystubFields => {
-    const lastCycle = lastCycleRowFor(fields);
-    if (!lastCycle) return fields;
-    const hasValue = (value: unknown) => value !== null && value !== undefined && String(value).trim() !== '';
-    const deductionKeys: string[] = ['federalIncomeYtd', 'socialSecurityYtd', 'medicareYtd', 'stateIncomeYtd', 'stateDIYtd', 'calSaversRothRetYtd'];
-    const fileHasNoFederalBlock = !hasValue(fields.federalIncomeYtd) && !hasValue(fields.medicareYtd);
-    const merged: Record<string, unknown> = { ...fields };
-    for (const key of YTD_OVERRIDE_KEYS) {
-      if (key === 'equipmentReimbYtd') continue;
-      const fromLastCycle = lastCycle[key];
-      if (!hasValue(fromLastCycle)) continue;
-      if (!hasValue(merged[key]) || (fileHasNoFederalBlock && deductionKeys.includes(key))) merged[key] = fromLastCycle;
-    }
-    // The last cycle's equipment YTD does not have this paystub's payment yet.
-    if (!hasValue(fields.equipmentReimbYtd) && hasValue(lastCycle.equipmentReimbYtd)) {
-      merged.equipmentReimbYtd = String(Math.round((Number(lastCycle.equipmentReimbYtd) + equipmentAmount) * 100) / 100);
-    }
-    // Other voluntary deductions (e.g. "Child support 1"): YTD only, nothing this period.
-    if ((fields.voluntaryDeductions || []).length === 0 && (lastCycle.voluntaryDeductions || []).length > 0) {
-      merged.voluntaryDeductions = (lastCycle.voluntaryDeductions || [])
-        .filter((line) => (line.ytd ?? 0) > 0)
-        .map((line) => ({ ...line, thisPeriod: 0 }));
-    }
-    return merged as PaystubFields;
-  };
-
-  // Asked before equipment paystubs are made when some would print 0.00 YTD on the deduction
-  // lines: the imported file has no Federal Income or Medicare YTD (ADP's equipment statement
-  // leaves them out) and the employee is not in the last paystub cycle files. True = stop.
+  // Asked before equipment paystubs are made when some would show a wrong deduction Year to
+  // Date. When the imported file has no Federal Income or Medicare YTD (ADP's equipment
+  // statement leaves them out), generate-paystub takes the deduction YTD from the employee's
+  // saved YTD baseline (/adp-ytd-import). Listed: no baseline with Federal Income or Medicare
+  // YTD (those lines show 0.00), or a baseline more than two weeks older than the pay date (it
+  // may be missing the last pay cycle). True = stop.
   const equipmentYtdNotReady = (people: Array<{ fields: PaystubFields; userId: string | null }>, action: string): boolean => {
     if (!isEquipmentMode) return false;
     const hasValue = (value: unknown) => value !== null && value !== undefined && String(value).trim() !== '';
-    const missing = people
+    const relying = people
       .filter(({ fields, userId }) => equipmentAmountFor(fields, userId).amount > 0)
-      .filter(({ fields }) => !hasValue(fields.federalIncomeYtd) && !hasValue(fields.medicareYtd) && !lastCycleRowFor(fields))
-      .map(({ fields }) => fields.employeeName || '(no name)');
-    if (missing.length === 0) return false;
-    const names = `${missing.slice(0, 8).join(', ')}${missing.length > 8 ? `, and ${missing.length - 8} more` : ''}`;
-    return !window.confirm(
-      `${missing.length} equipment paystub${missing.length === 1 ? '' : 's'} would show 0.00 Year to Date for Federal Income, Social Security, Medicare and State DI: ` +
-        `the imported file has none of them (ADP's equipment statement leaves those lines out) and ${missing.length === 1 ? 'this employee is' : 'these employees are'} not in the last paystub cycle files: ${names}.\n\n` +
-        `Load the last pay date's /pdf-reader export(s) under Paystub Type to fill them in.\n\n${action} anyway?`
-    );
-  };
-
-  // Adds /pdf-reader export(s) of the last regular pay date. A file loaded again replaces
-  // its earlier rows.
-  const handleLastCycleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
-    setLastCycleError(null);
-    const loaded: Array<{ fileName: string; rows: ImportedEmployeeRow[] }> = [];
-    const problems: string[] = [];
-    for (const file of files) {
-      if (!/\.(xlsx|xls)$/i.test(file.name)) {
-        problems.push(`${file.name}: not an Excel file`);
-        continue;
-      }
-      try {
-        const workbook = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
-        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
-        const rows = parsePayrollExportRows(jsonData, formData.state).filter((row) => !!row.employeeName);
-        if (rows.length === 0) problems.push(`${file.name}: no employee rows`);
-        else loaded.push({ fileName: file.name, rows });
-      } catch (err: any) {
-        problems.push(`${file.name}: ${err?.message || 'could not be read'}`);
-      }
+      .filter(({ fields }) => !hasValue(fields.federalIncomeYtd) && !hasValue(fields.medicareYtd));
+    if (relying.length === 0) return false;
+    if (savedYtdBaselinesLoading) {
+      alert('Still loading the saved YTD baselines. Try again in a moment.');
+      return true;
     }
-    if (loaded.length > 0) {
-      setLastCycleFiles((prev) => [
-        ...prev.filter((entry) => !loaded.some((file) => file.fileName === entry.fileName)),
-        ...loaded,
-      ]);
+    const listNames = (names: string[]) => `${names.slice(0, 8).join(', ')}${names.length > 8 ? `, and ${names.length - 8} more` : ''}`;
+    if (!savedYtdBaselines) {
+      return !window.confirm(
+        `Could not read the saved YTD baselines (${savedYtdBaselinesError || 'unknown error'}), so ${relying.length} equipment paystub${relying.length === 1 ? '' : 's'} may show 0.00 Year to Date for Federal Income, Social Security, Medicare and State DI.\n\n${action} anyway?`
+      );
     }
-    if (problems.length > 0) setLastCycleError(problems.join(' '));
-    if (lastCycleInputRef.current) lastCycleInputRef.current.value = '';
+    const twoWeeksBefore = (() => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(formData.payDate || '')) return '';
+      const d = new Date(`${formData.payDate}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() - 14);
+      return d.toISOString().slice(0, 10);
+    })();
+    const missing: string[] = [];
+    const old: string[] = [];
+    for (const { fields, userId } of relying) {
+      const name = fields.employeeName || '(no name)';
+      const saved = userId ? savedYtdBaselines.get(userId) : undefined;
+      const usable = !!saved && saved.hasTaxYtd && (!saved.asOfDate || !formData.payDate || saved.asOfDate <= formData.payDate);
+      if (!usable) missing.push(name);
+      else if (twoWeeksBefore && saved?.asOfDate && saved.asOfDate < twoWeeksBefore) old.push(`${name} (${saved.asOfDate})`);
+    }
+    if (missing.length === 0 && old.length === 0) return false;
+    const parts: string[] = [];
+    if (missing.length > 0) {
+      parts.push(
+        `${missing.length} equipment paystub${missing.length === 1 ? '' : 's'} would show 0.00 Year to Date for Federal Income, Social Security, Medicare and State DI: the imported file has none of them and ${missing.length === 1 ? 'this employee has' : 'these employees have'} no saved YTD baseline with them: ${listNames(missing)}.`
+      );
+    }
+    if (old.length > 0) {
+      parts.push(
+        `${old.length} equipment paystub${old.length === 1 ? '' : 's'} would take deduction Year to Date from a saved YTD baseline more than two weeks older than this pay date, so it may be missing the last pay cycle: ${listNames(old)}.`
+      );
+    }
+    return !window.confirm(`${parts.join('\n\n')}\n\nSave the last pay cycle's YTD on the ADP YTD Import page to fix this.\n\n${action} anyway?`);
   };
 
   // Asked before any paystub is made, single or batch, with the same rules: when an
@@ -2075,10 +2057,10 @@ export default function PaystubGenerator() {
       }
     }
     const override = userId ? getOverride(userId) : null;
-    // Equipment paystub: the YTD of the last paystub cycle (the imported file, filled in from
-    // the last paystub cycle files).
+    // Equipment paystub: the YTD of the last paystub cycle is the imported file's, and
+    // generate-paystub fills in what it lacks from the saved YTD baseline.
     const equipmentAmount = isEquipmentMode ? equipmentAmountFor(fields, userId).amount : 0;
-    const ytdFields = isEquipmentMode ? withLastCycleYtd(fields, equipmentAmount) : fields;
+    const ytdFields = fields;
     const payload: Record<string, unknown> = {
       // Employee info
       employeeName: (fields.employeeName || '').trim(),
@@ -3730,22 +3712,6 @@ export default function PaystubGenerator() {
     ? 'No commission in uploaded payroll'
     : 'No commission report for SD hourly employee';
 
-  const renderUploadedPayrollWarnings = (warnings: UploadedPayrollWarning[]) =>
-    warnings.length > 0 && (
-      <ul className="mt-2 space-y-1">
-        {warnings.map((warning) => (
-          <li
-            key={warning.code}
-            className={`text-xs rounded px-2 py-1 ${
-              warning.confirm ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-slate-50 border border-slate-200 text-slate-700'
-            }`}
-          >
-            {warning.message}
-          </li>
-        ))}
-      </ul>
-    );
-
   return (
     <>
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -4101,76 +4067,6 @@ export default function PaystubGenerator() {
                           </p>
                         )}
                       </div>
-                      {(() => {
-                        const lastCycleRowCount = lastCycleFiles.reduce((sum, file) => sum + file.rows.length, 0);
-                        const lastCyclePayDates = Array.from(
-                          new Set(lastCycleFiles.flatMap((file) => file.rows.map((row) => row.payDate)).filter(Boolean))
-                        ).sort();
-                        const equipmentRows = importedEmployees.filter(
-                          (emp) => equipmentAmountFor(paystubFieldsFromRow(emp), emp.matchedUserId).amount > 0
-                        );
-                        const unmatchedRows = equipmentRows.filter((emp) => !lastCycleRowFor(emp));
-                        const fileLacksTaxYtd =
-                          equipmentRows.length > 0 &&
-                          equipmentRows.every((emp) => !String(emp.federalIncomeYtd || '').trim() && !String(emp.medicareYtd || '').trim());
-                        return (
-                          <div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
-                            <p className="text-sm font-semibold text-slate-900">Last paystub cycle (Year to Date)</p>
-                            <p>
-                              An equipment paystub shows the Year to Date of the employee&apos;s last paystub cycle. ADP&apos;s equipment statement has the
-                              earnings YTD but leaves out Federal Income, Social Security, Medicare and State DI, so load the /pdf-reader export(s) of the
-                              last regular pay date (every batch file) to fill those in.
-                            </p>
-                            {fileLacksTaxYtd && lastCycleFiles.length === 0 && (
-                              <p className="text-amber-800">
-                                The imported file has no Federal Income or Medicare YTD. Without the last paystub cycle files those lines show 0.00.
-                              </p>
-                            )}
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                ref={lastCycleInputRef}
-                                type="file"
-                                accept=".xlsx,.xls"
-                                multiple
-                                onChange={handleLastCycleUpload}
-                                className="text-xs"
-                              />
-                              {lastCycleFiles.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setLastCycleFiles([]);
-                                    setLastCycleError(null);
-                                  }}
-                                  className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100"
-                                >
-                                  Clear
-                                </button>
-                              )}
-                            </div>
-                            {lastCycleError && <p className="text-red-700">{lastCycleError}</p>}
-                            {lastCycleFiles.length > 0 && (
-                              <>
-                                <p>
-                                  Loaded {lastCycleFiles.length} file{lastCycleFiles.length === 1 ? '' : 's'}, {lastCycleRowCount} row{lastCycleRowCount === 1 ? '' : 's'}
-                                  {lastCyclePayDates.length > 0 ? ` (pay date ${lastCyclePayDates.join(', ')})` : ''}: {lastCycleFiles.map((file) => file.fileName).join(', ')}.
-                                </p>
-                                {lastCyclePayDates.some((date) => !!formData.payDate && date > formData.payDate) && (
-                                  <p className="text-amber-800">Rows paid after {formData.payDate} are not used.</p>
-                                )}
-                                {equipmentRows.length > 0 && (
-                                  <p className={unmatchedRows.length > 0 ? 'text-amber-800' : 'text-emerald-700'}>
-                                    Employees with an equipment reimbursement found in these files: {equipmentRows.length - unmatchedRows.length} of {equipmentRows.length}
-                                    {unmatchedRows.length > 0
-                                      ? `. Not found: ${unmatchedRows.slice(0, 10).map((emp) => emp.employeeName).join(', ')}${unmatchedRows.length > 10 ? `, and ${unmatchedRows.length - 10} more` : ''}.`
-                                      : '.'}
-                                  </p>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        );
-                      })()}
                       <div className="max-w-xs">
                         <label className="block text-sm font-medium text-slate-700 mb-1">
                           Equipment Reimbursement (single paystub)
@@ -4189,163 +4085,6 @@ export default function PaystubGenerator() {
                           Leave blank to use HR&apos;s list{singleHrAmount > 0 ? ` ($${singleHrAmount.toFixed(2)} for this employee)` : ''}.
                         </p>
                       </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* Payroll Source: uploaded payroll in use for this period, or the system calculation */}
-            {(formData.payPeriodStart && formData.payPeriodEnd) && (() => {
-              const upload = uploadedPayrollForPeriod?.upload || null;
-              const uploadRows = uploadedPayrollForPeriod?.rows || [];
-              const peopleInUpload = new Set(uploadRows.map((row) => row.user_id).filter(Boolean)).size;
-              const uploadGross = uploadRows.reduce((sum, row) => sum + Number(row.total_gross_pay || 0), 0);
-              const unlinkedRows = uploadRows.filter((row) => !row.user_id);
-              const unlinkedNames = Array.from(new Set(unlinkedRows.map((row) => payrollRowName(row) || row.email || '(no name)')));
-              const overlapping =
-                uploadedPayroll &&
-                uploadedPayroll.periodStart === formData.payPeriodStart &&
-                uploadedPayroll.periodEnd === formData.payPeriodEnd
-                  ? uploadedPayroll.overlapping
-                  : [];
-              const singleUserId = importedEmployees.length === 0 ? matchedUserId : null;
-              const singleUploaded = singleUserId ? getUploadedPayrollForUser(singleUserId) : null;
-              const batchMatched = importedEmployees.filter((emp) => !!emp.matchedUserId);
-              const batchFromUpload = batchMatched.filter((emp) => !!getUploadedPayrollForUser(emp.matchedUserId));
-              const batchNeedsLook = batchFromUpload.filter((emp) =>
-                (getUploadedPayrollForUser(emp.matchedUserId)?.warnings || []).some((w) => w.confirm)
-              );
-
-              return (
-                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-                  <div className="flex items-center justify-between gap-3 mb-3">
-                    <h2 className="text-lg font-semibold text-slate-900">Payroll Source</h2>
-                    <div className="flex items-center gap-3">
-                      {uploadedPayrollLoading && (
-                        <div className="inline-block h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => void loadUploadedPayroll()}
-                        disabled={uploadedPayrollLoading}
-                        className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
-                      >
-                        Check again
-                      </button>
-                    </div>
-                  </div>
-
-                  {uploadedPayrollError && (
-                    <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-                      {uploadedPayrollError}
-                    </div>
-                  )}
-
-                  {!upload && !uploadedPayrollLoading && !uploadedPayrollError && (
-                    <div className="text-sm text-slate-600">
-                      <p>No uploaded payroll is in use for these dates, so paystubs use the system calculation.</p>
-                      {overlapping.length > 0 && (
-                        <p className="mt-2 text-xs text-slate-500">
-                          An uploaded payroll is in use for{' '}
-                          {overlapping.map((o) => `${o.period_start} to ${o.period_end}`).join(', ')}, which overlaps these dates.
-                          Paystubs only use an upload whose dates match the pay period exactly.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {!upload && uploadedPayrollLoading && (
-                    <p className="text-sm text-slate-500">Checking for uploaded payroll...</p>
-                  )}
-
-                  {upload && useSystemPayroll && (
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700">
-                      <p>
-                        An uploaded payroll is in use for this period on the HR dashboard
-                        {upload.file_name ? ` (${upload.file_name})` : ''}, but paystubs here use the system calculation.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setUseSystemPayroll(false)}
-                        className="mt-2 inline-flex items-center px-3 py-1.5 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700"
-                      >
-                        Use uploaded payroll
-                      </button>
-                    </div>
-                  )}
-
-                  {upload && activeUploadedPayroll && (
-                    <div className="space-y-3">
-                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900">
-                        <p className="font-semibold">Paystubs use the uploaded payroll</p>
-                        <p className="mt-1 text-xs text-blue-800">
-                          {upload.file_name || 'Uploaded payroll'} · {uploadRows.length} lines for {peopleInUpload} employee
-                          {peopleInUpload === 1 ? '' : 's'} · {formatUploadMoney(uploadGross)} · {upload.status === 'reviewed' ? 'reviewed' : 'not marked reviewed'}
-                        </p>
-                        <p className="mt-2 text-xs text-blue-800">
-                          Employees in the upload get their earnings from their uploaded lines. Employees not in it keep the
-                          system calculation. Reimbursements and mileage are added to net pay, not gross pay. YTD, deductions
-                          and sick leave work as usual.
-                        </p>
-                        <div className="mt-2 flex flex-wrap items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setUseSystemPayroll(true)}
-                            className="inline-flex items-center px-3 py-1.5 bg-white border border-blue-300 text-blue-800 rounded-md text-xs font-semibold hover:bg-blue-100"
-                          >
-                            Use system payroll instead
-                          </button>
-                          <Link href="/hr-dashboard" className="text-xs font-medium text-blue-700 underline hover:text-blue-900">
-                            Review or fix the upload on the HR dashboard
-                          </Link>
-                        </div>
-                      </div>
-
-                      {singleUserId && (
-                        <div className="text-sm">
-                          {singleUploaded ? (
-                            <>
-                              <p className="text-slate-800">
-                                <span className="font-semibold">{formData.employeeName || 'This employee'}</span>:{' '}
-                                {singleUploaded.lines.length} uploaded line{singleUploaded.lines.length === 1 ? '' : 's'}, gross pay{' '}
-                                {formatUploadMoney(singleUploaded.totals.taxableGross)}
-                                {singleUploaded.totals.reimbursement + singleUploaded.totals.mileage !== 0 &&
-                                  `, plus ${formatUploadMoney(singleUploaded.totals.reimbursement + singleUploaded.totals.mileage)} reimbursements`}
-                                .
-                              </p>
-                              {renderUploadedPayrollWarnings(singleUploaded.warnings)}
-                            </>
-                          ) : (
-                            <p className="text-slate-700">
-                              <span className="font-semibold">{formData.employeeName || 'This employee'}</span> is not in the uploaded
-                              payroll, so the paystub uses the system calculation.
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {batchMatched.length > 0 && (
-                        <p className="text-sm text-slate-700">
-                          {batchFromUpload.length} of {batchMatched.length} matched employees are in the uploaded payroll; the rest
-                          use the system calculation.
-                          {batchNeedsLook.length > 0 && (
-                            <span className="text-amber-800">
-                              {' '}
-                              {batchNeedsLook.length} need{batchNeedsLook.length === 1 ? 's' : ''} a look (amber in the list above).
-                            </span>
-                          )}
-                        </p>
-                      )}
-
-                      {unlinkedRows.length > 0 && (
-                        <p className="text-xs text-slate-500">
-                          {unlinkedRows.length} uploaded line{unlinkedRows.length === 1 ? ' is' : 's are'} not linked to an employee
-                          account and {unlinkedRows.length === 1 ? 'is' : 'are'} only used when the email matches an employee on this
-                          period&apos;s events: {unlinkedNames.slice(0, 8).join(', ')}
-                          {unlinkedNames.length > 8 ? `, and ${unlinkedNames.length - 8} more` : ''}.
-                        </p>
-                      )}
                     </div>
                   )}
                 </div>
