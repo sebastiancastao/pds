@@ -2339,32 +2339,6 @@ export async function POST(req: NextRequest) {
         adpCommissionTarget !== null && hasCommissionReportRows
           ? round2(adpCommissionTarget - commissionBeforeAdp)
           : 0;
-      // ADP can pay the count-in / no-commission shifts as Regular (hourly) pay instead of
-      // Commission (10/30: Regular 5.26 h x 28.50 = 149.91 for Angelica Galvez, Benny Johnson,
-      // Christina Tsuan; 5.58 h = 159.03 for Brayan Santillan; Commission without the $150).
-      // Then ADP's Regular pay beyond the system's hourly pay is near the count-in pay (within
-      // a quarter of it) and ADP's Commission is short by about the count-in pay. The report
-      // rows keep the payroll data's count-in pay; the statement prints ADP's Regular amount on
-      // the Count In / Operation line and ADP's whole Commission on Commission.
-      const countInPayBeforeAdp = roundPayrollAmount(
-        caCommissionRows.reduce((sum, row) => sum + countInPayOf(row), 0)
-      );
-      const adpRegularBeyondSystem = adpLines ? round2(adpLines.regular - round2(hourlySummaryRegularPay)) : 0;
-      const countInPaidAsAdpRegular =
-        !!adpLines &&
-        countInPayBeforeAdp > 0 &&
-        adpRegularBeyondSystem > 0 &&
-        Math.abs(adpRegularBeyondSystem - countInPayBeforeAdp) <= countInPayBeforeAdp * 0.25 &&
-        adpCommissionGap < 0 &&
-        Math.abs(adpCommissionGap + countInPayBeforeAdp) < Math.abs(adpCommissionGap);
-      const countInPayFromAdpRegular = countInPaidAsAdpRegular ? adpRegularBeyondSystem : 0;
-      if (countInPaidAsAdpRegular && debugEnabled) {
-        console.log("[GENERATE-PAYSTUB][debug] ADP paid the count-in shifts as Regular", {
-          countInPay: countInPayBeforeAdp,
-          adpRegular: adpRegularBeyondSystem,
-          commissionGap: adpCommissionGap,
-        });
-      }
       // When ADP's extra commission is exactly the flat count-in pay for each $0 shift on the
       // report (no pool, no commission, hours worked), it is that pay: it goes on those days'
       // rows, where HR expects it, instead of on the adjustment row.
@@ -2398,7 +2372,6 @@ export async function POST(req: NextRequest) {
       // go back to $0 so the report agrees with the statement (HR has to pay them in ADP).
       const zeroCommissionShiftRows = caCommissionRows.filter((row) => row.zeroCommissionShift);
       if (
-        !countInPaidAsAdpRegular &&
         adpCommissionGap < 0 &&
         zeroCommissionShiftRows.length > 0 &&
         Math.abs(adpCommissionGap + zeroCommissionShiftRows.length * ZERO_COMMISSION_SHIFT_PAY) < 0.005
@@ -2528,12 +2501,6 @@ export async function POST(req: NextRequest) {
       const countInTotalForEarnings = roundPayrollAmount(
         caCommissionRows.reduce((sum, row) => sum + countInPayOf(row), 0)
       );
-      // The Count In / Operation line: that pay inside the commission, or ADP's Regular pay for
-      // those shifts when ADP paid them as Regular (see countInPaidAsAdpRegular), so the
-      // statement's lines are ADP's amounts and add up to ADP's Gross Pay.
-      const countInLineThisPeriod = countInPaidAsAdpRegular ? countInPayFromAdpRegular : countInTotalForEarnings;
-      // Regular pay on the statement without that count-in pay (it is on the Count In line).
-      const hourlyRegularPayForStatement = round2(hourlySummaryRegularPay - countInPayFromAdpRegular);
 
       // Uploaded payroll: Variable Incentive as uploaded, not recomputed from the period rate.
       // Arizona is paid per shift, not per pay period: each shift row carries its own
@@ -2675,15 +2642,8 @@ export async function POST(req: NextRequest) {
       // The Commission earnings line without the Count In / Operation pay. Its rate stays the
       // Rate in Effect, which counts the Count In / Operation pay: (Commission + Count In /
       // Operation) / hours, the same rate the Variable Incentive and the Commission Report use.
-      // When ADP paid the count-in as Regular, its Commission has no count-in pay in it: the
-      // line is ADP's whole Commission and the rate adds the Count In line's pay.
-      const commissionLineThisPeriod = countInPaidAsAdpRegular
-        ? totalCommissionRounded
-        : round2(totalCommissionRounded - countInTotalForEarnings);
-      const commissionLineRate =
-        countInPaidAsAdpRegular && rawCommissionHoursForEarnings > 0
-          ? roundPayrollAmount((rawCommissionTotalForEarnings + countInLineThisPeriod) / rawCommissionHoursForEarnings)
-          : effectiveRate;
+      const commissionLineThisPeriod = round2(totalCommissionRounded - countInTotalForEarnings);
+      const commissionLineRate = effectiveRate;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -3071,14 +3031,14 @@ export async function POST(req: NextRequest) {
         // Uploaded salaried lines (ADP Payroll Summary) have pay but no hours, and so can
         // ADP's own hourly lines.
         ((!!uploadedPaystub || !!adpLines) &&
-          (hourlyRegularPayForStatement !== 0 || hourlySummaryOvertimePay !== 0 || hourlySummaryDoubletimePay !== 0));
+          (hourlySummaryRegularPay !== 0 || hourlySummaryOvertimePay !== 0 || hourlySummaryDoubletimePay !== 0));
       const hourlySummaryBaseRate = SAN_DIEGO_BASE_RATE;
       // Uploaded payroll: average rates from the uploaded pay and hours.
       const uploadedRate = (pay: number, hours: number) => (hours > 0 ? round2(pay / hours) : 0);
       const regularHoursForEarnings = showHourlyEarningsRows ? round2(hourlySummaryRegularHours) : 0;
       const overtimeHoursForEarnings = showHourlyEarningsRows ? round2(hourlySummaryOvertimeHours) : totalOtHours;
       const doubletimeHoursForEarnings = showHourlyEarningsRows ? round2(hourlySummaryDoubletimeHours) : totalDtHours;
-      const regularPayForEarnings = showHourlyEarningsRows ? hourlyRegularPayForStatement : totalRegularPayRounded;
+      const regularPayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryRegularPay) : totalRegularPayRounded;
       const overtimePayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryOvertimePay) : totalOvertimePayRounded;
       const doubletimePayForEarnings = showHourlyEarningsRows ? round2(hourlySummaryDoubletimePay) : totalDoubletimePayRounded;
       // The system's rate, or the pay over the hours when ADP paid a different amount (e.g.
@@ -3091,8 +3051,8 @@ export async function POST(req: NextRequest) {
         : round2(hourlySummaryBaseRate);
       const regularRateForEarnings = showHourlyEarningsRows
         ? uploadedPaystub
-          ? uploadedRate(hourlyRegularPayForStatement, hourlySummaryRegularHours)
-          : hourlyRowRate(hourlyRegularPayForStatement, hourlySummaryRegularHours, systemHourlyRegularPay, systemRegularRate)
+          ? uploadedRate(hourlySummaryRegularPay, hourlySummaryRegularHours)
+          : hourlyRowRate(hourlySummaryRegularPay, hourlySummaryRegularHours, systemHourlyRegularPay, systemRegularRate)
         : 0;
       const overtimeRateAvg = showHourlyEarningsRows
         ? uploadedPaystub
@@ -3116,10 +3076,10 @@ export async function POST(req: NextRequest) {
         { label: "Overtime", color: black, rate: overtimeRateAvg, hours: overtimeHoursForEarnings, thisPeriod: overtimePayForEarnings, ytd: ytdOvertimePay },
         { label: "Double Time", color: black, rate: doubletimeRateAvg, hours: doubletimeHoursForEarnings, thisPeriod: doubletimePayForEarnings, ytd: ytdDoubletimePay },
         { label: "Commission", color: black, rate: commissionLineRate, hours: commissionHoursForEarnings, thisPeriod: commissionLineThisPeriod, ytd: ytdCommission },
-        // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none),
-        // the amount only (no rate or hours). ADP pays it as Commission or Regular, so it has
-        // no YTD of its own, and /pdf-reader adds this line back into Commission.
-        { label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInLineThisPeriod, ytd: 0 },
+        // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none).
+        // ADP pays it as Commission, so it has no YTD of its own (Commission's YTD includes
+        // it), and /pdf-reader adds this line back into Commission.
+        { label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 },
         { label: "Variable Incentive", color: black, rate: round2(variableRateForEarnings), hours: commissionHoursForEarnings, thisPeriod: totalVariableIncentiveRounded, ytd: ytdVariableIncentive },
         { label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
         // Hours column holds this period's rest break count (a count, not hours): rest break pay / $4.50, rounded down.
