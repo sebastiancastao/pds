@@ -67,6 +67,9 @@ export async function POST(req: NextRequest) {
     const payDate = String(form.get("payDate") || "").trim();
     const payPeriodStart = String(form.get("payPeriodStart") || "").trim();
     const payPeriodEnd = String(form.get("payPeriodEnd") || "").trim();
+    // "equipment" for an equipment reimbursement paystub (/paystub-generator paystub type).
+    const isEquipmentPaystub = String(form.get("paystubType") || "").trim().toLowerCase() === "equipment";
+    const paystubLabel = isEquipmentPaystub ? "Equipment Reimbursement Paystub" : "Paystub";
 
     // Fetch employee email from users table
     const { data: userData, error: userErr } = await supabaseAdmin
@@ -94,7 +97,7 @@ export async function POST(req: NextRequest) {
     const paymentDayLabel = hasPeriodRange && payDate ? payDate : "";
     const adminEmail = "portal@1pds.net";
 
-    const subject = `Your Paystub – ${payPeriodLabel}`;
+    const subject = `Your ${paystubLabel} – ${payPeriodLabel}`;
     const html = `
 <!DOCTYPE html>
 <html>
@@ -109,7 +112,7 @@ export async function POST(req: NextRequest) {
         <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
           <tr>
             <td style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:36px 30px;text-align:center;">
-              <h1 style="color:#ffffff;margin:0;font-size:26px;">Your Paystub is Ready</h1>
+              <h1 style="color:#ffffff;margin:0;font-size:26px;">Your ${paystubLabel} is Ready</h1>
               <p style="color:#d1fae5;margin:8px 0 0 0;font-size:15px;">Pay period: ${payPeriodLabel}</p>${
                 paymentDayLabel
                   ? `
@@ -124,7 +127,7 @@ export async function POST(req: NextRequest) {
                 Hello <strong>${employeeName}</strong>,
               </p>
               <p style="color:#333333;font-size:16px;line-height:1.6;margin:0 0 20px 0;">
-                Please find your paystub attached for the pay period <strong>${payPeriodLabel}</strong>${
+                Please find your ${paystubLabel.toLowerCase()} attached for the pay period <strong>${payPeriodLabel}</strong>${
                   paymentDayLabel ? `, payment day <strong>${paymentDayLabel}</strong>` : ""
                 }.
                 Keep this document for your records.
@@ -142,7 +145,7 @@ export async function POST(req: NextRequest) {
 </body>
 </html>`;
 
-    const filename = `paystub-${employeeName.replace(/\s+/g, "_")}-${payDate || "recent"}.pdf`;
+    const filename = `${isEquipmentPaystub ? "equipment-reimbursement-paystub" : "paystub"}-${employeeName.replace(/\s+/g, "_")}-${payDate || "recent"}.pdf`;
 
     const emailResult = await sendEmail({
       to: employeeEmail,

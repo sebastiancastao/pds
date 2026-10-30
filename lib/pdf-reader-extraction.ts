@@ -8,6 +8,7 @@
 
 import Tesseract from 'tesseract.js';
 import { parseOtherVoluntaryDeductions } from './voluntary-deductions';
+import { fixZeroGrossDeductionLines } from './pdf-reader-zero-gross-deductions';
 
 export type OcrProgress = { page: number; progress: number; total: number };
 
@@ -387,6 +388,16 @@ function parseCurrencyFromLine(rawLine: string): number | undefined {
   return hasParenNegative ? -Math.abs(parsed) : parsed;
 }
 
+// Lines that are never a tax deduction, though they hold a deduction keyword:
+// - "Social Security Number: XXX-XX-1234" (the employee's SSN). ADP's equipment reimbursement
+//   statement has no Social Security line, and the guesses below read a nearby number from
+//   the address instead (e.g. "12900 Hatchett Creek Road" as 129.00, "Local: 15" as 15.00).
+// - A levy or garnishment, e.g. "State tax levy 1  0.00  292.08", a voluntary deduction that
+//   "state tax" made the California State Income guess read as 1.00.
+function isNotTaxDeductionLine(line: string): boolean {
+  return /social\s+security\s+(?:number|no\b|#)|\bssn\b|\blev(?:y|ies)\b|garnish/i.test(line);
+}
+
 function guessDeductionValue(lines: string[], def: DeductionDefinition): number | undefined {
   const orderedLines = [...lines].reverse();
 
@@ -399,6 +410,7 @@ function guessDeductionValue(lines: string[], def: DeductionDefinition): number 
       const line = chunk[j];
       const lower = line.toLowerCase();
       if (!def.keywords.some((keyword) => lower.includes(keyword))) continue;
+      if (isNotTaxDeductionLine(line)) continue;
 
       const amount = parseCurrencyFromLine(line);
       if (typeof amount === 'number' && amount > 0) return amount;
@@ -1285,6 +1297,19 @@ export function extractPayrollData(text: string) {
   const commResult = extractEarningsLine(/Commission\b/i);
   if (commResult) payrollData.earnings.commission = commResult;
 
+  // "Count In / Operation" is only on /paystub-generator stubs (never ADP): the flat $150
+  // no-commission shift pay, printed apart from Commission with one amount and no YTD
+  // (Commission's YTD already includes it). It is commission pay, so it goes back in here.
+  const countInResult = extractEarningsLine(/Count\s+In\s*\/\s*Operation\b/i);
+  if (countInResult && payrollData.earnings.commission) {
+    // A lone number reads as YTD; on this line it is this period's amount.
+    const countInThisPeriod = countInResult.thisPeriod || countInResult.yearToDate;
+    payrollData.earnings.commission = {
+      ...payrollData.earnings.commission,
+      thisPeriod: Math.round((payrollData.earnings.commission.thisPeriod + countInThisPeriod) * 100) / 100,
+    };
+  }
+
   // Extract Variable Incentive
   const viResult = extractEarningsLine(/Variable\s+Incentive\b/i);
   if (viResult) payrollData.earnings.variableIncentive = viResult;
@@ -1379,6 +1404,9 @@ export function extractPayrollData(text: string) {
       };
     }
   }
+
+  // Gross Pay $0.00 (an equipment reimbursement paystub): deduction lines show YTD only.
+  fixZeroGrossDeductionLines(payrollData, lines);
 
   guessMissingDeductions(payrollData, lines);
 

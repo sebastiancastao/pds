@@ -5,7 +5,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
-import { EVENT_TYPE_LABELS } from '@/lib/event-types';
+import { COUNT_IN_SETUP_FLAT_PAY, EVENT_TYPE_LABELS, isCountInFlatPayOn, normalizeEventType } from '@/lib/event-types';
 import { distributePoolByHoursRule, distributeTipsPool, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from '@/lib/linked-commission';
 import {
@@ -109,6 +109,8 @@ interface Event {
   workers?: Worker[];
   tips_distribution_mode?: string | null;
   linked_commission_event_id?: string | null;
+  // false = an exec switched off a Count In Setup Day's flat $150.
+  count_in_flat_pay_enabled?: boolean | null;
 }
 
 // ADP's earnings lines this period plus Gross Pay, as read from the /pdf-reader export
@@ -140,6 +142,10 @@ type ImportedEmployeeRow = {
   adpCommission: string;
   // Every ADP earnings line this period plus Gross Pay.
   adpEarnings: AdpEarningsInput | null;
+  // ADP "Misc reimburse Equipment" this period: the "Equipment Reimbursement" column of the
+  // /pdf-reader export ('' when the file has no such column). Only an equipment
+  // reimbursement paystub pays it; a normal paystub keeps it at 0.00.
+  equipmentReimbursement: string;
   ssn: string;
   address: string;
   employeeId: string;
@@ -225,6 +231,8 @@ interface FinalPayEvent {
   doubletimePay: number;
   commissions: number;
   commissionPay: number;
+  // The flat $150 Count In / Operation part of commissionPay. Absent from older responses.
+  countInPay?: number;
   rateInEffect: number;
   variableIncentive: number;
   manualVariableIncentive?: number;
@@ -334,6 +342,7 @@ type PaystubFields = YtdOverrideSource & {
   adpSickPay?: string;
   adpCommission?: string;
   adpEarnings?: AdpEarningsInput | null;
+  equipmentReimbursement?: string;
 };
 
 // An imported row as paystub fields. The CalSavers Roth column is the misc deduction
@@ -354,6 +363,315 @@ const formatSickLeaveHHMM = (value: number) => {
   const mm = totalMinutes % 60;
   return `${sign}${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 };
+
+// The employee rows of a /pdf-reader export (or another payroll Excel with the same
+// headers): jsonData is the first sheet as rows, headers first. A row's state comes from its
+// state income columns, else fallbackState (the state on screen). Used by the Excel import
+// and by the equipment paystubs' last paystub cycle files.
+function parsePayrollExportRows(jsonData: any[][], fallbackState: string): ImportedEmployeeRow[] {
+  if (!Array.isArray(jsonData) || jsonData.length < 2) return [];
+  const normalizeHeaderText = (value: any) =>
+    String(value ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+
+  const normalizedHeaders = jsonData[0].map((h: any) => normalizeHeaderText(h));
+
+  const findHeaderIndex = (possibleNames: string[]) => {
+    for (const name of possibleNames) {
+      const normalizedName = normalizeHeaderText(name);
+      const exactIndex = normalizedHeaders.findIndex((header) => header === normalizedName);
+      if (exactIndex !== -1) return exactIndex;
+    }
+
+    for (const name of possibleNames) {
+      const normalizedName = normalizeHeaderText(name);
+      if (!normalizedName || normalizedName.length < 5) continue;
+      const nameTokens = normalizedName.split(' ').filter(Boolean);
+      const tokenMatchIndex = normalizedHeaders.findIndex((header) => {
+        const headerTokens = new Set(header.split(' ').filter(Boolean));
+        return nameTokens.every((token) => headerTokens.has(token));
+      });
+      if (tokenMatchIndex !== -1) return tokenMatchIndex;
+    }
+
+    return -1;
+  };
+
+  const getValueByHeader = (valuesRow: any[], possibleNames: string[]) => {
+    const index = findHeaderIndex(possibleNames);
+    if (index !== -1 && valuesRow[index] != null && valuesRow[index] !== '') {
+      const val = valuesRow[index];
+      // Skip if value is 0 for deductions (means not applicable)
+      if (typeof val === 'number' && val === 0 &&
+          (possibleNames.some(n => n.includes('deduction') || n.includes('tax') || n.includes('income') || n.includes('medicare') || n.includes('security')))) {
+        return '';
+      }
+      return String(val).trim();
+    }
+    return '';
+  };
+
+  const parseCurrencyNumber = (value: any) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return NaN;
+    const isNegative = raw.startsWith('-') || /^\(.*\)$/.test(raw);
+    const normalized = raw.replace(/[()$,\s]/g, '').replace(/^-/, '');
+    const num = parseFloat(normalized);
+    return Number.isFinite(num) ? (isNegative ? -num : num) : NaN;
+  };
+
+  // Helper to get absolute value for deductions (handle negative values)
+  const getAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
+    const value = getValueByHeader(valuesRow, possibleNames);
+    if (!value) return '';
+    const num = parseCurrencyNumber(value);
+    return isNaN(num) ? value : String(Math.abs(num));
+  };
+
+  // Exact header names only. The token fallback of findHeaderIndex would also match
+  // "Meal Premium YTD" and read the year-to-date amount as this period's.
+  const getExactAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
+    for (const name of possibleNames) {
+      const index = normalizedHeaders.indexOf(normalizeHeaderText(name));
+      if (index === -1) continue;
+      const num = parseCurrencyNumber(valuesRow[index]);
+      return Number.isFinite(num) ? String(Math.abs(num)) : '';
+    }
+    return '';
+  };
+
+  // Signed value of an exact header ('' when the column is missing or blank).
+  const getExactNumberValue = (valuesRow: any[], possibleNames: string[]) => {
+    for (const name of possibleNames) {
+      const index = normalizedHeaders.indexOf(normalizeHeaderText(name));
+      if (index === -1) continue;
+      const num = parseCurrencyNumber(valuesRow[index]);
+      return Number.isFinite(num) ? String(num) : '';
+    }
+    return '';
+  };
+  // ADP's earnings lines this period plus Gross Pay (exact headers: the YTD columns are
+  // "<line> YTD"). Only the /pdf-reader export has a this-period Gross Pay column.
+  const adpEarningsFromRow = (valuesRow: any[]): AdpEarningsInput | null => {
+    const grossPay = getExactNumberValue(valuesRow, ['gross pay']);
+    if (!grossPay) return null;
+    return {
+      regular: getExactNumberValue(valuesRow, ['regular']),
+      overtime: getExactNumberValue(valuesRow, ['overtime']),
+      doubleTime: getExactNumberValue(valuesRow, ['double time']),
+      commission: getExactNumberValue(valuesRow, ['commission']),
+      variableIncentive: getExactNumberValue(valuesRow, ['variable incentive']),
+      tips: getExactNumberValue(valuesRow, ['credit card tips', 'credit card tips owed']),
+      restBreak: getExactNumberValue(valuesRow, ['rest break pay', 'rest pay']),
+      travel: getExactNumberValue(valuesRow, ['travel pay', 'travel']),
+      bonus: getExactNumberValue(valuesRow, ['bonus']),
+      sick: getExactNumberValue(valuesRow, ['sick pay', 'sick']),
+      mealPremium: getExactNumberValue(valuesRow, ['meal premium', 'meal break premium pay']),
+      holiday: getExactNumberValue(valuesRow, ['holiday pay', 'holiday']),
+      grossPay,
+    };
+  };
+
+  // Helper to format dates
+  const formatDate = (value: any) => {
+    if (!value) return '';
+    try {
+      // Handle Excel serial dates
+      if (typeof value === 'number') {
+        const date = XLSX.SSF.parse_date_code(value);
+        return `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
+      }
+      // Handle string dates
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+      return String(value);
+    } catch {
+      return String(value);
+    }
+  };
+
+  // Determine state from available state income columns
+  const dataRows = jsonData
+    .slice(1)
+    .map((row, idx) => ({ row, rowIndex: idx + 2 })) // +2 because Excel is 1-based and headers are row 1
+    .filter(({ row }) => Array.isArray(row) && row.some((c: any) => c != null && String(c).trim() !== ''));
+
+  if (dataRows.length === 0) return [];
+
+  const parsedEmployees: ImportedEmployeeRow[] = dataRows.map(({ row: valuesRow, rowIndex }) => {
+    // Determine state from available state income columns
+    let detectedState = fallbackState;
+    const caStateIncome = getValueByHeader(valuesRow, ['ca state income']);
+    const wiStateIncome = getValueByHeader(valuesRow, ['wi state income']);
+    const azStateIncome = getValueByHeader(valuesRow, ['az state income']);
+    const nyStateIncome = getValueByHeader(valuesRow, ['ny state income']);
+
+    if (caStateIncome) detectedState = 'CA';
+    else if (wiStateIncome) detectedState = 'WI';
+    else if (azStateIncome) detectedState = 'AZ';
+    else if (nyStateIncome) detectedState = 'NY';
+    // No state income this period (ADP's equipment reimbursement statement, or a period
+    // with no state tax withheld): the YTD columns tell the state, so a Wisconsin or
+    // Arizona employee's state income YTD is not looked up in the screen state's column.
+    else {
+      const hasYtd = (names: string[]) => Number(getAbsoluteValue(valuesRow, names)) > 0;
+      if (hasYtd(['ca state income ytd']) || hasYtd(['ca state di ytd'])) detectedState = 'CA';
+      else if (hasYtd(['wi state income ytd'])) detectedState = 'WI';
+      else if (hasYtd(['az state income ytd'])) detectedState = 'AZ';
+      else if (hasYtd(['ny state income ytd'])) detectedState = 'NY';
+    }
+
+    // Get state-specific deductions
+    let stateIncome = '';
+    let stateDI = '';
+
+    if (detectedState === 'CA') {
+      stateIncome = getAbsoluteValue(valuesRow, ['ca state income']);
+      stateDI = getAbsoluteValue(valuesRow, ['ca state di']);
+    } else if (detectedState === 'WI') {
+      stateIncome = getAbsoluteValue(valuesRow, ['wi state income']);
+    } else if (detectedState === 'AZ') {
+      stateIncome = getAbsoluteValue(valuesRow, ['az state income']);
+    } else if (detectedState === 'NY') {
+      stateIncome = getAbsoluteValue(valuesRow, ['ny state income']);
+    }
+
+    // Calculate hours and rates from gross pay if available
+    const grossPay = getValueByHeader(valuesRow, ['gross pay']);
+    let regularHours = '';
+    let regularRate = '';
+
+    if (grossPay && parseFloat(grossPay) > 0) {
+      // Assume 80 hours for biweekly pay period
+      regularHours = '80';
+      const rate = parseFloat(grossPay) / 80;
+      regularRate = rate.toFixed(2);
+    }
+
+    return {
+      rowIndex,
+      employeeName: getValueByHeader(valuesRow, ['employee name', 'employee full name', 'full name', 'name', 'employee']),
+      ssn: getValueByHeader(valuesRow, ['ssn', 'social security number', 'social security #', 'ss number']),
+      address: getValueByHeader(valuesRow, ['address']),
+      employeeId: getValueByHeader(valuesRow, ['employee id', 'emp id', 'employee number', 'account number']),
+
+      payPeriodStart: formatDate(getValueByHeader(valuesRow, ['pay period start', 'period start', 'start date'])),
+      payPeriodEnd: formatDate(getValueByHeader(valuesRow, ['pay period end', 'period end', 'end date'])),
+      payDate: formatDate(getValueByHeader(valuesRow, ['pay date', 'payment date'])),
+
+      federalIncome: getAbsoluteValue(valuesRow, ['federal income', 'federal tax', 'fed income']),
+      socialSecurity: getAbsoluteValue(valuesRow, ['social security', 'ss', 'fica']),
+      medicare: getAbsoluteValue(valuesRow, ['medicare', 'med']),
+      stateIncome,
+      stateDI,
+      state: detectedState,
+      calSaversRothRet: getAbsoluteValue(valuesRow, ['calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
+
+      federalIncomeYtd: getAbsoluteValue(valuesRow, ['federal income ytd']),
+      socialSecurityYtd: getAbsoluteValue(valuesRow, ['social security ytd']),
+      medicareYtd: getAbsoluteValue(valuesRow, ['medicare ytd']),
+      calSaversRothRetYtd: getAbsoluteValue(valuesRow, ['calsavers roth ira ytd', 'cal savers roth ira ytd', 'calsavers roth ret ytd', 'cal savers roth ret ytd', 'calsavers roth ret % ytd', 'calsavers roth ytd', 'roth ira ytd', 'roth ret ytd']),
+      stateIncomeYtd: detectedState === 'CA' ? getAbsoluteValue(valuesRow, ['ca state income ytd'])
+        : detectedState === 'WI' ? getAbsoluteValue(valuesRow, ['wi state income ytd'])
+        : detectedState === 'AZ' ? getAbsoluteValue(valuesRow, ['az state income ytd'])
+        : detectedState === 'NY' ? getAbsoluteValue(valuesRow, ['ny state income ytd'])
+        : '',
+      stateDIYtd: detectedState === 'CA' ? getAbsoluteValue(valuesRow, ['ca state di ytd']) : '',
+
+      regularYtd: getAbsoluteValue(valuesRow, ['regular ytd']),
+      overtimeYtd: getAbsoluteValue(valuesRow, ['overtime ytd']),
+      doubleTimeYtd: getAbsoluteValue(valuesRow, ['double time ytd']),
+      commissionYtd: getAbsoluteValue(valuesRow, ['commission ytd']),
+      variableIncentiveYtd: getAbsoluteValue(valuesRow, ['variable incentive ytd']),
+      creditCardTipsYtd: getAbsoluteValue(valuesRow, ['credit card tips ytd']),
+      restBreakPayYtd: getAbsoluteValue(valuesRow, ['rest break pay ytd']),
+      travelPayYtd: getAbsoluteValue(valuesRow, ['travel pay ytd']),
+      bonusYtd: getAbsoluteValue(valuesRow, ['bonus ytd']),
+      sickPayYtd: getAbsoluteValue(valuesRow, ['sick pay ytd', 'sick ytd', 'sick pay year to date', 'sick year to date', 'ytd sick pay', 'ytd sick']),
+      mealPremiumYtd: getAbsoluteValue(valuesRow, [
+        'meal premium ytd',
+        'meal premium year to date',
+        'year to date meal premium',
+        'meal prem ytd',
+        'meal prem year to date',
+        'year to date meal prem',
+        'meal time premium ytd',
+        'meal time premium year to date',
+        'year to date meal time premium',
+        'meal time prem ytd',
+        'meal time prem year to date',
+        'year to date meal time prem',
+        'ytd meal premium',
+        'ytd meal prem',
+        'ytd meal time premium',
+        'ytd meal time prem',
+      ]),
+      // ADP Holiday earnings ("Holiday Pay YTD" in the /pdf-reader export).
+      holidayPayYtd: getAbsoluteValue(valuesRow, ['holiday pay ytd', 'holiday ytd', 'holiday pay year to date', 'holiday year to date', 'ytd holiday pay', 'ytd holiday']),
+      grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd']),
+      equipmentReimbYtd: getAbsoluteValue(valuesRow, ['equipment reimbursement ytd']),
+      mileageReimbYtd: getAbsoluteValue(valuesRow, [
+        'mileage reimbursement ytd',
+        'mileage reimbursement year to date',
+        'year to date mileage reimbursement',
+        'mileage reimb ytd',
+        'mileage reimb year to date',
+        'year to date mileage reimb',
+        'mileage pay ytd',
+        'mileage pay year to date',
+        'year to date mileage pay',
+        'mileage ytd',
+        'mileage year to date',
+        'ytd mileage reimbursement',
+        'ytd mileage reimb',
+        'ytd mileage pay',
+        'ytd mileage',
+      ]),
+      miscReimbursementYtd: getAbsoluteValue(valuesRow, ['misc reimbursement ytd']),
+
+      // ADP Meal Break Premium Pay this period. The paystub prints it on the Meal Premium row.
+      adpMealPremium: getExactAbsoluteValue(valuesRow, [
+        'meal premium',
+        'meal break premium pay',
+        'meal break premium',
+        'meal premium pay',
+        'meal time premium',
+        'meal period premium',
+        'meal prem',
+      ]),
+      // ADP Sick pay this period. The paystub prints it on the Sick Pay row.
+      adpSickPay: getExactAbsoluteValue(valuesRow, ['sick pay', 'sick']),
+      // ADP Commission this period (exact header: "Commission YTD" is the YTD column).
+      adpCommission: getExactAbsoluteValue(valuesRow, ['commission']),
+      adpEarnings: adpEarningsFromRow(valuesRow),
+      // ADP "Misc reimburse Equipment" this period (exact header: the YTD column is
+      // "Equipment Reimbursement YTD"). Only the equipment reimbursement paystub uses it.
+      equipmentReimbursement: getExactAbsoluteValue(valuesRow, [
+        'equipment reimbursement',
+        'misc reimburse equipment',
+        'misc reimbursement equipment',
+        'equipment reimb',
+      ]),
+
+      miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
+      miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
+      voluntaryDeductions: voluntaryDeductionsFromRow(jsonData[0], valuesRow),
+
+      // Keep for backward compat: these fields still exist on the single form, but batch uses the per-row data.
+      // (We don't store earnings fields in ImportedEmployeeRow because the PDF derives earnings from DB events.)
+      matchedUserId: null,
+    };
+  });
+
+  return parsedEmployees;
+}
 
 export default function PaystubGenerator() {
   const [formData, setFormData] = useState({
@@ -411,6 +729,8 @@ export default function PaystubGenerator() {
     adpSickPay: '',
     adpCommission: '',
     adpEarnings: null as AdpEarningsInput | null,
+    // Equipment reimbursement paystub amount for the single form ('' = HR's list).
+    equipmentReimbursement: '',
     miscDeduction: '',
     miscReimbursement: '',
     voluntaryDeductions: [] as VoluntaryDeductionInput[],
@@ -492,6 +812,81 @@ export default function PaystubGenerator() {
   const [useSystemPayroll, setUseSystemPayroll] = useState(false);
   const uploadedPayrollRequestIdRef = useRef(0);
   const uploadedPayrollCheckedAtRef = useRef(0);
+
+  // Paystub type. A normal paystub never pays an equipment reimbursement (its Equipment
+  // Reimbursement line is always 0.00 this period). An equipment reimbursement paystub
+  // pays only that: every other This Period amount is blank, and it has no sick leave
+  // table and no commission report. Every button (single, batch, distribute, email)
+  // makes the type chosen here.
+  const [paystubType, setPaystubType] = useState<'normal' | 'equipment'>('normal');
+  const isEquipmentMode = paystubType === 'equipment';
+  const paystubFilePrefix = isEquipmentMode ? 'equipment-reimbursement-paystub' : 'paystub';
+  // HR's Equipment Reimbursement list (HR dashboard Payroll tab) for the pay date on
+  // screen, userId -> amount, plus the month's other pay dates on that list. Loaded for
+  // equipment paystubs only.
+  const [hrEquipment, setHrEquipment] = useState<{
+    payDate: string;
+    byUser: Record<string, number>;
+    otherPayDates: string[];
+  } | null>(null);
+  const [hrEquipmentLoading, setHrEquipmentLoading] = useState(false);
+  const [hrEquipmentError, setHrEquipmentError] = useState<string | null>(null);
+  const hrEquipmentRequestIdRef = useRef(0);
+  // Equipment paystubs: the /pdf-reader export(s) of the last regular pay date (one file per
+  // ADP batch). ADP's equipment reimbursement statement has no Federal Income, Social
+  // Security, Medicare or State DI lines, so an equipment paystub takes its deduction YTD
+  // (and any YTD the imported file lacks) from the employee's row in these files.
+  const [lastCycleFiles, setLastCycleFiles] = useState<Array<{ fileName: string; rows: ImportedEmployeeRow[] }>>([]);
+  const [lastCycleError, setLastCycleError] = useState<string | null>(null);
+  const lastCycleInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const payDate = formData.payDate || '';
+    if (paystubType !== 'equipment' || !/^\d{4}-\d{2}-\d{2}$/.test(payDate)) {
+      hrEquipmentRequestIdRef.current++;
+      setHrEquipment(null);
+      setHrEquipmentError(null);
+      setHrEquipmentLoading(false);
+      return;
+    }
+    const requestId = ++hrEquipmentRequestIdRef.current;
+    setHrEquipmentLoading(true);
+    setHrEquipmentError(null);
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(
+          `/api/hr/equipment-reimbursements?pay_date=${encodeURIComponent(payDate)}&ts=${Date.now()}`,
+          {
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+          }
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.error || `Could not load the list (${res.status})`);
+        if (requestId !== hrEquipmentRequestIdRef.current) return;
+        const byUser: Record<string, number> = {};
+        const otherPayDates = new Set<string>();
+        for (const row of Array.isArray(body?.month_rows) ? body.month_rows : []) {
+          const amount = Number(row?.amount || 0);
+          const userId = String(row?.user_id || '');
+          if (!userId || !(amount > 0)) continue;
+          if (String(row?.pay_date || '') === payDate) byUser[userId] = (byUser[userId] || 0) + amount;
+          else otherPayDates.add(String(row?.pay_date || ''));
+        }
+        setHrEquipment({ payDate, byUser, otherPayDates: Array.from(otherPayDates).filter(Boolean).sort() });
+      } catch (err: any) {
+        if (requestId !== hrEquipmentRequestIdRef.current) return;
+        setHrEquipment(null);
+        setHrEquipmentError(err?.message || 'Could not load the list');
+      } finally {
+        if (requestId === hrEquipmentRequestIdRef.current) setHrEquipmentLoading(false);
+      }
+    })();
+  }, [paystubType, formData.payDate]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -1462,6 +1857,157 @@ export default function PaystubGenerator() {
     return null;
   };
 
+  // HR's Equipment Reimbursement list amount for this employee on the pay date on screen.
+  const hrEquipmentAmountFor = (userId: string | null): number =>
+    userId && hrEquipment && hrEquipment.payDate === formData.payDate ? hrEquipment.byUser[userId] || 0 : 0;
+
+  // What an equipment reimbursement paystub pays: the imported file's Equipment
+  // Reimbursement column (ADP "Misc reimburse Equipment", what ADP paid) when the file has
+  // that column, or the amount typed on the single form; otherwise HR's list for the pay date.
+  const equipmentAmountFor = (
+    fields: { equipmentReimbursement?: string },
+    userId: string | null
+  ): { amount: number; source: 'file' | 'hr' | null } => {
+    const raw = String(fields.equipmentReimbursement ?? '').trim();
+    if (raw !== '') {
+      const parsed = Math.abs(parseFloat(raw.replace(/[$,\s]/g, '')));
+      return { amount: Number.isFinite(parsed) ? roundMoney(parsed) : 0, source: 'file' };
+    }
+    const hrAmount = hrEquipmentAmountFor(userId);
+    return hrAmount > 0 ? { amount: roundMoney(hrAmount), source: 'hr' } : { amount: 0, source: null };
+  };
+
+  // Why an employee gets no equipment reimbursement paystub, or null when they get one.
+  const equipmentSkipReason = (fields: { equipmentReimbursement?: string }, userId: string | null): string | null => {
+    const { amount, source } = equipmentAmountFor(fields, userId);
+    if (amount > 0) return null;
+    const hrAmount = hrEquipmentAmountFor(userId);
+    if (source === 'file' && hrAmount > 0) {
+      return `no equipment reimbursement in the imported file (HR's Equipment Reimbursement list has $${hrAmount.toFixed(2)} for this pay date)`;
+    }
+    return 'no equipment reimbursement for this pay date';
+  };
+
+  // Batch rows left out: no pay data for a normal paystub, no equipment reimbursement for
+  // an equipment paystub (which needs no events: it pays no work).
+  const rowSkipReason = (emp: ImportedEmployeeRow): string | null => {
+    if (!emp.matchedUserId) return null;
+    return isEquipmentMode
+      ? equipmentSkipReason(paystubFieldsFromRow(emp), emp.matchedUserId)
+      : batchSkipReason(emp.matchedUserId);
+  };
+
+  // Equipment paystubs wait for HR's list, so nobody on it is skipped while it loads.
+  const equipmentListStillLoading = () => {
+    if (!isEquipmentMode || !hrEquipmentLoading) return false;
+    alert("Still loading HR's Equipment Reimbursement list for this pay date. Try again in a moment.");
+    return true;
+  };
+
+  // The employee's row in the last paystub cycle files: the same name (letters only), else
+  // the same SSN last 4 digits and last name. Rows paid after this paystub's pay date are
+  // ignored; the latest pay date wins.
+  const lastCycleRowFor = (fields: { employeeName?: string; ssn?: string }): ImportedEmployeeRow | null => {
+    if (lastCycleFiles.length === 0) return null;
+    const lettersOnly = (value: string) => String(value || '').toLowerCase().replace(/[^a-z]/g, '');
+    const last4Of = (ssn: string) => String(ssn || '').match(/(\d{4})\s*$/)?.[1] || '';
+    const nameKey = lettersOnly(fields.employeeName || '');
+    const lastName = lettersOnly(String(fields.employeeName || '').trim().split(/\s+/).pop() || '');
+    const last4 = last4Of(fields.ssn || '');
+    const rows = lastCycleFiles
+      .flatMap((file) => file.rows)
+      .filter((row) => !formData.payDate || !row.payDate || row.payDate <= formData.payDate);
+    const latest = (candidates: ImportedEmployeeRow[]) =>
+      candidates.reduce<ImportedEmployeeRow | null>((best, row) => (!best || (row.payDate || '') > (best.payDate || '') ? row : best), null);
+    const byName = nameKey ? rows.filter((row) => lettersOnly(row.employeeName) === nameKey) : [];
+    if (byName.length > 0) return latest(byName);
+    if (!last4 || !lastName) return null;
+    return latest(rows.filter((row) => last4Of(row.ssn) === last4 && lettersOnly(row.employeeName).endsWith(lastName)));
+  };
+
+  // An equipment paystub's YTD figures: the imported file's, with the last paystub cycle row
+  // filling in what it lacks. When the file is ADP's equipment statement (no Federal Income or
+  // Medicare YTD), every deduction YTD comes from the last cycle row: the statement leaves those
+  // lines out, and the PDF reader could pick up a stray number for them.
+  const withLastCycleYtd = (fields: PaystubFields, equipmentAmount: number): PaystubFields => {
+    const lastCycle = lastCycleRowFor(fields);
+    if (!lastCycle) return fields;
+    const hasValue = (value: unknown) => value !== null && value !== undefined && String(value).trim() !== '';
+    const deductionKeys: string[] = ['federalIncomeYtd', 'socialSecurityYtd', 'medicareYtd', 'stateIncomeYtd', 'stateDIYtd', 'calSaversRothRetYtd'];
+    const fileHasNoFederalBlock = !hasValue(fields.federalIncomeYtd) && !hasValue(fields.medicareYtd);
+    const merged: Record<string, unknown> = { ...fields };
+    for (const key of YTD_OVERRIDE_KEYS) {
+      if (key === 'equipmentReimbYtd') continue;
+      const fromLastCycle = lastCycle[key];
+      if (!hasValue(fromLastCycle)) continue;
+      if (!hasValue(merged[key]) || (fileHasNoFederalBlock && deductionKeys.includes(key))) merged[key] = fromLastCycle;
+    }
+    // The last cycle's equipment YTD does not have this paystub's payment yet.
+    if (!hasValue(fields.equipmentReimbYtd) && hasValue(lastCycle.equipmentReimbYtd)) {
+      merged.equipmentReimbYtd = String(Math.round((Number(lastCycle.equipmentReimbYtd) + equipmentAmount) * 100) / 100);
+    }
+    // Other voluntary deductions (e.g. "Child support 1"): YTD only, nothing this period.
+    if ((fields.voluntaryDeductions || []).length === 0 && (lastCycle.voluntaryDeductions || []).length > 0) {
+      merged.voluntaryDeductions = (lastCycle.voluntaryDeductions || [])
+        .filter((line) => (line.ytd ?? 0) > 0)
+        .map((line) => ({ ...line, thisPeriod: 0 }));
+    }
+    return merged as PaystubFields;
+  };
+
+  // Asked before equipment paystubs are made when some would print 0.00 YTD on the deduction
+  // lines: the imported file has no Federal Income or Medicare YTD (ADP's equipment statement
+  // leaves them out) and the employee is not in the last paystub cycle files. True = stop.
+  const equipmentYtdNotReady = (people: Array<{ fields: PaystubFields; userId: string | null }>, action: string): boolean => {
+    if (!isEquipmentMode) return false;
+    const hasValue = (value: unknown) => value !== null && value !== undefined && String(value).trim() !== '';
+    const missing = people
+      .filter(({ fields, userId }) => equipmentAmountFor(fields, userId).amount > 0)
+      .filter(({ fields }) => !hasValue(fields.federalIncomeYtd) && !hasValue(fields.medicareYtd) && !lastCycleRowFor(fields))
+      .map(({ fields }) => fields.employeeName || '(no name)');
+    if (missing.length === 0) return false;
+    const names = `${missing.slice(0, 8).join(', ')}${missing.length > 8 ? `, and ${missing.length - 8} more` : ''}`;
+    return !window.confirm(
+      `${missing.length} equipment paystub${missing.length === 1 ? '' : 's'} would show 0.00 Year to Date for Federal Income, Social Security, Medicare and State DI: ` +
+        `the imported file has none of them (ADP's equipment statement leaves those lines out) and ${missing.length === 1 ? 'this employee is' : 'these employees are'} not in the last paystub cycle files: ${names}.\n\n` +
+        `Load the last pay date's /pdf-reader export(s) under Paystub Type to fill them in.\n\n${action} anyway?`
+    );
+  };
+
+  // Adds /pdf-reader export(s) of the last regular pay date. A file loaded again replaces
+  // its earlier rows.
+  const handleLastCycleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setLastCycleError(null);
+    const loaded: Array<{ fileName: string; rows: ImportedEmployeeRow[] }> = [];
+    const problems: string[] = [];
+    for (const file of files) {
+      if (!/\.(xlsx|xls)$/i.test(file.name)) {
+        problems.push(`${file.name}: not an Excel file`);
+        continue;
+      }
+      try {
+        const workbook = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
+        const rows = parsePayrollExportRows(jsonData, formData.state).filter((row) => !!row.employeeName);
+        if (rows.length === 0) problems.push(`${file.name}: no employee rows`);
+        else loaded.push({ fileName: file.name, rows });
+      } catch (err: any) {
+        problems.push(`${file.name}: ${err?.message || 'could not be read'}`);
+      }
+    }
+    if (loaded.length > 0) {
+      setLastCycleFiles((prev) => [
+        ...prev.filter((entry) => !loaded.some((file) => file.fileName === entry.fileName)),
+        ...loaded,
+      ]);
+    }
+    if (problems.length > 0) setLastCycleError(problems.join(' '));
+    if (lastCycleInputRef.current) lastCycleInputRef.current.value = '';
+  };
+
   // Asked before any paystub is made, single or batch, with the same rules: when an
   // employee's uploaded lines need a look (they disagree with the ADP Payroll Summary,
   // carry "paid"/"short" notes, only hold reimbursements...), when employees are not in
@@ -1529,6 +2075,10 @@ export default function PaystubGenerator() {
       }
     }
     const override = userId ? getOverride(userId) : null;
+    // Equipment paystub: the YTD of the last paystub cycle (the imported file, filled in from
+    // the last paystub cycle files).
+    const equipmentAmount = isEquipmentMode ? equipmentAmountFor(fields, userId).amount : 0;
+    const ytdFields = isEquipmentMode ? withLastCycleYtd(fields, equipmentAmount) : fields;
     const payload: Record<string, unknown> = {
       // Employee info
       employeeName: (fields.employeeName || '').trim(),
@@ -1549,13 +2099,13 @@ export default function PaystubGenerator() {
       stateDI: fields.stateDI,
       // The profile state first (the server checks it again), then the file's.
       state: summary?.profileStateCode || fields.state || formData.state,
-      ...ytdOverridePayload(fields),
+      ...ytdOverridePayload(ytdFields),
 
       // Other
       miscDeduction: fields.miscDeduction,
       miscReimbursement: fields.miscReimbursement,
       // Voluntary deductions besides CalSavers, each its own paystub line (e.g. "Creditor 1").
-      voluntaryDeductions: fields.voluntaryDeductions || [],
+      voluntaryDeductions: ytdFields.voluntaryDeductions || [],
       mealPremium: override ? parseFloat(override.mealPremium) || 0 : 0,
       // ADP's meal premium and sick pay this period from the imported file; the boxes win when typed.
       adpMealPremium: fields.adpMealPremium || '',
@@ -1566,6 +2116,12 @@ export default function PaystubGenerator() {
       adpCommission: fields.adpCommission || '',
       // Every ADP earnings line and Gross Pay: when they add up, the PDF prints ADP's lines.
       adpEarnings: fields.adpEarnings || null,
+
+      // Paystub type. A normal paystub never pays an equipment reimbursement; an equipment
+      // paystub pays only this amount, with the YTD of the last paystub cycle (nothing added
+      // for the pay period on screen), no sick leave table and no commission report.
+      paystubType,
+      ...(isEquipmentMode ? { equipmentReimbursement: equipmentAmount } : {}),
 
       // Events this employee worked in the period, plus linked commission partners
       events: filterEventsForUserIdWithHours(userId),
@@ -1785,7 +2341,8 @@ export default function PaystubGenerator() {
       .replace(/[^a-zA-Z0-9._-]/g, '');
 
   const handleGenerate = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
+    if (equipmentYtdNotReady([{ fields: formData, userId: matchedUserId }], 'Generate the paystub')) return;
     setGenerating(true);
     try {
       const debugMode =
@@ -1800,7 +2357,13 @@ export default function PaystubGenerator() {
         setMatchedUserId(resolvedUserId);
       }
 
-      if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
+      if (isEquipmentMode) {
+        const skip = equipmentSkipReason(formData, resolvedUserId);
+        if (skip) {
+          alert(`No equipment reimbursement paystub for ${formData.employeeName}: ${skip}.`);
+          return;
+        }
+      } else if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Generate the paystub')) {
         return;
       }
 
@@ -1841,7 +2404,7 @@ export default function PaystubGenerator() {
       const bytes = await requestPaystubPdf(payload);
       downloadBlob(
         new Blob([bytes], { type: 'application/pdf' }),
-        `paystub-${formData.employeeName?.replace(/\s/g, '_')}-${formData.payDate}.pdf`
+        `${paystubFilePrefix}-${formData.employeeName?.replace(/\s/g, '_')}-${formData.payDate}.pdf`
       );
     } catch (error: any) {
       console.error('Error generating paystub:', error);
@@ -1866,7 +2429,15 @@ export default function PaystubGenerator() {
   // Each row is built exactly like the single paystub (buildPaystubRequest). Rows left
   // out: no name, no matching profile, or no events and no uploaded lines in the period.
   const handleGenerateBatch = async (mode: 'merge' | 'separate') => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
+    if (
+      equipmentYtdNotReady(
+        (importedEmployees || []).map((emp) => ({ fields: paystubFieldsFromRow(emp), userId: emp.matchedUserId })),
+        'Generate the paystubs'
+      )
+    ) {
+      return;
+    }
     setBatchMessage(null);
     setBatchErrors([]);
 
@@ -1878,7 +2449,7 @@ export default function PaystubGenerator() {
       alert('Missing pay period start/end.');
       return;
     }
-    if ((!events || events.length === 0) && !activeUploadedPayroll) {
+    if (!isEquipmentMode && (!events || events.length === 0) && !activeUploadedPayroll) {
       alert('No events loaded for the selected pay period.');
       return;
     }
@@ -1887,6 +2458,7 @@ export default function PaystubGenerator() {
     // Same name lookup as the single button, for every row still unmatched.
     const rows = await matchUnmatchedImportedNow();
     if (
+      !isEquipmentMode &&
       !confirmPaystubRun(
         rows
           .filter((emp) => !!emp.matchedUserId && !batchSkipReason(emp.matchedUserId))
@@ -1925,7 +2497,7 @@ export default function PaystubGenerator() {
             errors.push(`Row ${emp.rowIndex} (${employeeName}): not found in database`);
             continue;
           }
-          const skipReason = batchSkipReason(emp.matchedUserId);
+          const skipReason = rowSkipReason(emp);
           if (skipReason) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): ${skipReason}`);
@@ -1942,7 +2514,7 @@ export default function PaystubGenerator() {
             const blob = new Blob([bytes], { type: 'application/pdf' });
             const safeName = employeeName ? sanitizeFilePart(employeeName) : `row_${emp.rowIndex}`;
             const safePayDate = (emp.payDate || formData.payDate) ? sanitizeFilePart(emp.payDate || formData.payDate) : new Date().toISOString().split('T')[0];
-            downloadBlob(blob, `paystub-${safeName}-${safePayDate}.pdf`);
+            downloadBlob(blob, `${paystubFilePrefix}-${safeName}-${safePayDate}.pdf`);
             // Reduce the chance the browser blocks multiple downloads triggered too quickly.
             await new Promise((r) => setTimeout(r, 200));
           } else if (outPdf) {
@@ -1964,7 +2536,11 @@ export default function PaystubGenerator() {
       }
 
       if (generated === 0) {
-        throw new Error('No paystubs were generated. Check that employees are matched and have events in the selected period.');
+        throw new Error(
+          isEquipmentMode
+            ? 'No equipment reimbursement paystubs were generated. Check that employees are matched and have an equipment reimbursement for this pay date.'
+            : 'No paystubs were generated. Check that employees are matched and have events in the selected period.'
+        );
       }
 
       const safePayDate = formData.payDate ? sanitizeFilePart(formData.payDate) : new Date().toISOString().split('T')[0];
@@ -1972,15 +2548,15 @@ export default function PaystubGenerator() {
         const outBytes = await outPdf.save();
         // pdf-lib returns Uint8Array<ArrayBufferLike>; normalize to a Uint8Array for Blob compatibility in TS.
         const blob = new Blob([Uint8Array.from(outBytes)], { type: 'application/pdf' });
-        downloadBlob(blob, `paystubs-${safePayDate}.pdf`);
+        downloadBlob(blob, `${isEquipmentMode ? 'equipment-reimbursement-paystubs' : 'paystubs'}-${safePayDate}.pdf`);
       }
 
-      const sourceNote = activeUploadedPayroll
+      const sourceNote = activeUploadedPayroll && !isEquipmentMode
         ? ` ${generatedFromUpload} from the uploaded payroll, ${generated - generatedFromUpload} from the system calculation (not in the upload).`
         : '';
       const msg = mode === 'merge'
-        ? `Generated ${generated} paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.${sourceNote}`
-        : `Generated ${generated} paystub(s) as separate PDF downloads. Skipped ${skipped}.${sourceNote}`;
+        ? `Generated ${generated} ${isEquipmentMode ? 'equipment reimbursement ' : ''}paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.${sourceNote}`
+        : `Generated ${generated} ${isEquipmentMode ? 'equipment reimbursement ' : ''}paystub(s) as separate PDF downloads. Skipped ${skipped}.${sourceNote}`;
       setBatchMessage(msg);
       setBatchErrors(errors);
       if (debugMode && errors.length) {
@@ -2010,7 +2586,7 @@ export default function PaystubGenerator() {
     formPayload.append(
       'pdf',
       new Blob([pdfBytes], { type: 'application/pdf' }),
-      `paystub-${employeeName.replace(/\s+/g, '_')}-${payDate}.pdf`
+      `${paystubFilePrefix}-${employeeName.replace(/\s+/g, '_')}-${payDate}.pdf`
     );
     if (userId) formPayload.append('userId', userId);
     formPayload.append('employeeName', employeeName);
@@ -2032,7 +2608,8 @@ export default function PaystubGenerator() {
   };
 
   const handleDistribute = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
+    if (equipmentYtdNotReady([{ fields: formData, userId: matchedUserId }], 'Distribute the paystub')) return;
     setDistributing(true);
     setDistributeMessage(null);
     setDistributeError(null);
@@ -2053,7 +2630,14 @@ export default function PaystubGenerator() {
         throw new Error('Could not match this employee to a user profile. Make sure the employee name matches exactly.');
       }
 
-      if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
+      if (isEquipmentMode) {
+        const skip = equipmentSkipReason(formData, resolvedUserId);
+        if (skip) {
+          setDistributeStep(null);
+          setDistributeError(`No equipment reimbursement paystub for ${formData.employeeName}: ${skip}.`);
+          return;
+        }
+      } else if (!confirmPaystubRun([{ userId: resolvedUserId, name: formData.employeeName }], 'Distribute the paystub')) {
         setDistributeStep(null);
         return;
       }
@@ -2077,7 +2661,7 @@ export default function PaystubGenerator() {
       );
 
       setDistributeStep(null);
-      setDistributeMessage(`Done — paystub saved to employee profile (user: ${resolvedUserId.slice(0, 8)}…)`);
+      setDistributeMessage(`Done — ${isEquipmentMode ? 'equipment reimbursement paystub' : 'paystub'} saved to employee profile (user: ${resolvedUserId.slice(0, 8)}…)`);
     } catch (err: any) {
       setDistributeStep(null);
       setDistributeError(`Step failed: ${err.message}`);
@@ -2090,7 +2674,15 @@ export default function PaystubGenerator() {
   // same way. Rows left out: unticked in the dropdown, no name, no matching profile, or
   // no events and no uploaded lines in the period.
   const handleDistributeBatch = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
+    if (
+      equipmentYtdNotReady(
+        (importedEmployees || []).filter(isRowInBatch).map((emp) => ({ fields: paystubFieldsFromRow(emp), userId: emp.matchedUserId })),
+        'Distribute the paystubs'
+      )
+    ) {
+      return;
+    }
     if ((importedEmployees || []).length === 0) {
       alert('No employees imported from Excel yet.');
       return;
@@ -2114,6 +2706,7 @@ export default function PaystubGenerator() {
     const rows = allRows.filter(isRowInBatch);
     const notTickedNote = allRows.length > rows.length ? ` ${allRows.length - rows.length} unticked employee(s) left out.` : '';
     if (
+      !isEquipmentMode &&
       !confirmPaystubRun(
         rows
           .filter((emp) => !!emp.matchedUserId && !batchSkipReason(emp.matchedUserId))
@@ -2143,7 +2736,7 @@ export default function PaystubGenerator() {
             errors.push(`Row ${emp.rowIndex} (${employeeName || 'unknown'}): no matched user`);
             continue;
           }
-          const skipReason = batchSkipReason(emp.matchedUserId);
+          const skipReason = rowSkipReason(emp);
           if (skipReason) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): ${skipReason}`);
@@ -2167,7 +2760,7 @@ export default function PaystubGenerator() {
         }
       }
 
-      setBatchDistributeMessage(`Distributed ${sent} paystub(s) to employee profiles. Skipped ${skipped}.${notTickedNote}`);
+      setBatchDistributeMessage(`Distributed ${sent} ${isEquipmentMode ? 'equipment reimbursement ' : ''}paystub(s) to employee profiles. Skipped ${skipped}.${notTickedNote}`);
       setBatchDistributeErrors(errors);
     } catch (err: any) {
       alert(`Error: ${err.message}`);
@@ -2179,8 +2772,19 @@ export default function PaystubGenerator() {
   // Each selected employee's paystub is built exactly like the single one
   // (buildPaystubRequest), from their Excel row or from the single form.
   const handleSendEmails = async () => {
-    if (uploadedPayrollStillLoading() || eventsStillLoading()) return;
+    if (uploadedPayrollStillLoading() || eventsStillLoading() || equipmentListStillLoading()) return;
     if (
+      equipmentYtdNotReady(
+        emailCandidates
+          .filter((c) => emailSelectedIds.has(c.key))
+          .map((c) => ({ fields: c.empRow ? paystubFieldsFromRow(c.empRow) : formData, userId: c.userId })),
+        'Email the paystubs'
+      )
+    ) {
+      return;
+    }
+    if (
+      !isEquipmentMode &&
       !confirmPaystubRun(
         emailCandidates.filter((c) => emailSelectedIds.has(c.key)).map((c) => ({ userId: c.userId, name: c.name })),
         'Email the paystubs'
@@ -2204,6 +2808,11 @@ export default function PaystubGenerator() {
         const candidate = selected[i];
         try {
           const fields = candidate.empRow ? paystubFieldsFromRow(candidate.empRow) : formData;
+          const equipmentSkip = isEquipmentMode ? equipmentSkipReason(fields, candidate.userId) : null;
+          if (equipmentSkip) {
+            results.push({ name: candidate.name, success: false, error: `No equipment reimbursement paystub: ${equipmentSkip}` });
+            continue;
+          }
           const { payload } = await buildPaystubRequest(fields, candidate.userId, { debugMode, summaryCache });
 
           let pdfBytes: ArrayBuffer;
@@ -2219,13 +2828,14 @@ export default function PaystubGenerator() {
           emailFormData.append(
             'pdf',
             new Blob([pdfBytes], { type: 'application/pdf' }),
-            `paystub-${candidate.name.replace(/\s+/g, '_')}-${formData.payDate || 'recent'}.pdf`
+            `${paystubFilePrefix}-${candidate.name.replace(/\s+/g, '_')}-${formData.payDate || 'recent'}.pdf`
           );
           emailFormData.append('userId', candidate.userId);
           emailFormData.append('employeeName', candidate.name);
           emailFormData.append('payDate', formData.payDate);
           emailFormData.append('payPeriodStart', formData.payPeriodStart);
           emailFormData.append('payPeriodEnd', formData.payPeriodEnd);
+          emailFormData.append('paystubType', paystubType);
 
           const emailRes = await fetch('/api/distribute-paystub/send-email', {
             method: 'POST',
@@ -2405,7 +3015,9 @@ export default function PaystubGenerator() {
         adjustedGrossPercent: number;
         grossCommission: number;
         employeeCount: number | string;
+        // Includes countInPay, which the sheet prints in its own Count In / Operation column.
         commission: number;
+        countInPay: number;
         hoursWorked: number;
         rateInEffect: number;
         variableRate: number | '';
@@ -2496,6 +3108,11 @@ export default function PaystubGenerator() {
                 grossCommission: shares ? shares.grossCommission : 0,
                 employeeCount: event && shares ? shares.employeeCount || getCommissionVendorCountForEvent(event) : '-',
                 commission: line.commission,
+                // Count In / Operation: exactly the flat $150 on a matched event with no pool.
+                countInPay:
+                  event && shares && roundMoney(shares.grossCommission) === 0 && Math.abs(line.commission - 150) < 0.005
+                    ? line.commission
+                    : 0,
                 hoursWorked: roundHours(line.hours),
                 rateInEffect: line.hours > 0 ? roundMoney(line.commission / line.hours) : 0,
                 variableRate:
@@ -2551,9 +3168,32 @@ export default function PaystubGenerator() {
           const commissionPaidTotal = roundMoney(
             Number(finalPayData?.commissionPaidTotal ?? fallbackCommissionPaidTotal)
           );
-          const commission = roundMoney(
+          const commissionBeforeCountIn = roundMoney(
             isEventSD ? 0 : Number(finalPayData?.commissionPay ?? commissionShareRaw)
           );
+          // Count In / Operation: the flat $150 for a shift with hours at an event that pays this
+          // employee no pool share (same rule as the paystub PDF). /api/employee-final-pay adds
+          // it when the shift has saved payment data; otherwise it is added here, so it still
+          // counts in the Rate in Effect and Variable Incentive below.
+          const workerDivision = normalizeDivision(worker?.division);
+          const fallbackCountInPay =
+            usesPeriodRate &&
+            !(Number(finalPayData?.countInPay || 0) > 0) &&
+            commissionBeforeCountIn <= 0 &&
+            commissionShareRaw <= 0 &&
+            hoursWorked > 0 &&
+            normalizeEventType(event.event_type) !== 'special' &&
+            (normalizeEventType(event.event_type) !== 'count_in_setup' || isCountInFlatPayOn(event)) &&
+            !(workerDivision !== '' && !isVendorDivision(workerDivision)) &&
+            !isTrailersDivision(worker?.division) &&
+            worker?.payment_data?.commission_deleted !== true
+              ? COUNT_IN_SETUP_FLAT_PAY
+              : 0;
+          const countInPay = roundMoney(
+            (isEventSD ? 0 : Number(finalPayData?.countInPay || 0)) + fallbackCountInPay
+          );
+          // Includes the Count In / Operation pay.
+          const commission = roundMoney(commissionBeforeCountIn + fallbackCountInPay);
           const variableIncentiveValue = roundMoney(
             isEventSD ? 0 : Number(finalPayData?.variableIncentive ?? Math.max(0, commissionPaidTotal - commission))
           );
@@ -2599,6 +3239,7 @@ export default function PaystubGenerator() {
             grossCommission,
             employeeCount,
             commission,
+            countInPay,
             hoursWorked,
             rateInEffect,
             variableRate,
@@ -2723,7 +3364,8 @@ export default function PaystubGenerator() {
         adjusted_gross_percent: row.adjustedGrossPercent,
         gross_commission: row.grossCommission,
         employee_count: row.employeeCount,
-        commission: row.commission,
+        commission: roundMoney(row.commission - row.countInPay),
+        count_in_operation: row.countInPay,
         hours_worked: row.hoursWorked,
         rate_in_effect: maskedCommissionRowValue,
         variable_rate: maskedCommissionRowValue,
@@ -2744,7 +3386,9 @@ export default function PaystubGenerator() {
           'Gross Commission',
           '# of Employees',
           'Commission',
+          'Count In / Operation',
           'Hours Worked',
+          // (Commission + Count In / Operation) / Hours Worked
           'Rate in Effect',
           'Variable Rate ($/hr)',
           'Variable Incentive',
@@ -2760,7 +3404,8 @@ export default function PaystubGenerator() {
           row.adjustedGrossPercent,
           row.grossCommission,
           row.employeeCount,
-          row.commission,
+          roundMoney(row.commission - row.countInPay),
+          row.countInPay,
           row.hoursWorked,
           maskedCommissionRowValue,
           maskedCommissionRowValue,
@@ -2780,6 +3425,7 @@ export default function PaystubGenerator() {
         const bonus = typeof row.bonus === 'number' ? row.bonus : 0;
         return {
           commission: acc.commission + row.commission,
+          countIn: acc.countIn + row.countInPay,
           hoursWorked: acc.hoursWorked + row.hoursWorked,
           rowVariableIncentive: acc.rowVariableIncentive + rowVariableIncentive,
           tips: acc.tips + tips,
@@ -2789,6 +3435,7 @@ export default function PaystubGenerator() {
         };
       }, {
         commission: 0,
+        countIn: 0,
         hoursWorked: 0,
         rowVariableIncentive: 0,
         tips: 0,
@@ -2796,6 +3443,7 @@ export default function PaystubGenerator() {
         bonus: 0,
         finalPay: 0,
       });
+      // totals.commission includes the Count In / Operation pay, so the rate counts it.
       const totalRateInEffect =
         totals.hoursWorked > 0 ? roundMoney(totals.commission / totals.hoursWorked) : 0;
       const totalVariableRate =
@@ -2865,7 +3513,8 @@ export default function PaystubGenerator() {
         '',
         '',
         'TOTALS',
-        roundMoney(totals.commission),
+        roundMoney(totals.commission - totals.countIn),
+        roundMoney(totals.countIn),
         roundHours(totals.hoursWorked),
         totalRateInEffect,
         totalVariableRate,
@@ -2885,6 +3534,7 @@ export default function PaystubGenerator() {
         { wch: 18 },
         { wch: 14 },
         { wch: 14 },
+        { wch: 20 },
         { wch: 14 },
         { wch: 14 },
         { wch: 16 },
@@ -2895,12 +3545,13 @@ export default function PaystubGenerator() {
         { wch: 24 },
       ];
       commissionReportSheet['!autofilter'] = {
-        ref: `A1:O${commissionReportSheetData.length}`,
+        ref: `A1:P${commissionReportSheetData.length}`,
       };
 
-      // E=GrossComm, G=Commission, I=RateInEffect, J=VariableRate, K=VariableIncentive, L=Tips, M=RestPay, N=Bonus, O=FinalPay
-      const currencyColumns = ['E', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O'];
-      const numericColumns = ['H'];
+      // E=GrossComm, G=Commission, H=CountIn/Operation, J=RateInEffect, K=VariableRate,
+      // L=VariableIncentive, M=Tips, N=RestPay, O=Bonus, P=FinalPay
+      const currencyColumns = ['E', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+      const numericColumns = ['I'];
       for (let rowIndex = 2; rowIndex <= commissionReportSheetData.length; rowIndex += 1) {
         for (const column of currencyColumns) {
           const cell = commissionReportSheet[`${column}${rowIndex}`] as XLSX.CellObject | undefined;
@@ -2970,290 +3621,11 @@ export default function PaystubGenerator() {
         return;
       }
 
-      const normalizeHeaderText = (value: any) =>
-        String(value ?? '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, ' ')
-          .trim();
-
-      const normalizedHeaders = jsonData[0].map((h: any) => normalizeHeaderText(h));
-
-      const findHeaderIndex = (possibleNames: string[]) => {
-        for (const name of possibleNames) {
-          const normalizedName = normalizeHeaderText(name);
-          const exactIndex = normalizedHeaders.findIndex((header) => header === normalizedName);
-          if (exactIndex !== -1) return exactIndex;
-        }
-
-        for (const name of possibleNames) {
-          const normalizedName = normalizeHeaderText(name);
-          if (!normalizedName || normalizedName.length < 5) continue;
-          const nameTokens = normalizedName.split(' ').filter(Boolean);
-          const tokenMatchIndex = normalizedHeaders.findIndex((header) => {
-            const headerTokens = new Set(header.split(' ').filter(Boolean));
-            return nameTokens.every((token) => headerTokens.has(token));
-          });
-          if (tokenMatchIndex !== -1) return tokenMatchIndex;
-        }
-
-        return -1;
-      };
-
-      const getValueByHeader = (valuesRow: any[], possibleNames: string[]) => {
-        const index = findHeaderIndex(possibleNames);
-        if (index !== -1 && valuesRow[index] != null && valuesRow[index] !== '') {
-          const val = valuesRow[index];
-          // Skip if value is 0 for deductions (means not applicable)
-          if (typeof val === 'number' && val === 0 &&
-              (possibleNames.some(n => n.includes('deduction') || n.includes('tax') || n.includes('income') || n.includes('medicare') || n.includes('security')))) {
-            return '';
-          }
-          return String(val).trim();
-        }
-        return '';
-      };
-
-      const parseCurrencyNumber = (value: any) => {
-        const raw = String(value ?? '').trim();
-        if (!raw) return NaN;
-        const isNegative = raw.startsWith('-') || /^\(.*\)$/.test(raw);
-        const normalized = raw.replace(/[()$,\s]/g, '').replace(/^-/, '');
-        const num = parseFloat(normalized);
-        return Number.isFinite(num) ? (isNegative ? -num : num) : NaN;
-      };
-
-      // Helper to get absolute value for deductions (handle negative values)
-      const getAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
-        const value = getValueByHeader(valuesRow, possibleNames);
-        if (!value) return '';
-        const num = parseCurrencyNumber(value);
-        return isNaN(num) ? value : String(Math.abs(num));
-      };
-
-      // Exact header names only. The token fallback of findHeaderIndex would also match
-      // "Meal Premium YTD" and read the year-to-date amount as this period's.
-      const getExactAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
-        for (const name of possibleNames) {
-          const index = normalizedHeaders.indexOf(normalizeHeaderText(name));
-          if (index === -1) continue;
-          const num = parseCurrencyNumber(valuesRow[index]);
-          return Number.isFinite(num) ? String(Math.abs(num)) : '';
-        }
-        return '';
-      };
-
-      // Signed value of an exact header ('' when the column is missing or blank).
-      const getExactNumberValue = (valuesRow: any[], possibleNames: string[]) => {
-        for (const name of possibleNames) {
-          const index = normalizedHeaders.indexOf(normalizeHeaderText(name));
-          if (index === -1) continue;
-          const num = parseCurrencyNumber(valuesRow[index]);
-          return Number.isFinite(num) ? String(num) : '';
-        }
-        return '';
-      };
-      // ADP's earnings lines this period plus Gross Pay (exact headers: the YTD columns are
-      // "<line> YTD"). Only the /pdf-reader export has a this-period Gross Pay column.
-      const adpEarningsFromRow = (valuesRow: any[]): AdpEarningsInput | null => {
-        const grossPay = getExactNumberValue(valuesRow, ['gross pay']);
-        if (!grossPay) return null;
-        return {
-          regular: getExactNumberValue(valuesRow, ['regular']),
-          overtime: getExactNumberValue(valuesRow, ['overtime']),
-          doubleTime: getExactNumberValue(valuesRow, ['double time']),
-          commission: getExactNumberValue(valuesRow, ['commission']),
-          variableIncentive: getExactNumberValue(valuesRow, ['variable incentive']),
-          tips: getExactNumberValue(valuesRow, ['credit card tips', 'credit card tips owed']),
-          restBreak: getExactNumberValue(valuesRow, ['rest break pay', 'rest pay']),
-          travel: getExactNumberValue(valuesRow, ['travel pay', 'travel']),
-          bonus: getExactNumberValue(valuesRow, ['bonus']),
-          sick: getExactNumberValue(valuesRow, ['sick pay', 'sick']),
-          mealPremium: getExactNumberValue(valuesRow, ['meal premium', 'meal break premium pay']),
-          holiday: getExactNumberValue(valuesRow, ['holiday pay', 'holiday']),
-          grossPay,
-        };
-      };
-
-      // Helper to format dates
-      const formatDate = (value: any) => {
-        if (!value) return '';
-        try {
-          // Handle Excel serial dates
-          if (typeof value === 'number') {
-            const date = XLSX.SSF.parse_date_code(value);
-            return `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
-          }
-          // Handle string dates
-          const date = new Date(value);
-          if (!isNaN(date.getTime())) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-          }
-          return String(value);
-        } catch {
-          return String(value);
-        }
-      };
-
-      // Determine state from available state income columns
-      const dataRows = jsonData
-        .slice(1)
-        .map((row, idx) => ({ row, rowIndex: idx + 2 })) // +2 because Excel is 1-based and headers are row 1
-        .filter(({ row }) => Array.isArray(row) && row.some((c: any) => c != null && String(c).trim() !== ''));
-
-      if (dataRows.length === 0) {
+      const parsedEmployees = parsePayrollExportRows(jsonData, formData.state);
+      if (parsedEmployees.length === 0) {
         setUploadError('No employee rows found in Excel file');
         return;
       }
-
-      const parsedEmployees: ImportedEmployeeRow[] = dataRows.map(({ row: valuesRow, rowIndex }) => {
-        // Determine state from available state income columns
-        let detectedState = formData.state;
-        const caStateIncome = getValueByHeader(valuesRow, ['ca state income']);
-        const wiStateIncome = getValueByHeader(valuesRow, ['wi state income']);
-        const azStateIncome = getValueByHeader(valuesRow, ['az state income']);
-        const nyStateIncome = getValueByHeader(valuesRow, ['ny state income']);
-
-        if (caStateIncome) detectedState = 'CA';
-        else if (wiStateIncome) detectedState = 'WI';
-        else if (azStateIncome) detectedState = 'AZ';
-        else if (nyStateIncome) detectedState = 'NY';
-
-        // Get state-specific deductions
-        let stateIncome = '';
-        let stateDI = '';
-
-        if (detectedState === 'CA') {
-          stateIncome = getAbsoluteValue(valuesRow, ['ca state income']);
-          stateDI = getAbsoluteValue(valuesRow, ['ca state di']);
-        } else if (detectedState === 'WI') {
-          stateIncome = getAbsoluteValue(valuesRow, ['wi state income']);
-        } else if (detectedState === 'AZ') {
-          stateIncome = getAbsoluteValue(valuesRow, ['az state income']);
-        } else if (detectedState === 'NY') {
-          stateIncome = getAbsoluteValue(valuesRow, ['ny state income']);
-        }
-
-        // Calculate hours and rates from gross pay if available
-        const grossPay = getValueByHeader(valuesRow, ['gross pay']);
-        let regularHours = '';
-        let regularRate = '';
-
-        if (grossPay && parseFloat(grossPay) > 0) {
-          // Assume 80 hours for biweekly pay period
-          regularHours = '80';
-          const rate = parseFloat(grossPay) / 80;
-          regularRate = rate.toFixed(2);
-        }
-
-        return {
-          rowIndex,
-          employeeName: getValueByHeader(valuesRow, ['employee name', 'employee full name', 'full name', 'name', 'employee']),
-          ssn: getValueByHeader(valuesRow, ['ssn', 'social security number', 'social security #', 'ss number']),
-          address: getValueByHeader(valuesRow, ['address']),
-          employeeId: getValueByHeader(valuesRow, ['employee id', 'emp id', 'employee number', 'account number']),
-
-          payPeriodStart: formatDate(getValueByHeader(valuesRow, ['pay period start', 'period start', 'start date'])),
-          payPeriodEnd: formatDate(getValueByHeader(valuesRow, ['pay period end', 'period end', 'end date'])),
-          payDate: formatDate(getValueByHeader(valuesRow, ['pay date', 'payment date'])),
-
-          federalIncome: getAbsoluteValue(valuesRow, ['federal income', 'federal tax', 'fed income']),
-          socialSecurity: getAbsoluteValue(valuesRow, ['social security', 'ss', 'fica']),
-          medicare: getAbsoluteValue(valuesRow, ['medicare', 'med']),
-          stateIncome,
-          stateDI,
-          state: detectedState,
-          calSaversRothRet: getAbsoluteValue(valuesRow, ['calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
-
-          federalIncomeYtd: getAbsoluteValue(valuesRow, ['federal income ytd']),
-          socialSecurityYtd: getAbsoluteValue(valuesRow, ['social security ytd']),
-          medicareYtd: getAbsoluteValue(valuesRow, ['medicare ytd']),
-          calSaversRothRetYtd: getAbsoluteValue(valuesRow, ['calsavers roth ira ytd', 'cal savers roth ira ytd', 'calsavers roth ret ytd', 'cal savers roth ret ytd', 'calsavers roth ret % ytd', 'calsavers roth ytd', 'roth ira ytd', 'roth ret ytd']),
-          stateIncomeYtd: detectedState === 'CA' ? getAbsoluteValue(valuesRow, ['ca state income ytd'])
-            : detectedState === 'WI' ? getAbsoluteValue(valuesRow, ['wi state income ytd'])
-            : detectedState === 'AZ' ? getAbsoluteValue(valuesRow, ['az state income ytd'])
-            : detectedState === 'NY' ? getAbsoluteValue(valuesRow, ['ny state income ytd'])
-            : '',
-          stateDIYtd: detectedState === 'CA' ? getAbsoluteValue(valuesRow, ['ca state di ytd']) : '',
-
-          regularYtd: getAbsoluteValue(valuesRow, ['regular ytd']),
-          overtimeYtd: getAbsoluteValue(valuesRow, ['overtime ytd']),
-          doubleTimeYtd: getAbsoluteValue(valuesRow, ['double time ytd']),
-          commissionYtd: getAbsoluteValue(valuesRow, ['commission ytd']),
-          variableIncentiveYtd: getAbsoluteValue(valuesRow, ['variable incentive ytd']),
-          creditCardTipsYtd: getAbsoluteValue(valuesRow, ['credit card tips ytd']),
-          restBreakPayYtd: getAbsoluteValue(valuesRow, ['rest break pay ytd']),
-          travelPayYtd: getAbsoluteValue(valuesRow, ['travel pay ytd']),
-          bonusYtd: getAbsoluteValue(valuesRow, ['bonus ytd']),
-          sickPayYtd: getAbsoluteValue(valuesRow, ['sick pay ytd', 'sick ytd', 'sick pay year to date', 'sick year to date', 'ytd sick pay', 'ytd sick']),
-          mealPremiumYtd: getAbsoluteValue(valuesRow, [
-            'meal premium ytd',
-            'meal premium year to date',
-            'year to date meal premium',
-            'meal prem ytd',
-            'meal prem year to date',
-            'year to date meal prem',
-            'meal time premium ytd',
-            'meal time premium year to date',
-            'year to date meal time premium',
-            'meal time prem ytd',
-            'meal time prem year to date',
-            'year to date meal time prem',
-            'ytd meal premium',
-            'ytd meal prem',
-            'ytd meal time premium',
-            'ytd meal time prem',
-          ]),
-          // ADP Holiday earnings ("Holiday Pay YTD" in the /pdf-reader export).
-          holidayPayYtd: getAbsoluteValue(valuesRow, ['holiday pay ytd', 'holiday ytd', 'holiday pay year to date', 'holiday year to date', 'ytd holiday pay', 'ytd holiday']),
-          grossPayYtd: getAbsoluteValue(valuesRow, ['gross pay ytd', 'year to date gross pay', 'ytd gross pay', 'ytd gross', 'gross ytd']),
-          equipmentReimbYtd: getAbsoluteValue(valuesRow, ['equipment reimbursement ytd']),
-          mileageReimbYtd: getAbsoluteValue(valuesRow, [
-            'mileage reimbursement ytd',
-            'mileage reimbursement year to date',
-            'year to date mileage reimbursement',
-            'mileage reimb ytd',
-            'mileage reimb year to date',
-            'year to date mileage reimb',
-            'mileage pay ytd',
-            'mileage pay year to date',
-            'year to date mileage pay',
-            'mileage ytd',
-            'mileage year to date',
-            'ytd mileage reimbursement',
-            'ytd mileage reimb',
-            'ytd mileage pay',
-            'ytd mileage',
-          ]),
-          miscReimbursementYtd: getAbsoluteValue(valuesRow, ['misc reimbursement ytd']),
-
-          // ADP Meal Break Premium Pay this period. The paystub prints it on the Meal Premium row.
-          adpMealPremium: getExactAbsoluteValue(valuesRow, [
-            'meal premium',
-            'meal break premium pay',
-            'meal break premium',
-            'meal premium pay',
-            'meal time premium',
-            'meal period premium',
-            'meal prem',
-          ]),
-          // ADP Sick pay this period. The paystub prints it on the Sick Pay row.
-          adpSickPay: getExactAbsoluteValue(valuesRow, ['sick pay', 'sick']),
-          // ADP Commission this period (exact header: "Commission YTD" is the YTD column).
-          adpCommission: getExactAbsoluteValue(valuesRow, ['commission']),
-          adpEarnings: adpEarningsFromRow(valuesRow),
-
-          miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction', 'calsavers roth ira', 'cal savers roth ira', 'calsavers roth ret', 'cal savers roth ret', 'calsavers roth ret %', 'calsavers roth', 'roth ira', 'roth ret']),
-          miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
-          voluntaryDeductions: voluntaryDeductionsFromRow(jsonData[0], valuesRow),
-
-          // Keep for backward compat: these fields still exist on the single form, but batch uses the per-row data.
-          // (We don't store earnings fields in ImportedEmployeeRow because the PDF derives earnings from DB events.)
-          matchedUserId: null,
-        };
-      });
 
       // Set the single-form view from the first row (for manual/single generation).
       // Row 1's own values, blanks included, so the single paystub for row 1 is built
@@ -3305,6 +3677,7 @@ export default function PaystubGenerator() {
           adpSickPay: first.adpSickPay,
           adpCommission: first.adpCommission,
           adpEarnings: first.adpEarnings,
+          equipmentReimbursement: first.equipmentReimbursement,
         }));
       }
 
@@ -3651,6 +4024,176 @@ export default function PaystubGenerator() {
                 </div>
               </div>
             </div>
+
+            {/* Paystub type: normal (never pays equipment) or equipment reimbursement only */}
+            {(() => {
+              const singleHrAmount = hrEquipmentAmountFor(importedEmployees.length === 0 ? matchedUserId : importedEmployees[0]?.matchedUserId ?? null);
+              const hrCount = hrEquipment && hrEquipment.payDate === formData.payDate ? Object.keys(hrEquipment.byUser).length : 0;
+              const importedWithEquipment = importedEmployees.filter(
+                (emp) => !!emp.matchedUserId && equipmentAmountFor(paystubFieldsFromRow(emp), emp.matchedUserId).amount > 0
+              ).length;
+              const fileHasEquipmentColumn = importedEmployees.some((emp) => String(emp.equipmentReimbursement ?? '').trim() !== '');
+              return (
+                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+                  <h2 className="text-lg font-semibold text-slate-900 mb-1">Paystub Type</h2>
+                  <p className="text-sm text-slate-600 mb-4">
+                    Normal paystubs never pay an equipment reimbursement: their Equipment Reimbursement line is always 0.00 this period.
+                  </p>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {([
+                      {
+                        value: 'normal',
+                        label: 'Normal paystub',
+                        note: 'Earnings, deductions and reimbursements for the pay period. Equipment Reimbursement stays 0.00.',
+                      },
+                      {
+                        value: 'equipment',
+                        label: 'Equipment reimbursement paystub',
+                        note: 'This Period shows only the equipment reimbursement. Year to Date is the last paystub cycle\'s. No sick leave table and no commission report.',
+                      },
+                    ] as const).map((option) => (
+                      <label
+                        key={option.value}
+                        className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                          paystubType === option.value ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="paystubType"
+                          value={option.value}
+                          checked={paystubType === option.value}
+                          onChange={() => setPaystubType(option.value)}
+                          className="mt-1 accent-blue-600"
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-900">{option.label}</span>
+                          <span className="block text-xs text-slate-600 mt-0.5">{option.note}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {isEquipmentMode && (
+                    <div className="mt-4 space-y-3">
+                      <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                        <p>
+                          Each employee is paid the imported file&apos;s Equipment Reimbursement column (ADP &quot;Misc reimburse Equipment&quot;) when the file has it,
+                          otherwise HR&apos;s Equipment Reimbursement list for the pay date. Employees with neither are skipped.
+                        </p>
+                        {!formData.payDate ? (
+                          <p>Pick the pay date to load HR&apos;s list.</p>
+                        ) : hrEquipmentLoading ? (
+                          <p>Loading HR&apos;s list for {formData.payDate}...</p>
+                        ) : hrEquipmentError ? (
+                          <p className="text-red-700">HR&apos;s list could not be loaded: {hrEquipmentError}</p>
+                        ) : (
+                          <p>
+                            HR&apos;s list for {formData.payDate}: {hrCount} employee{hrCount === 1 ? '' : 's'}.
+                            {hrEquipment && hrEquipment.otherPayDates.length > 0
+                              ? ` This month's list also has ${hrEquipment.otherPayDates.join(', ')}.`
+                              : ''}
+                          </p>
+                        )}
+                        {importedEmployees.length > 0 && (
+                          <p>
+                            Imported rows with an equipment reimbursement: {importedWithEquipment} of {importedEmployees.length}
+                            {fileHasEquipmentColumn ? ' (from the file).' : ' (the file has no Equipment Reimbursement column, so HR\'s list is used).'}
+                          </p>
+                        )}
+                      </div>
+                      {(() => {
+                        const lastCycleRowCount = lastCycleFiles.reduce((sum, file) => sum + file.rows.length, 0);
+                        const lastCyclePayDates = Array.from(
+                          new Set(lastCycleFiles.flatMap((file) => file.rows.map((row) => row.payDate)).filter(Boolean))
+                        ).sort();
+                        const equipmentRows = importedEmployees.filter(
+                          (emp) => equipmentAmountFor(paystubFieldsFromRow(emp), emp.matchedUserId).amount > 0
+                        );
+                        const unmatchedRows = equipmentRows.filter((emp) => !lastCycleRowFor(emp));
+                        const fileLacksTaxYtd =
+                          equipmentRows.length > 0 &&
+                          equipmentRows.every((emp) => !String(emp.federalIncomeYtd || '').trim() && !String(emp.medicareYtd || '').trim());
+                        return (
+                          <div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+                            <p className="text-sm font-semibold text-slate-900">Last paystub cycle (Year to Date)</p>
+                            <p>
+                              An equipment paystub shows the Year to Date of the employee&apos;s last paystub cycle. ADP&apos;s equipment statement has the
+                              earnings YTD but leaves out Federal Income, Social Security, Medicare and State DI, so load the /pdf-reader export(s) of the
+                              last regular pay date (every batch file) to fill those in.
+                            </p>
+                            {fileLacksTaxYtd && lastCycleFiles.length === 0 && (
+                              <p className="text-amber-800">
+                                The imported file has no Federal Income or Medicare YTD. Without the last paystub cycle files those lines show 0.00.
+                              </p>
+                            )}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                ref={lastCycleInputRef}
+                                type="file"
+                                accept=".xlsx,.xls"
+                                multiple
+                                onChange={handleLastCycleUpload}
+                                className="text-xs"
+                              />
+                              {lastCycleFiles.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLastCycleFiles([]);
+                                    setLastCycleError(null);
+                                  }}
+                                  className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100"
+                                >
+                                  Clear
+                                </button>
+                              )}
+                            </div>
+                            {lastCycleError && <p className="text-red-700">{lastCycleError}</p>}
+                            {lastCycleFiles.length > 0 && (
+                              <>
+                                <p>
+                                  Loaded {lastCycleFiles.length} file{lastCycleFiles.length === 1 ? '' : 's'}, {lastCycleRowCount} row{lastCycleRowCount === 1 ? '' : 's'}
+                                  {lastCyclePayDates.length > 0 ? ` (pay date ${lastCyclePayDates.join(', ')})` : ''}: {lastCycleFiles.map((file) => file.fileName).join(', ')}.
+                                </p>
+                                {lastCyclePayDates.some((date) => !!formData.payDate && date > formData.payDate) && (
+                                  <p className="text-amber-800">Rows paid after {formData.payDate} are not used.</p>
+                                )}
+                                {equipmentRows.length > 0 && (
+                                  <p className={unmatchedRows.length > 0 ? 'text-amber-800' : 'text-emerald-700'}>
+                                    Employees with an equipment reimbursement found in these files: {equipmentRows.length - unmatchedRows.length} of {equipmentRows.length}
+                                    {unmatchedRows.length > 0
+                                      ? `. Not found: ${unmatchedRows.slice(0, 10).map((emp) => emp.employeeName).join(', ')}${unmatchedRows.length > 10 ? `, and ${unmatchedRows.length - 10} more` : ''}.`
+                                      : '.'}
+                                  </p>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      <div className="max-w-xs">
+                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                          Equipment Reimbursement (single paystub)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          name="equipmentReimbursement"
+                          value={formData.equipmentReimbursement}
+                          onChange={handleInputChange}
+                          placeholder={singleHrAmount > 0 ? `${singleHrAmount.toFixed(2)} (HR list)` : '0.00'}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                        <p className="text-xs text-slate-500 mt-1">
+                          Leave blank to use HR&apos;s list{singleHrAmount > 0 ? ` ($${singleHrAmount.toFixed(2)} for this employee)` : ''}.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Payroll Source: uploaded payroll in use for this period, or the system calculation */}
             {(formData.payPeriodStart && formData.payPeriodEnd) && (() => {
@@ -4310,8 +4853,10 @@ export default function PaystubGenerator() {
                       rowNote: (row) =>
                         !row.matchedUserId
                           ? { text: 'Unmatched', title: 'Skipped when distributing unless the name matches a profile' }
-                          : batchSkipReason(row.matchedUserId)
-                            ? { text: 'No pay data', title: 'Skipped when distributing, even if ticked' }
+                          : rowSkipReason(row)
+                            ? isEquipmentMode
+                              ? { text: 'No equipment', title: 'No equipment reimbursement for this pay date: skipped when distributing, even if ticked' }
+                              : { text: 'No pay data', title: 'Skipped when distributing, even if ticked' }
                             : null,
                     })}
                     {batchDistributeMessage && (
@@ -4386,8 +4931,10 @@ export default function PaystubGenerator() {
                         rowNote: (row) =>
                           !row.matchedUserId
                             ? { text: 'Unmatched', title: 'Not emailed unless the name matches a profile' }
-                            : batchSkipReason(row.matchedUserId)
-                              ? { text: 'No pay data', title: 'No events and no uploaded lines in this period, so the paystub would show no earnings' }
+                            : rowSkipReason(row)
+                              ? isEquipmentMode
+                                ? { text: 'No equipment', title: 'No equipment reimbursement for this pay date: not emailed, even if ticked' }
+                                : { text: 'No pay data', title: 'No events and no uploaded lines in this period, so the paystub would show no earnings' }
                               : null,
                       })}
                     </div>

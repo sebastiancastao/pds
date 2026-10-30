@@ -18,6 +18,8 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-d
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
 import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyForVendor, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
+import { getMealPremiumPay, isMealPremiumOn, type MealPremiumsByEvent } from "@/lib/meal-premium";
+import { fetchMealPremiums } from "@/lib/meal-premium-server";
 import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
 import { normalizeEventType } from "@/lib/event-types";
 import {
@@ -108,6 +110,24 @@ const ADP_EARNINGS_LINE_KEYS = [
 // clocked hours would pay $0 on the commission report.
 const ZERO_COMMISSION_SHIFT_PAY = 150;
 
+// Pay periods whose statement (page 1) Earnings table has no "Count In / Operation" line: the
+// count-in pay stays in the Commission line, so the lines still add up to Gross Pay. The
+// Commission Report keeps its Count In / Operation column. User request 2026-10-29 for the
+// 10/12/2026 - 10/25/2026 period (paid 10/30/2026).
+const PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE: ReadonlyArray<{ start: string; end: string }> = [
+  { start: "2026-10-12", end: "2026-10-25" },
+];
+
+// "2026-10-12", "2026-10-12T00:00:00Z" or "10/12/2026" -> "2026-10-12".
+function payPeriodIsoDay(value: unknown): string {
+  const text = String(value ?? "").trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const us = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) return `${us[3]}-${us[1].padStart(2, "0")}-${us[2].padStart(2, "0")}`;
+  return text;
+}
+
 function parseAdpEarningsLines(raw: unknown): AdpEarningsLines | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
@@ -197,8 +217,36 @@ export async function POST(req: NextRequest) {
       // { uploadId, periodStart, periodEnd, lines } with this employee's lines. When
       // present, the earnings come from these lines instead of the system calculation.
       uploadedPayroll = null,
+      // "normal" (the default) or "equipment". A normal paystub never pays an equipment
+      // reimbursement: its Equipment Reimbursement line is 0.00 this period, whatever the
+      // database or the system holds. The equipment paystub pays only that (see
+      // isEquipmentPaystub below).
+      paystubType = "normal",
+      // Equipment paystub only: the equipment reimbursement paid this pay date (ADP's "Misc
+      // reimburse Equipment" from the /pdf-reader export, or HR's Equipment Reimbursement list).
+      equipmentReimbursement = 0,
       debug = false
     } = body;
+
+    // Equipment reimbursement paystub: the same statement as a normal paystub, but the This
+    // Period column shows only the equipment reimbursement, net pay is that amount, and there
+    // is no Other Benefits (sick leave) table, no Important Notes and no commission report.
+    // HR pays it off-cycle, so its YTD figures are those of the last paystub cycle: the YTD
+    // sent with the request (ADP's own equipment statement carries the last cycle's earnings
+    // YTD; the page adds the last cycle's deduction YTD), with nothing added for this pay
+    // period's work (see runningYtd).
+    const isEquipmentPaystub = String(paystubType || "").trim().toLowerCase() === "equipment";
+    const equipmentReimbursementThisPeriod = (() => {
+      if (!isEquipmentPaystub) return 0;
+      const parsed = Number(String(equipmentReimbursement ?? "").replace(/[$,\s]/g, ""));
+      return Number.isFinite(parsed) ? Math.round(Math.abs(parsed) * 100) / 100 : 0;
+    })();
+    if (isEquipmentPaystub && !(equipmentReimbursementThisPeriod > 0)) {
+      return NextResponse.json(
+        { error: "An equipment reimbursement paystub needs an equipment reimbursement above $0.00 for this pay date." },
+        { status: 400 }
+      );
+    }
 
     let uploadedPaystub: { uploadId: string; lines: PaystubUploadLine[]; totals: PaystubUploadTotals } | null = null;
     let uploadedPayrollLinesForYtd: UploadedPayrollLineInput[] = [];
@@ -425,6 +473,17 @@ export async function POST(req: NextRequest) {
     };
     // Loaded from event_rest_breaks just before the PDF is built (eventId -> userId -> count).
     let restBreakCountsByEvent: RestBreakCountsByEvent = {};
+    // Meal Premium toggles an exec switched on, on the event Timesheet tab (event_meal_premiums),
+    // loaded with the rest break counts. Each pays one hour at the Rate in Effect, never below
+    // $28.50 (lib/meal-premium); it goes to the Meal Premium row with the system's other meal
+    // premiums, so uploaded payroll or ADP lines replace it like they replace those.
+    let mealPremiumsByEvent: MealPremiumsByEvent = {};
+    const getToggleMealPremium = (event: any, worker: any, actualHours: number, rateInEffect: number): number =>
+      getMealPremiumPay({
+        on: isMealPremiumOn(mealPremiumsByEvent, event?.id, worker?.user_id),
+        hours: actualHours,
+        rateInEffect,
+      });
     const getRecordedRestBreaks = (event: any, worker: any): number | null => {
       const eventId = (event?.id || "").toString();
       const userId = (worker?.user_id || "").toString();
@@ -1306,6 +1365,10 @@ export async function POST(req: NextRequest) {
       supabaseAdmin,
       (events || []).map((e: any) => e?.id)
     );
+    mealPremiumsByEvent = await fetchMealPremiums(
+      supabaseAdmin,
+      (events || []).map((e: any) => e?.id)
+    );
 
     // Create a new PDF document
     const pdfDoc = await PDFDocument.create();
@@ -1366,27 +1429,38 @@ export async function POST(req: NextRequest) {
       poolUnknown?: boolean;
       // The "Adjustment / Per ADP" row: counted in the stub's totals, not printed on the report.
       adpAdjustment?: boolean;
-      // Shift at an event with no commission, paid the flat ZERO_COMMISSION_SHIFT_PAY.
+      // Shift at an event with no commission, paid the flat ZERO_COMMISSION_SHIFT_PAY. Its
+      // commissionPerEmployee holds that pay, printed under "Count In / Operation".
       zeroCommissionShift?: boolean;
     };
 
-    const addCommissionReportPage = (
-      rows: CommissionReportRow[],
-      // The statement's earnings figures, so the "Total for Pay Period" row (and its Final
-      // Gross Pay) agrees with the Earnings table even when a row is not printed (the ADP
-      // adjustment) or ADP paid other tips / rest / bonus than the events add up to.
-      options?: {
-        variableIncentiveTotal?: number;
-        commissionTotal?: number;
-        tipsTotal?: number;
-        restBreakTotal?: number;
-        bonusTotal?: number;
-        rateInEffect?: number;
-        hoursTotal?: number;
-        variableRate?: number;
-      }
-    ) => {
-      if (rows.length === 0) return;
+    // The flat ZERO_COMMISSION_SHIFT_PAY (count-in / no-commission shift) part of a row's
+    // commission. It is printed in its own "Count In / Operation" column and earnings line,
+    // but stays inside commissionPerEmployee, so the rate in effect, variable incentive and
+    // gross are worked out exactly as before.
+    const countInPayOf = (row: CommissionReportRow): number =>
+      row.zeroCommissionShift ? roundPayrollAmount(row.commissionPerEmployee) : 0;
+
+    // An uploaded payroll line that pays the matched event's flat no-commission shift pay:
+    // the same shift getZeroCommissionShiftPay pays, and exactly that amount as commission.
+    const uploadLineIsCountInPay = (line: PaystubUploadLine, event: any): boolean => {
+      if (!event || !matchedUserId) return false;
+      if (Math.abs(Number(line.commission || 0) - ZERO_COMMISSION_SHIFT_PAY) >= 0.005) return false;
+      if (!isPeriodRateState(normalizeStateCode(line.state || event?.state) || paystubState)) return false;
+      const worker = (Array.isArray(event?.workers) ? event.workers : []).find(
+        (w: any) => (w?.user_id || "").toString() === matchedUserId
+      );
+      const shares = getPayrollInputsForEventWithLinkedCommission(event).commissionSharesByUser || {};
+      return getZeroCommissionShiftPay(event, worker, shares[matchedUserId]) > 0;
+    };
+
+    // The "Total for Pay Period" row adds up the printed rows, column by column: the rows are
+    // the payroll data, so the totals are too. The statement's Earnings table can differ
+    // (ADP's figures, the hidden "Adjustment / Per ADP" row, tips or rest breaks from San
+    // Diego hourly shifts, which are not on the report).
+    const addCommissionReportPage = (rows: CommissionReportRow[]) => {
+      // An equipment reimbursement paystub never has a commission report.
+      if (isEquipmentPaystub || rows.length === 0) return;
       const { rawPayPeriodRateInEffect, payPeriodRateInEffect } = (() => {
         const totals = rows.reduce(
           (acc, row) => ({
@@ -1399,17 +1473,16 @@ export async function POST(req: NextRequest) {
         return { rawPayPeriodRateInEffect: raw, payPeriodRateInEffect: roundPayrollAmount(raw) };
       })();
       const displayRows = rows.map((row) => {
-        // Every row's Final Gross Pay is the sum of its visible columns (commission, tips,
-        // rest, bonus); variable incentive is shown only in the period totals. States paid
-        // per shift instead of per period (AZ/NY) keep their own computed incentive, which
+        // Every row's Final Gross Pay is the sum of its visible columns (commission, count in,
+        // tips, rest, bonus); variable incentive is shown only in the period totals. States
+        // paid per shift instead of per period (AZ/NY) keep their own computed incentive, which
         // their row used to fold into Final Gross while the totals left it out.
-        if (!row.usesPeriodRate && !row.fromUpload) {
+        if (!row.usesPeriodRate || row.hoursWorked <= 0) {
           return {
             ...row,
             finalPay: roundPayrollAmount(row.commissionPerEmployee + row.tips + row.restBreak + row.bonus),
           };
         }
-        if (!row.usesPeriodRate || row.hoursWorked <= 0) return row;
         const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || paystubState);
         const rawVariableRate = Math.max(0, minimumRateInEffect - rawPayPeriodRateInEffect);
         const variableRate = roundPayrollAmount(rawVariableRate);
@@ -1427,6 +1500,8 @@ export async function POST(req: NextRequest) {
       const reportPage = pdfDoc.addPage([612, 792]);
       const fmtMoney = (n: number) =>
         `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      // The number a printed cell shows ("$1,234.56" -> 1234.56, "10.07" -> 10.07).
+      const printedAmount = (text: string) => Number(text.replace(/[$,]/g, "")) || 0;
       const fmtDate = (ds: string) => {
         if (!ds) return "";
         const [yy, mm, dd] = ds.split("-");
@@ -1444,7 +1519,7 @@ export async function POST(req: NextRequest) {
       const drawRL = (x1: number, y1: number, x2: number) => {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
-      const C = { date: 20, show: 56, venue: 101, pool: 147, numEmp: 212, comm: 250, hours: 288, rate: 321, varRate: 353, varInc: 393, tips: 435, restPay: 465, bonus: 495, finalPay: 525 };
+      const C = { date: 20, show: 54, venue: 98, pool: 142, numEmp: 196, comm: 231, countIn: 270, hours: 302, rate: 327, varRate: 352, varInc: 385, tips: 427, restPay: 457, bonus: 486, finalPay: 516 };
       const splitReportAddressLines = (rawAddress?: string | null) => {
         const str = (rawAddress || "").toString().trim();
         if (!str) return ["", "", ""] as const;
@@ -1471,9 +1546,18 @@ export async function POST(req: NextRequest) {
           identityBottomY = lineY;
         });
       }
+      const legendLines = [
+        "Commission = Commission Pool / # of Employees",
+        ...(displayRows.some((row) => countInPayOf(row) !== 0)
+          ? [
+              `Count In / Operation = flat $${ZERO_COMMISSION_SHIFT_PAY} for a shift worked at an event with no commission`,
+              "Rate in Effect = (Commission + Count In / Operation) / Hours Worked",
+            ]
+          : []),
+      ];
       const legendY = y - 16;
-      drawR("Commission = Commission Pool / # of Employees", 25, legendY, { size: 7 });
-      y = Math.min(legendY - 8, identityBottomY - 10);
+      legendLines.forEach((line, index) => drawR(line, 25, legendY - index * 8, { size: 7 }));
+      y = Math.min(legendY - (legendLines.length - 1) * 8 - 8, identityBottomY - 10);
       drawRL(20, y, 592);
       y -= 13;
       // Header row 1
@@ -1483,6 +1567,7 @@ export async function POST(req: NextRequest) {
       drawR("Commission Pool", C.pool, y, { bold: true, size: 6 });
       drawR("# of", C.numEmp, y, { bold: true, size: 6 });
       drawR("Commission", C.comm, y, { bold: true, size: 6 });
+      drawR("Count In /", C.countIn, y, { bold: true, size: 6 });
       drawR("Hours", C.hours, y, { bold: true, size: 6 });
       drawR("Rate in", C.rate, y, { bold: true, size: 6 });
       drawR("Variable", C.varRate, y, { bold: true, size: 6 });
@@ -1496,6 +1581,7 @@ export async function POST(req: NextRequest) {
       drawR("Per Agreement", C.pool, y, { bold: true, size: 6 });
       drawR("Employees", C.numEmp, y, { bold: true, size: 6 });
       drawR("Paid", C.comm, y, { bold: true, size: 6 });
+      drawR("Operation", C.countIn, y, { bold: true, size: 6 });
       drawR("Worked", C.hours, y, { bold: true, size: 6 });
       drawR("Effect", C.rate, y, { bold: true, size: 6 });
       drawR("Rate ($/hr)", C.varRate, y, { bold: true, size: 6 });
@@ -1507,6 +1593,7 @@ export async function POST(req: NextRequest) {
       let grandCommissionPool = 0;
       let grandEmployees = 0;
       let grandCommission = 0;
+      let grandCountIn = 0;
       let grandHoursWorked = 0;
       let grandRowVariableIncentive = 0;
       let grandTips = 0;
@@ -1522,28 +1609,42 @@ export async function POST(req: NextRequest) {
         drawR(venueT, C.venue, y, { size: 6 });
         drawR(row.poolUnknown ? "-" : fmtMoney(row.commissionPoolDollars), C.pool, y, { size: 6 });
         drawR(row.poolUnknown ? "-" : row.numEmployees.toString(), C.numEmp, y, { size: 6 });
-        drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
-        drawR(Number(row.hoursWorked).toFixed(2), C.hours, y, { size: 6 });
+        // A count-in / no-commission shift's flat pay goes under Count In / Operation, not
+        // Commission Paid; Final Gross still adds both.
+        const rowCountIn = countInPayOf(row);
+        // Each cell is printed once, and the totals add those same printed figures, so every
+        // column extends exactly to its "Total for Pay Period".
+        const commissionPaidText = fmtMoney(roundPayrollAmount(row.commissionPerEmployee - rowCountIn));
+        const countInText = fmtMoney(rowCountIn);
+        const hoursText = Number(row.hoursWorked).toFixed(2);
+        const tipsText = fmtMoney(row.tips);
+        const restPayText = fmtMoney(row.restBreak);
+        const bonusText = fmtMoney(row.bonus);
+        const finalPayText = fmtMoney(row.finalPay);
+        drawR(commissionPaidText, C.comm, y, { size: 6 });
+        drawR(countInText, C.countIn, y, { size: 6 });
+        drawR(hoursText, C.hours, y, { size: 6 });
         drawR(maskedCommissionRowValue, C.rate, y, { size: 6 });
         drawR(maskedCommissionRowValue, C.varRate, y, { size: 6 });
         drawR(maskedCommissionRowValue, C.varInc, y, { size: 6 });
-        drawR(fmtMoney(row.tips), C.tips, y, { size: 6 });
-        drawR(fmtMoney(row.restBreak), C.restPay, y, { size: 6 });
-        drawR(fmtMoney(row.bonus), C.bonus, y, { size: 6 });
-        drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
+        drawR(tipsText, C.tips, y, { size: 6 });
+        drawR(restPayText, C.restPay, y, { size: 6 });
+        drawR(bonusText, C.bonus, y, { size: 6 });
+        drawR(finalPayText, C.finalPay, y, { size: 6 });
         grandCommissionPool += row.commissionPoolDollars;
         grandEmployees += row.numEmployees;
-        grandCommission += row.commissionPerEmployee;
-        grandHoursWorked += row.hoursWorked;
+        // grandCommission includes the Count In / Operation pay, as before.
+        grandCommission += printedAmount(commissionPaidText) + printedAmount(countInText);
+        grandCountIn += printedAmount(countInText);
+        grandHoursWorked += printedAmount(hoursText);
         grandRowVariableIncentive += row.variableIncentive;
-        grandTips += row.tips;
-        grandRestPay += row.restBreak;
-        grandBonus += row.bonus;
-        grandFinalPay += row.finalPay;
+        grandTips += printedAmount(tipsText);
+        grandRestPay += printedAmount(restPayText);
+        grandBonus += printedAmount(bonusText);
+        grandFinalPay += printedAmount(finalPayText);
         y -= 11;
       }
       drawRL(20, y + 9, 592);
-      const averageRateInEffect = options?.rateInEffect ?? payPeriodRateInEffect;
       const grandRawVariableIncentive = displayRows.reduce((sum, row) => {
         // Uploaded and per-shift (AZ/NY) rows carry their own incentive; period-rate rows
         // are recomputed from the pay period's rate in effect.
@@ -1552,28 +1653,23 @@ export async function POST(req: NextRequest) {
         const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
         return sum + Math.max(0, (minRate - rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
       }, 0);
-      const reportVariableIncentive =
-        options?.variableIncentiveTotal !== undefined
-          ? options.variableIncentiveTotal
-          : grandRawVariableIncentive;
-      if (options?.hoursTotal !== undefined) grandHoursWorked = options.hoursTotal;
-      const totalVariableRate = options?.variableRate !== undefined
-        ? options.variableRate
-        : grandHoursWorked > 0
-          ? roundPayrollAmount(reportVariableIncentive / grandHoursWorked)
-          : 0;
-      const totalVariableIncentive = roundPayrollAmount(reportVariableIncentive);
-      if (options?.commissionTotal !== undefined) grandCommission = options.commissionTotal;
-      if (options?.tipsTotal !== undefined) grandTips = options.tipsTotal;
-      if (options?.restBreakTotal !== undefined) grandRestPay = options.restBreakTotal;
-      if (options?.bonusTotal !== undefined) grandBonus = options.bonusTotal;
-      const totalFinalPay = roundPayrollAmount(
-        roundPayrollAmount(grandCommission) +
-        totalVariableIncentive +
-        roundPayrollAmount(grandTips) +
-        roundPayrollAmount(grandRestPay) +
-        roundPayrollAmount(grandBonus)
-      );
+      grandCommission = roundPayrollAmount(grandCommission);
+      grandCountIn = roundPayrollAmount(grandCountIn);
+      grandHoursWorked = roundPayrollAmount(grandHoursWorked);
+      grandTips = roundPayrollAmount(grandTips);
+      grandRestPay = roundPayrollAmount(grandRestPay);
+      grandBonus = roundPayrollAmount(grandBonus);
+      grandFinalPay = roundPayrollAmount(grandFinalPay);
+      // (Commission + Count In / Operation) / Hours Worked, from this row's own totals.
+      const averageRateInEffect =
+        grandHoursWorked > 0 ? roundPayrollAmount(grandCommission / grandHoursWorked) : 0;
+      const totalVariableIncentive = roundPayrollAmount(grandRawVariableIncentive);
+      const totalVariableRate =
+        grandHoursWorked > 0 ? roundPayrollAmount(totalVariableIncentive / grandHoursWorked) : 0;
+      // Final Gross Pay total = the rows' Final Gross Pay + the period's variable incentive,
+      // which is only printed on this row. It also equals this row's Commission + Count In /
+      // Operation + Variable Incentive + Tips + Rest Pay + Bonus.
+      const totalFinalPay = roundPayrollAmount(grandFinalPay + totalVariableIncentive);
       if (debugEnabled || process.env.NODE_ENV !== "production") {
         const debugRows = displayRows.map((row) => {
           const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || paystubState);
@@ -1600,6 +1696,7 @@ export async function POST(req: NextRequest) {
             variableIncentiveDifference: roundPayrollAmount(
               row.variableIncentive - expectedVariableIncentive
             ),
+            countInPay: countInPayOf(row),
             finalPay: roundPayrollAmount(row.finalPay),
           };
         });
@@ -1610,6 +1707,7 @@ export async function POST(req: NextRequest) {
           paystubState,
           rowCount: displayRows.length,
           totalCommission: roundPayrollAmount(grandCommission),
+          totalCountIn: grandCountIn,
           totalHoursWorked: roundPayrollAmount(grandHoursWorked),
           totalRateInEffect: averageRateInEffect,
           totalVariableIncentive,
@@ -1618,7 +1716,10 @@ export async function POST(req: NextRequest) {
         });
       }
       drawR("Total for Pay Period", C.date, y, { bold: true, size: 6 });
-      drawR(fmtMoney(grandCommission), C.comm, y, { bold: true, size: 6 });
+      // grandCommission includes the Count In / Operation pay (Final Gross adds it once);
+      // the Commission column shows the rest.
+      drawR(fmtMoney(roundPayrollAmount(grandCommission - grandCountIn)), C.comm, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandCountIn), C.countIn, y, { bold: true, size: 6 });
       drawR(Number(grandHoursWorked).toFixed(2), C.hours, y, { bold: true, size: 6 });
       drawR(`$${averageRateInEffect.toFixed(2)}`, C.rate, y, { bold: true, size: 6 });
       drawR(`$${totalVariableRate.toFixed(2)}`, C.varRate, y, { bold: true, size: 6 });
@@ -1661,6 +1762,7 @@ export async function POST(req: NextRequest) {
             finalPay: roundPayrollAmount(line.commission + line.tips + line.restBreak + line.bonus),
             fromUpload: true,
             poolUnknown: !event,
+            zeroCommissionShift: uploadLineIsCountInPay(line, event),
           };
         });
 
@@ -2060,6 +2162,18 @@ export async function POST(req: NextRequest) {
         const other = parsedAdj.bonusAmount;
         const adjustmentMealPremium = parsedAdj.mealPremiumAmount;
         const adjustmentReimbursement = parsedAdj.reimbursementAmount;
+        // Meal Premium toggle: hourly work at its hourly rate, CA/NV/WI commission work at the
+        // pay period's rate in effect, other commission work at the shift's loaded rate.
+        const toggleMealPremium = getToggleMealPremium(
+          event,
+          worker,
+          actualHours,
+          paysHourly
+            ? eventBaseRate
+            : usesPeriodRate
+              ? Number(periodWorker?.rateInEffect || 0)
+              : loadedRateBase
+        );
 
         const regPay = paysHourly ? sdRegPay : Number(paymentData?.regular_pay || 0);
         const otPay = paysHourly ? sdOtPay : Number(paymentData?.overtime_pay || 0);
@@ -2143,7 +2257,7 @@ export async function POST(req: NextRequest) {
         totalFinalCommission += paysHourly ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
-        totalAdjustmentMealPremium += adjustmentMealPremium;
+        totalAdjustmentMealPremium += adjustmentMealPremium + toggleMealPremium;
         totalAdjustmentReimbursement += adjustmentReimbursement;
         totalGross += computedTotalGrossPay;
         totalRegularPayAmount += paysHourly ? sdRegPay : regPay;
@@ -2263,6 +2377,7 @@ export async function POST(req: NextRequest) {
         for (const row of countInDayRows) {
           row.commissionPerEmployee = ZERO_COMMISSION_SHIFT_PAY;
           row.finalPay = roundPayrollAmount(row.finalPay + ZERO_COMMISSION_SHIFT_PAY);
+          row.zeroCommissionShift = true;
         }
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] ADP count-in commission on its rows", {
@@ -2285,6 +2400,7 @@ export async function POST(req: NextRequest) {
           row.commissionPerEmployee = 0;
           row.rateInEffect = 0;
           row.finalPay = roundPayrollAmount(row.finalPay - ZERO_COMMISSION_SHIFT_PAY);
+          row.zeroCommissionShift = false;
         }
         if (debugEnabled) {
           console.log("[GENERATE-PAYSTUB][debug] ADP did not pay the no-commission shift pay", {
@@ -2400,6 +2516,11 @@ export async function POST(req: NextRequest) {
       const commissionTotalForEarnings = adpLines
         ? adpLines.commission
         : roundPayrollAmount(rawCommissionTotalForEarnings);
+      // Count In / Operation: the flat no-commission shift pay inside the commission above.
+      // It gets its own earnings line; the Commission line shows the rest. Pay is unchanged.
+      const countInTotalForEarnings = roundPayrollAmount(
+        caCommissionRows.reduce((sum, row) => sum + countInPayOf(row), 0)
+      );
 
       // Uploaded payroll: Variable Incentive as uploaded, not recomputed from the period rate.
       // Arizona is paid per shift, not per pay period: each shift row carries its own
@@ -2503,7 +2624,11 @@ export async function POST(req: NextRequest) {
       // it, so this period it only comes from the ADP file's complete lines; otherwise it
       // only shows up in YTD (the /pdf-reader export or the ADP carryover).
       const holidayPayThisPeriod = adpLines ? adpLines.holiday : 0;
+      // Reimbursements entered on the event dashboard Payment tab. They used to print on the
+      // Equipment Reimbursement line; they are not equipment, so they now print on the Misc
+      // Reimbursement line with the page's / uploaded misc reimbursement (net pay unchanged).
       const adjustmentReimbursementRounded = round2(totalAdjustmentReimbursement);
+      const miscReimbursementThisPeriod = round2(reimbursement + adjustmentReimbursementRounded);
       const grossPayThisPeriod = round2(
         // Regular pay is wages on San Diego hourly events and on uploaded payroll lines
         // (hourly and salaried); for system commission work the commission covers it.
@@ -2528,8 +2653,26 @@ export async function POST(req: NextRequest) {
         mealPremiumThisPeriod
       );
       const appliedStatutoryDeductions = round2(Math.min(rawTotalDeductions, grossPayThisPeriod));
-      const netPay = round2(grossPayThisPeriod - appliedStatutoryDeductions + reimbursement + adjustmentReimbursementRounded + totalMileageReimbursementRounded);
+      // An equipment paystub pays the equipment reimbursement only: no earnings, deductions,
+      // misc or mileage this period (the normal paystub for the pay date carries those).
+      const netPay = isEquipmentPaystub
+        ? equipmentReimbursementThisPeriod
+        : round2(grossPayThisPeriod - appliedStatutoryDeductions + miscReimbursementThisPeriod + totalMileageReimbursementRounded);
       const effectiveRate = commissionRateInEffectForEarnings;
+      // No Count In / Operation line for the periods in PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE.
+      const showCountInEarningsLine = !PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE.some(
+        (period) =>
+          period.start === payPeriodIsoDay(effectivePeriodStart) &&
+          period.end === payPeriodIsoDay(effectivePeriodEnd)
+      );
+      // The Commission earnings line without the Count In / Operation pay. Its rate stays the
+      // Rate in Effect, which counts the Count In / Operation pay: (Commission + Count In /
+      // Operation) / hours, the same rate the Variable Incentive and the Commission Report use.
+      // Without the Count In line, the Commission line keeps that pay.
+      const commissionLineThisPeriod = showCountInEarningsLine
+        ? round2(totalCommissionRounded - countInTotalForEarnings)
+        : totalCommissionRounded;
+      const commissionLineRate = effectiveRate;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -2720,7 +2863,10 @@ export async function POST(req: NextRequest) {
       const carryoverPriorYtd = (requestValue: any, carryoverField: string, current: number): PriorYtdSource | null => {
         const requested = requestYtd(requestValue);
         const carryover = carryoverYtd(carryoverField);
-        const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
+        // An equipment paystub pays nothing this period but the equipment reimbursement
+        // (see runningYtd).
+        const paysNothingThisPeriod = isEquipmentPaystub && carryoverField !== 'equipment_reimb_ytd';
+        const curr = paysNothingThisPeriod ? 0 : Number.isFinite(Number(current)) ? Number(current) : 0;
         let lowestPossibleYtd = Math.max(0, curr);
         if (
           carryover?.asOfDate &&
@@ -2734,13 +2880,22 @@ export async function POST(req: NextRequest) {
         return carryover;
       };
 
-      const runningYtd = (prior: PriorYtdSource | null, current: number) => {
+      // YTD through this pay period, as on a normal paystub.
+      const runningYtdThroughThisPeriod = (prior: PriorYtdSource | null, current: number) => {
         const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
         if (!prior) return curr;
         if (prior.includesCurrent) return prior.amount;
         if (payDateIso && prior.asOfDate && prior.asOfDate >= payDateIso) return prior.amount;
         return prior.amount + curr;
       };
+      // An equipment reimbursement paystub is paid off-cycle and shows the YTD of the last
+      // paystub cycle: the YTD in the request (or the carryover) as it is, with nothing added
+      // for this pay period. Its This Period pays no earnings and withholds nothing, so the
+      // events and deductions of the period on screen (already paid on the normal paystub,
+      // or misread from ADP's equipment statement) never reach its YTD. Only the Equipment
+      // Reimbursement line adds this paystub's payment (runningYtdThroughThisPeriod).
+      const runningYtd = (prior: PriorYtdSource | null, current: number) =>
+        runningYtdThroughThisPeriod(prior, isEquipmentPaystub ? 0 : current);
 
       const ytdRegularHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.regular_hours), snapshotDateIso), totalRegHours);
       const ytdOvertimeHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.overtime_hours), snapshotDateIso), totalOtHours);
@@ -2823,9 +2978,11 @@ export async function POST(req: NextRequest) {
         : 0;
       const ytdVoluntaryDeduction = round2(runningYtd(priorYtd(calSaversRothRetYtd, ytdSnapshot?.misc_non_taxable_ytd, 'calsavers_roth_ret_ytd'), miscDeductionAmt));
       const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
-      const ytdEquipmentReimb = round2(runningYtd(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd', adjustmentReimbursementRounded), adjustmentReimbursementRounded));
+      // Equipment this period: 0 on a normal paystub, the reimbursement on an equipment one.
+      // YTD is the prior equipment YTD (ADP export or carryover) plus that, on both types.
+      const ytdEquipmentReimb = round2(runningYtdThroughThisPeriod(carryoverPriorYtd(equipmentReimbYtd, 'equipment_reimb_ytd', equipmentReimbursementThisPeriod), equipmentReimbursementThisPeriod));
       const ytdMileageReimb = round2(runningYtd(carryoverPriorYtd(effectiveMileageReimbYtd, 'mileage_reimb_ytd', totalMileageReimbursementRounded), totalMileageReimbursementRounded));
-      const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), reimbursement));
+      const ytdMiscReimbursement = round2(runningYtd(priorYtd(miscReimbursementYtd, ytdSnapshot?.misc_reimbursement_ytd, 'misc_reimbursement_ytd'), miscReimbursementThisPeriod));
       const {
         accruedThisPeriod: sickAccruedThisPeriod,
         takenThisPeriod: sickTakenThisPeriod,
@@ -2945,7 +3102,14 @@ export async function POST(req: NextRequest) {
         { label: "Regular", color: black, rate: regularRateForEarnings, hours: regularHoursForEarnings, thisPeriod: regularPayForEarnings, ytd: ytdRegularPay, hideThisPeriod: !showHourlyEarningsRows },
         { label: "Overtime", color: black, rate: overtimeRateAvg, hours: overtimeHoursForEarnings, thisPeriod: overtimePayForEarnings, ytd: ytdOvertimePay },
         { label: "Double Time", color: black, rate: doubletimeRateAvg, hours: doubletimeHoursForEarnings, thisPeriod: doubletimePayForEarnings, ytd: ytdDoubletimePay },
-        { label: "Commission", color: black, rate: effectiveRate, hours: commissionHoursForEarnings, thisPeriod: totalCommissionRounded, ytd: ytdCommission },
+        { label: "Commission", color: black, rate: commissionLineRate, hours: commissionHoursForEarnings, thisPeriod: commissionLineThisPeriod, ytd: ytdCommission },
+        // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none),
+        // except in PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE (then it is in Commission).
+        // ADP pays it as Commission, so it has no YTD of its own (Commission's YTD includes
+        // it), and /pdf-reader adds this line back into Commission.
+        ...(showCountInEarningsLine
+          ? [{ label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 }]
+          : []),
         { label: "Variable Incentive", color: black, rate: round2(variableRateForEarnings), hours: commissionHoursForEarnings, thisPeriod: totalVariableIncentiveRounded, ytd: ytdVariableIncentive },
         { label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
         // Hours column holds this period's rest break count (a count, not hours): rest break pay / $4.50, rounded down.
@@ -2977,6 +3141,12 @@ export async function POST(req: NextRequest) {
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
+        // Equipment paystub: no rate, hours or This Period on earnings lines, only the YTD.
+        // /pdf-reader reads a line's lone number as its YTD, with 0 this period.
+        if (isEquipmentPaystub) {
+          if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
+          continue;
+        }
         if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
         if (row.hours > 0) drawTopText(Number(row.hours).toFixed((row as any).hoursAsCount ? 0 : 2), earningsHoursValueX, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
@@ -2996,9 +3166,12 @@ export async function POST(req: NextRequest) {
       const deductionRowStartY = statutoryDividerY + 13.1;
       const deductionRowGap = 7.4;
 
+      // An equipment reimbursement is not wages, so an equipment paystub's gross pay this
+      // period is $0.00 (printed, so /pdf-reader does not read the YTD gross as this period).
+      const statementGrossThisPeriod = isEquipmentPaystub ? 0 : grossPayThisPeriod;
       drawTopLine(40, earningsBottomLineY, 332);
       drawTopText("Gross Pay", 95, grossPayY, { size: 8, bold: true });
-      drawTopText(money(grossPayThisPeriod), earningsThisPeriodValueX, grossPayY, { size: 8, bold: true });
+      drawTopText(money(statementGrossThisPeriod), earningsThisPeriodValueX, grossPayY, { size: 8, bold: true });
       drawTopText(money(ytdGross), earningsYtdValueX, grossPayY, { size: 8, bold: true });
 
       drawTopText("Statutory Deductions", 112, statutoryHeaderY, { size: 8, bold: true });
@@ -3023,10 +3196,12 @@ export async function POST(req: NextRequest) {
           ytd: ytdVoluntaryDeduction,
         },
         // Other voluntary deductions as on the ADP statement (e.g. "Creditor 1").
+        // On an equipment paystub only the file's YTD (the last paystub cycle's), never a
+        // this-period amount.
         ...otherVoluntaryDeductions.map((line) => ({
           label: line.label,
           thisPeriod: line.thisPeriod,
-          ytd: line.ytd ?? line.thisPeriod,
+          ytd: isEquipmentPaystub ? line.ytd ?? 0 : line.ytd ?? line.thisPeriod,
         })),
       ];
 
@@ -3053,7 +3228,8 @@ export async function POST(req: NextRequest) {
       positionedStatutoryDeductionRows.forEach((row, index) => {
         const appliedThisPeriod = appliedDeductionValues[index] || 0;
         drawTopText(row.label, 112, row.y, { size: 8 });
-        drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
+        // Nothing is withheld from an equipment reimbursement: YTD only.
+        if (!isEquipmentPaystub) drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
         drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
       });
 
@@ -3066,7 +3242,7 @@ export async function POST(req: NextRequest) {
       positionedVoluntaryDeductionRows.forEach((row, index) => {
         const appliedThisPeriod = appliedDeductionValues[positionedStatutoryDeductionRows.length + index] || 0;
         drawTopText(row.label, 112, row.y, { size: 8 });
-        drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
+        if (!isEquipmentPaystub) drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
         drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
       });
 
@@ -3085,48 +3261,57 @@ export async function POST(req: NextRequest) {
       drawTopText("This Period", 233, netAdjustmentsHeaderY, { size: 8 });
       drawTopText("Year to Date", 289, netAdjustmentsHeaderY, { size: 8 });
       drawTopLine(109, netAdjustmentsDividerY, 332);
+      // Equipment Reimbursement this period: always 0.00 on a normal paystub; on an equipment
+      // paystub it is the only This Period amount, and Misc / Mileage show their YTD only.
       drawTopText("Equipment Reimbursement", 112, equipmentReimbursementRowY, { size: 8 });
-      drawTopText(fmt(adjustmentReimbursementRounded), 249, equipmentReimbursementRowY, { size: 8 });
+      drawTopText(fmt(equipmentReimbursementThisPeriod), 249, equipmentReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdEquipmentReimb), 299, equipmentReimbursementRowY, { size: 8 });
       drawTopText("Misc Reimbursement", 112, miscReimbursementRowY, { size: 8 });
-      drawTopText(fmt(reimbursement), 249, miscReimbursementRowY, { size: 8 });
+      if (!isEquipmentPaystub) drawTopText(fmt(miscReimbursementThisPeriod), 249, miscReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdMiscReimbursement), 299, miscReimbursementRowY, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, mileageReimbursementRowY, { size: 8 });
-      drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageReimbursementRowY, { size: 8 });
+      if (!isEquipmentPaystub) drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageReimbursementRowY, { size: 8 });
       drawTopText(fmt(ytdMileageReimb), 299, mileageReimbursementRowY, { size: 8 });
       drawTopLine(109, netPayDividerY, 332);
       drawTopText("Net Pay", 112, netPayY, { size: 8, bold: true });
       drawTopText(money(netPay), 240, netPayY, { size: 8, bold: true });
 
-      drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
-      drawTopText("Information", 353, 187, { size: 8, bold: true });
-      drawTopText("This Period", 474, 187, { size: 8 });
-      drawTopText("Year to Date", 530, 187, { size: 8 });
-      drawTopLine(353, 192, 560);
-      drawTopText("Sick", 353, 207.7, { size: 8 });
-      drawTopText("Carry Over", 362.6, 214.9, { size: 8 });
-      drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
-      drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
-      drawTopText("- Balance", 358.2, 237.0, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(0), 492.9, 214.9, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
-      drawTopText(formatSickLeaveHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+      // The Other Benefits and Information table (sick leave) is left off an equipment
+      // paystub; its Deposits block moves up into that space.
+      if (!isEquipmentPaystub) {
+        drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
+        drawTopText("Information", 353, 187, { size: 8, bold: true });
+        drawTopText("This Period", 474, 187, { size: 8 });
+        drawTopText("Year to Date", 530, 187, { size: 8 });
+        drawTopLine(353, 192, 560);
+        drawTopText("Sick", 353, 207.7, { size: 8 });
+        drawTopText("Carry Over", 362.6, 214.9, { size: 8 });
+        drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
+        drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
+        drawTopText("- Balance", 358.2, 237.0, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(0), 492.9, 214.9, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
+        drawTopText(formatSickLeaveHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+      }
 
-      drawTopText("Deposits", 353.1, 251.4, { size: 8, bold: true });
-      drawTopText("account number", 353, 259.1, { size: 8 });
-      drawTopText("transit/ABA", 471.8, 259.3, { size: 8 });
-      drawTopText("amount", 542.8, 258.6, { size: 8 });
-      drawTopText(accountMask, 353, 269.9, { size: 8 });
-      drawTopText(routingMask, 469.2, 266.3, { size: 8 });
-      drawTopText(fmt(netPay), 544.2, 268.4, { size: 8 });
+      const depositsShiftUp = isEquipmentPaystub ? 251.4 - 182 : 0;
+      drawTopText("Deposits", 353.1, 251.4 - depositsShiftUp, { size: 8, bold: true });
+      drawTopText("account number", 353, 259.1 - depositsShiftUp, { size: 8 });
+      drawTopText("transit/ABA", 471.8, 259.3 - depositsShiftUp, { size: 8 });
+      drawTopText("amount", 542.8, 258.6 - depositsShiftUp, { size: 8 });
+      drawTopText(accountMask, 353, 269.9 - depositsShiftUp, { size: 8 });
+      drawTopText(routingMask, 469.2, 266.3 - depositsShiftUp, { size: 8 });
+      drawTopText(fmt(netPay), 544.2, 268.4 - depositsShiftUp, { size: 8 });
 
-      const hasCommissionReport = caCommissionRows.length > 0;
+      // No commission report and no Important Notes (hours, commission rate) on an
+      // equipment paystub: it pays no work.
+      const hasCommissionReport = !isEquipmentPaystub && caCommissionRows.length > 0;
       const showCommissionRateNote = hasCommissionReport && !showHourlyEarningsRows;
-      const showImportantNotes = totalHoursWorked > 0 && (showHourlyEarningsRows || showCommissionRateNote);
+      const showImportantNotes = !isEquipmentPaystub && totalHoursWorked > 0 && (showHourlyEarningsRows || showCommissionRateNote);
 
       // Important Notes
       if (showImportantNotes) {
@@ -3134,12 +3319,19 @@ export async function POST(req: NextRequest) {
         drawTopText("Total Hours Worked:", 353, 300, { size: 8 });
         drawTopText(Number(totalHoursWorked).toFixed(2), 492.9, 300, { size: 8 });
         if (showCommissionRateNote) {
-          drawTopText("** Effective Rate = Total Commissions / Total Hours Worked", 353, 312, { size: 7 });
+          drawTopText(
+            showCountInEarningsLine && countInTotalForEarnings !== 0
+              ? "** Effective Rate = (Commissions + Count In / Operation) / Total Hours"
+              : "** Effective Rate = Total Commissions / Total Hours Worked",
+            353,
+            312,
+            { size: 7 }
+          );
           drawTopText("See Attached Commission Report in Employee Portal", 353, 322, { size: 7 });
         }
       }
 
-      drawTopText(`Your federal taxable wages this period are ${money(grossPayThisPeriod)}`, 349.4, 518.0, { size: 8 });
+      drawTopText(`Your federal taxable wages this period are ${money(statementGrossThisPeriod)}`, 349.4, 518.0, { size: 8 });
 
       drawTopText("Print & Design Solutions Inc", 111.9, 562.7, { size: 8 });
       drawTopText("31111 Agoura Road", 112.0, 570.1, { size: 8 });
@@ -3164,27 +3356,16 @@ export async function POST(req: NextRequest) {
       if (addressLine2) drawTopText(addressLine2, 139.2, 703.5, { size: 10 });
       if (addressLine3) drawTopText(addressLine3, 139.2, 714.0, { size: 10 });
 
-      addCommissionReportPage(
-        caCommissionRows.filter((row) => !row.adpAdjustment),
-        {
-          variableIncentiveTotal: totalVariableIncentiveRounded,
-          commissionTotal: totalCommissionRounded,
-          tipsTotal: totalTipsRounded,
-          restBreakTotal: totalRestBreakRounded,
-          bonusTotal: totalOtherRounded,
-          rateInEffect: effectiveRate,
-          hoursTotal: commissionHoursForEarnings,
-          variableRate: round2(variableRateForEarnings),
-        }
-      );
+      addCommissionReportPage(caCommissionRows.filter((row) => !row.adpAdjustment));
       const pdfBytes = await pdfDoc.save();
 
       return new NextResponse(Buffer.from(pdfBytes), {
         status: 200,
         headers: {
           'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`,
+          'Content-Disposition': `attachment; filename="${isEquipmentPaystub ? 'equipment-reimbursement-paystub' : 'paystub'}-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`,
           'X-Paystub-Payroll-Source': uploadedPaystub ? 'upload' : 'system',
+          'X-Paystub-Type': isEquipmentPaystub ? 'equipment' : 'normal',
         }
       });
     }
@@ -3223,17 +3404,19 @@ export async function POST(req: NextRequest) {
     yPosition -= 20;
 
     // Table column headers (compact vendor layout: CA/NV/WI)
+    // countIn: the flat no-commission shift pay (Count In / Operation), apart from Comm Amt.
     const vendorColXWithRestBreak = {
       event: 50,
       eventName: 78,
       regRate: 183,
       otRate: 228,
       hoursWorked: 273,
-      comm: 330,
-      tips: 395,
-      restBreak: 435,
-      other: 475,
-      totalGross: 515,
+      comm: 323,
+      countIn: 369,
+      tips: 405,
+      restBreak: 438,
+      other: 477,
+      totalGross: 517,
     } as const;
 
     const vendorColXNoRestBreak = {
@@ -3242,8 +3425,9 @@ export async function POST(req: NextRequest) {
       regRate: 193,
       otRate: 238,
       hoursWorked: 283,
-      comm: 340,
-      tips: 405,
+      comm: 333,
+      countIn: 380,
+      tips: 418,
       other: 460,
       totalGross: 515,
     } as const;
@@ -3270,6 +3454,8 @@ export async function POST(req: NextRequest) {
       drawText("OT RATE", (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8, bold: true });
       drawText("Hours Worked", colX.hoursWorked, yPosition, { size: 7, bold: true });
       drawText("Comm Amt", colX.comm, yPosition, { size: 8, bold: true });
+      drawText("Count In /", colX.countIn, yPosition + 6, { size: 6, bold: true });
+      drawText("Operation", colX.countIn, yPosition - 1, { size: 6, bold: true });
       drawText("Tips", colX.tips, yPosition, { size: 8, bold: true });
       if (includeRestBreakColumn) {
         drawText("Rest Break", (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 7, bold: true });
@@ -3304,6 +3490,8 @@ export async function POST(req: NextRequest) {
     let totalHoursWorked = 0;
     let totalTips = 0;
     let totalCommission = 0;
+    // Count In / Operation pay inside totalCommission (shown in its own column).
+    let totalCountIn = 0;
     let totalVariableIncentive = 0;
     let totalRestBreak = 0;
     let totalOther = 0;
@@ -3312,8 +3500,9 @@ export async function POST(req: NextRequest) {
     const nonCaCommissionRows: CommissionReportRow[] = [];
 
     // Draw event rows (system payroll). With uploaded payroll in use, the uploaded
-    // lines are drawn instead, right after this loop.
-    (uploadedPaystub ? [] : (events as any[])).forEach((event: any, index: number) => {
+    // lines are drawn instead, right after this loop. An equipment reimbursement paystub
+    // draws neither: it pays no work (this layout has no YTD to carry).
+    (uploadedPaystub || isEquipmentPaystub ? [] : (events as any[])).forEach((event: any, index: number) => {
       const worker = matchedUserId
         ? (event.workers || []).find((w: any) => w?.user_id === matchedUserId) || event.workers?.[0]
         : event.workers?.[0]; // fallback
@@ -3473,6 +3662,15 @@ export async function POST(req: NextRequest) {
         const displayCommissionPay = roundPayrollAmount(reportCommissionShare);
         const displayVariableIncentive = roundPayrollAmount(reportVariableIncentive);
         const commission = displayCommissionPay;
+        // A count-in / no-commission shift's flat pay shows under Count In / Operation instead
+        // of Comm Amt (same test as the California statement). Pay is unchanged.
+        const zeroCommissionShiftNonCa =
+          usesPeriodRate &&
+          !paysSanDiegoHourlyNonCa &&
+          getZeroCommissionShiftPay(event, worker, commissionSharesByUser[workerUserId]) > 0 &&
+          Math.abs(displayCommissionPay - ZERO_COMMISSION_SHIFT_PAY) < 0.005;
+        const countInPay = zeroCommissionShiftNonCa ? displayCommissionPay : 0;
+        const commissionLessCountIn = roundPayrollAmount(displayCommissionPay - countInPay);
 
         // Vendor layout REG/OT rate display
         // REG RATE is the rate actually paid for the shift (commission pay incl. variable
@@ -3507,8 +3705,21 @@ export async function POST(req: NextRequest) {
         const reportFinalPay = roundPayrollAmount(
           displayCommissionPay + displayVariableIncentive + tips + restBreak
         );
+        // Meal Premium toggle (see getToggleMealPremium): San Diego hourly work at its hourly
+        // rate, NV commission work at the pay period's rate in effect, NY at the loaded rate.
+        // A saved total_pay already holds it when the Payment tab was saved after the toggle.
+        const toggleMealPremium2 = getToggleMealPremium(
+          event,
+          worker,
+          actualHours,
+          paysSanDiegoHourlyNonCa
+            ? baseRate
+            : usesPeriodRate
+              ? Number(periodWorker?.rateInEffect || 0)
+              : loadedRate
+        );
         const computedTotalPay = reportFinalPay;
-        const computedTotalGrossPay = computedTotalPay + other + adjustmentMealPremium2;
+        const computedTotalGrossPay = computedTotalPay + other + adjustmentMealPremium2 + toggleMealPremium2;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
         const reportRateInEffect = getReportRateInEffect({
           commissionPay: displayCommissionPay,
@@ -3546,6 +3757,7 @@ export async function POST(req: NextRequest) {
             restBreak,
             bonus: other,
             finalPay: commissionReportFinalPay,
+            zeroCommissionShift: zeroCommissionShiftNonCa,
           });
         }
 
@@ -3555,6 +3767,7 @@ export async function POST(req: NextRequest) {
         totalHoursWorked += displayHours;
         totalTips += tips;
         totalCommission += displayCommissionPay;
+        totalCountIn += countInPay;
         totalVariableIncentive += displayVariableIncentive;
         totalRestBreak += restBreak;
         totalOther += other;
@@ -3605,7 +3818,8 @@ export async function POST(req: NextRequest) {
           if (regRate > 0) drawText(`$${regRate.toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
           if (otRate > 0) drawText(`$${otRate.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8 });
           if (displayHours > 0) drawText(displayHours.toFixed(2), colX.hoursWorked, yPosition, { size: 8 });
-          if (commission > 0) drawText(`$${commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (commissionLessCountIn > 0) drawText(`$${commissionLessCountIn.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (countInPay > 0) drawText(`$${countInPay.toFixed(2)}`, colX.countIn, yPosition, { size: 8 });
           if (tips > 0) drawText(`$${tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
           if (includeRestBreakColumn) {
             // Always render rest break so it's visible (even when $0.00).
@@ -3636,7 +3850,7 @@ export async function POST(req: NextRequest) {
     let uploadedMileageNonCA = 0;
     // Uploaded reimbursements are shown as Misc Reimbursement, not Equipment (see below).
     let uploadedReimbursementNonCA = 0;
-    if (uploadedPaystub) {
+    if (uploadedPaystub && !isEquipmentPaystub) {
       for (const line of uploadedPaystub.lines) {
         uploadedReimbursementNonCA += line.reimbursement;
         uploadedMileageNonCA += line.mileage;
@@ -3660,6 +3874,12 @@ export async function POST(req: NextRequest) {
         totalHoursWorked += line.hours;
         totalTips += line.tips;
         totalCommission += line.commission;
+        const lineCountIn =
+          line.isCommission && uploadLineIsCountInPay(line, matchUploadLineToEvent(line, Array.isArray(events) ? events : []))
+            ? roundPayrollAmount(line.commission)
+            : 0;
+        totalCountIn += lineCountIn;
+        const lineCommissionLessCountIn = roundPayrollAmount(line.commission - lineCountIn);
         totalVariableIncentive += line.variableIncentive;
         totalRestBreak += line.restBreak;
         // This layout has no Meal Premium row: uploaded meal premium shows under Other.
@@ -3682,7 +3902,8 @@ export async function POST(req: NextRequest) {
           if (regRate > 0) drawText(`$${regRate.toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
           if (otRate > 0) drawText(`$${otRate.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8 });
           if (line.hours > 0) drawText(line.hours.toFixed(2), colX.hoursWorked, yPosition, { size: 8 });
-          if (line.commission > 0) drawText(`$${line.commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (lineCommissionLessCountIn > 0) drawText(`$${lineCommissionLessCountIn.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (lineCountIn > 0) drawText(`$${lineCountIn.toFixed(2)}`, colX.countIn, yPosition, { size: 8 });
           if (line.tips > 0) drawText(`$${line.tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
           if (includeRestBreakColumn) {
             drawText(`$${line.restBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8 });
@@ -3711,10 +3932,13 @@ export async function POST(req: NextRequest) {
     drawLine(50, yPosition + 10, 560, yPosition + 10);
     yPosition -= 5;
     drawText("This Period", 50, yPosition, { size: 8, bold: true });
-    if (useVendorLayout) {
+    if (isEquipmentPaystub) {
+      // Equipment paystub: no earnings this period, so the totals row stays blank.
+    } else if (useVendorLayout) {
       const colX = includeRestBreakColumn ? vendorColXWithRestBreak : vendorColXNoRestBreak;
       drawText(totalHoursWorked.toFixed(2), colX.hoursWorked, yPosition, { size: 8, bold: true });
-      drawText(`$${totalCommission.toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
+      drawText(`$${roundPayrollAmount(totalCommission - totalCountIn).toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
+      drawText(`$${roundPayrollAmount(totalCountIn).toFixed(2)}`, colX.countIn, yPosition, { size: 8, bold: true });
       drawText(`$${totalTips.toFixed(2)}`, colX.tips, yPosition, { size: 8, bold: true });
       if (includeRestBreakColumn) {
         drawText(`$${totalRestBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8, bold: true });
@@ -3734,8 +3958,8 @@ export async function POST(req: NextRequest) {
     yPosition -= 15;
     drawLine(50, yPosition + 10, 560, yPosition + 10);
 
-    const mealPremiumAmt = round2(Math.abs(Number(mealPremium) || 0));
-    const currentGrossPay = round2(totalGross + mealPremiumAmt);
+    const mealPremiumAmt = isEquipmentPaystub ? 0 : round2(Math.abs(Number(mealPremium) || 0));
+    const currentGrossPay = isEquipmentPaystub ? 0 : round2(totalGross + mealPremiumAmt);
 
     // Gross Pay
     yPosition -= 20;
@@ -3771,10 +3995,11 @@ export async function POST(req: NextRequest) {
     let appliedTotalDeductions = 0;
 
     deductions.forEach((deduction, index) => {
-      const appliedValue = appliedDeductionValues[index] || 0;
+      // Nothing is withheld from an equipment reimbursement (gross pay is $0.00).
+      const appliedValue = isEquipmentPaystub ? 0 : appliedDeductionValues[index] || 0;
       appliedTotalDeductions += appliedValue;
       drawText(deduction.label, 50, yPosition, { size: 9 });
-      drawText(`-${appliedValue.toFixed(2)}`, 250, yPosition, { size: 9 });
+      if (!isEquipmentPaystub) drawText(`-${appliedValue.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     });
 
@@ -3792,7 +4017,9 @@ export async function POST(req: NextRequest) {
       : 0;
 
     const sickLeaveDisplayY = yPosition +60;
-    if (sickLeave) {
+    // No sick leave on an equipment reimbursement paystub.
+    const showSickLeaveSummary = !!sickLeave && !isEquipmentPaystub;
+    if (showSickLeaveSummary && sickLeave) {
       drawText("Sick Leave Summary", 360, sickLeaveDisplayY + 12, { bold: true, size: 9 });
       drawText(`Hours Used: ${formatSickLeaveHHMM(sickLeave.total_hours)}`, 360, sickLeaveDisplayY, { size: 8 });
       drawText(`Carry Over: ${formatSickLeaveHHMM(Number(sickLeave.carry_over_hours || 0))}`, 360, sickLeaveDisplayY - 12, { size: 8 });
@@ -3806,18 +4033,22 @@ export async function POST(req: NextRequest) {
     const pageMiscReimbursementNonCA = parseFloat(miscReimbursement || '0') || 0;
     const reimbursement =
       pageMiscReimbursementNonCA !== 0 ? pageMiscReimbursementNonCA : round2(uploadedReimbursementNonCA);
-    const totalReimbursementNonCA = round2(reimbursement + totalAdjustmentReimbursementNonCA);
-    if (totalAdjustmentReimbursementNonCA > 0) {
+    // Event dashboard Payment tab reimbursements are not equipment: they print on the Misc
+    // Reimbursement line (they used to print as Equipment Reimbursement). A normal paystub
+    // never pays equipment; an equipment paystub pays only that, with no misc or mileage.
+    const miscReimbursementNonCA = isEquipmentPaystub ? 0 : round2(reimbursement + totalAdjustmentReimbursementNonCA);
+    const totalReimbursementNonCA = isEquipmentPaystub ? equipmentReimbursementThisPeriod : miscReimbursementNonCA;
+    if (isEquipmentPaystub) {
       drawText("Equipment Reimbursement", 50, yPosition, { size: 9 });
-      drawText(`+${round2(totalAdjustmentReimbursementNonCA).toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`+${equipmentReimbursementThisPeriod.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
-    if (reimbursement > 0) {
+    if (miscReimbursementNonCA > 0) {
       drawText("Misc Reimbursement", 50, yPosition, { size: 9 });
-      drawText(`+${round2(reimbursement).toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`+${miscReimbursementNonCA.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
-    if (uploadedMileageNonCA > 0) {
+    if (uploadedMileageNonCA > 0 && !isEquipmentPaystub) {
       drawText("Mileage Reimbursement", 50, yPosition, { size: 9 });
       drawText(`+${round2(uploadedMileageNonCA).toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
@@ -3827,11 +4058,13 @@ export async function POST(req: NextRequest) {
     yPosition -= 10;
     drawLine(50, yPosition + 10, 350, yPosition + 10);
     yPosition -= 5;
-    const netPay = currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA + round2(uploadedMileageNonCA);
+    const netPay = isEquipmentPaystub
+      ? equipmentReimbursementThisPeriod
+      : currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA + round2(uploadedMileageNonCA);
     drawText("Net Pay", 50, yPosition, { bold: true, size: 12 });
     drawText(`$${netPay.toFixed(2)}`, 250, yPosition, { bold: true, size: 12 });
 
-    if (sickLeave) {
+    if (showSickLeaveSummary && sickLeave) {
       yPosition -= 20;
       drawText("Sick Leave Summary", 50, yPosition, { bold: true, size: 10 });
       yPosition -= 12;
@@ -3843,7 +4076,7 @@ export async function POST(req: NextRequest) {
       yPosition -= 12;
     }
 
-    const hasCommissionReport = nonCaCommissionRows.length > 0;
+    const hasCommissionReport = !isEquipmentPaystub && nonCaCommissionRows.length > 0;
 
     // Important Notes (commission rate explanation)
     if (hasCommissionReport) {
@@ -3852,7 +4085,14 @@ export async function POST(req: NextRequest) {
       yPosition -= 12;
       drawText(`Total Hours Worked: ${totalHoursWorked.toFixed(2)}`, 50, yPosition, { size: 8 });
       yPosition -= 11;
-      drawText("** Effective Rate = Total Commissions / Total Hours Worked", 50, yPosition, { size: 8 });
+      drawText(
+        totalCountIn !== 0
+          ? "** Effective Rate = (Total Commissions + Count In / Operation) / Total Hours Worked"
+          : "** Effective Rate = Total Commissions / Total Hours Worked",
+        50,
+        yPosition,
+        { size: 8 }
+      );
       yPosition -= 11;
       drawText("See Attached Commission Report in Employee Portal", 50, yPosition, { size: 8 });
     }
@@ -3889,8 +4129,9 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${payDate}.pdf"`,
+        'Content-Disposition': `attachment; filename="${isEquipmentPaystub ? 'equipment-reimbursement-paystub' : 'paystub'}-${employeeName?.replace(/\s/g, '_')}-${payDate}.pdf"`,
         'X-Paystub-Payroll-Source': uploadedPaystub ? 'upload' : 'system',
+        'X-Paystub-Type': isEquipmentPaystub ? 'equipment' : 'normal',
       }
     });
   } catch (error: any) {
