@@ -110,6 +110,24 @@ const ADP_EARNINGS_LINE_KEYS = [
 // clocked hours would pay $0 on the commission report.
 const ZERO_COMMISSION_SHIFT_PAY = 150;
 
+// Pay periods whose statement (page 1) Earnings table has no "Count In / Operation" line: the
+// count-in pay stays in the Commission line, so the lines still add up to Gross Pay. The
+// Commission Report keeps its Count In / Operation column. User request 2026-10-29 for the
+// 10/12/2026 - 10/25/2026 period (paid 10/30/2026).
+const PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE: ReadonlyArray<{ start: string; end: string }> = [
+  { start: "2026-10-12", end: "2026-10-25" },
+];
+
+// "2026-10-12", "2026-10-12T00:00:00Z" or "10/12/2026" -> "2026-10-12".
+function payPeriodIsoDay(value: unknown): string {
+  const text = String(value ?? "").trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const us = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) return `${us[3]}-${us[1].padStart(2, "0")}-${us[2].padStart(2, "0")}`;
+  return text;
+}
+
 function parseAdpEarningsLines(raw: unknown): AdpEarningsLines | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
@@ -213,8 +231,10 @@ export async function POST(req: NextRequest) {
     // Equipment reimbursement paystub: the same statement as a normal paystub, but the This
     // Period column shows only the equipment reimbursement, net pay is that amount, and there
     // is no Other Benefits (sick leave) table, no Important Notes and no commission report.
-    // HR pays it off-cycle, so its YTD figures are those of the last paystub cycle: this pay
-    // period's earnings, deductions and reimbursements are left out (see runningYtd).
+    // HR pays it off-cycle, so its YTD figures are those of the last paystub cycle: the YTD
+    // sent with the request (ADP's own equipment statement carries the last cycle's earnings
+    // YTD; the page adds the last cycle's deduction YTD), with nothing added for this pay
+    // period's work (see runningYtd).
     const isEquipmentPaystub = String(paystubType || "").trim().toLowerCase() === "equipment";
     const equipmentReimbursementThisPeriod = (() => {
       if (!isEquipmentPaystub) return 0;
@@ -2639,10 +2659,19 @@ export async function POST(req: NextRequest) {
         ? equipmentReimbursementThisPeriod
         : round2(grossPayThisPeriod - appliedStatutoryDeductions + miscReimbursementThisPeriod + totalMileageReimbursementRounded);
       const effectiveRate = commissionRateInEffectForEarnings;
+      // No Count In / Operation line for the periods in PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE.
+      const showCountInEarningsLine = !PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE.some(
+        (period) =>
+          period.start === payPeriodIsoDay(effectivePeriodStart) &&
+          period.end === payPeriodIsoDay(effectivePeriodEnd)
+      );
       // The Commission earnings line without the Count In / Operation pay. Its rate stays the
       // Rate in Effect, which counts the Count In / Operation pay: (Commission + Count In /
       // Operation) / hours, the same rate the Variable Incentive and the Commission Report use.
-      const commissionLineThisPeriod = round2(totalCommissionRounded - countInTotalForEarnings);
+      // Without the Count In line, the Commission line keeps that pay.
+      const commissionLineThisPeriod = showCountInEarningsLine
+        ? round2(totalCommissionRounded - countInTotalForEarnings)
+        : totalCommissionRounded;
       const commissionLineRate = effectiveRate;
 
       let ytdSnapshot: any = null;
@@ -2834,7 +2863,10 @@ export async function POST(req: NextRequest) {
       const carryoverPriorYtd = (requestValue: any, carryoverField: string, current: number): PriorYtdSource | null => {
         const requested = requestYtd(requestValue);
         const carryover = carryoverYtd(carryoverField);
-        const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
+        // An equipment paystub pays nothing this period but the equipment reimbursement
+        // (see runningYtd).
+        const paysNothingThisPeriod = isEquipmentPaystub && carryoverField !== 'equipment_reimb_ytd';
+        const curr = paysNothingThisPeriod ? 0 : Number.isFinite(Number(current)) ? Number(current) : 0;
         let lowestPossibleYtd = Math.max(0, curr);
         if (
           carryover?.asOfDate &&
@@ -2857,18 +2889,13 @@ export async function POST(req: NextRequest) {
         return prior.amount + curr;
       };
       // An equipment reimbursement paystub is paid off-cycle and shows the YTD of the last
-      // paystub cycle: the normal paystub's YTD with this pay period's amount taken back out
-      // (an imported ADP YTD already includes this period; a carryover gets it added above).
-      // Only the Equipment Reimbursement line keeps this paystub's payment in its YTD.
-      const runningYtd = (prior: PriorYtdSource | null, current: number) => {
-        const throughThisPeriod = runningYtdThroughThisPeriod(prior, current);
-        if (!isEquipmentPaystub) return throughThisPeriod;
-        const curr = Number.isFinite(Number(current)) ? Number(current) : 0;
-        const lastCycle = throughThisPeriod - curr;
-        // A YTD that leaves out this period cannot go below zero (the file's YTD and this
-        // period's figure can come from different sources).
-        return throughThisPeriod >= 0 && lastCycle < 0 ? 0 : lastCycle;
-      };
+      // paystub cycle: the YTD in the request (or the carryover) as it is, with nothing added
+      // for this pay period. Its This Period pays no earnings and withholds nothing, so the
+      // events and deductions of the period on screen (already paid on the normal paystub,
+      // or misread from ADP's equipment statement) never reach its YTD. Only the Equipment
+      // Reimbursement line adds this paystub's payment (runningYtdThroughThisPeriod).
+      const runningYtd = (prior: PriorYtdSource | null, current: number) =>
+        runningYtdThroughThisPeriod(prior, isEquipmentPaystub ? 0 : current);
 
       const ytdRegularHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.regular_hours), snapshotDateIso), totalRegHours);
       const ytdOvertimeHours = runningYtd(datedYtdSource(ytdNumberOrNull(ytdSnapshot?.overtime_hours), snapshotDateIso), totalOtHours);
@@ -3076,10 +3103,13 @@ export async function POST(req: NextRequest) {
         { label: "Overtime", color: black, rate: overtimeRateAvg, hours: overtimeHoursForEarnings, thisPeriod: overtimePayForEarnings, ytd: ytdOvertimePay },
         { label: "Double Time", color: black, rate: doubletimeRateAvg, hours: doubletimeHoursForEarnings, thisPeriod: doubletimePayForEarnings, ytd: ytdDoubletimePay },
         { label: "Commission", color: black, rate: commissionLineRate, hours: commissionHoursForEarnings, thisPeriod: commissionLineThisPeriod, ytd: ytdCommission },
-        // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none).
+        // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none),
+        // except in PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE (then it is in Commission).
         // ADP pays it as Commission, so it has no YTD of its own (Commission's YTD includes
         // it), and /pdf-reader adds this line back into Commission.
-        { label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 },
+        ...(showCountInEarningsLine
+          ? [{ label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 }]
+          : []),
         { label: "Variable Incentive", color: black, rate: round2(variableRateForEarnings), hours: commissionHoursForEarnings, thisPeriod: totalVariableIncentiveRounded, ytd: ytdVariableIncentive },
         { label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
         // Hours column holds this period's rest break count (a count, not hours): rest break pay / $4.50, rounded down.
@@ -3166,14 +3196,12 @@ export async function POST(req: NextRequest) {
           ytd: ytdVoluntaryDeduction,
         },
         // Other voluntary deductions as on the ADP statement (e.g. "Creditor 1").
-        // Their YTD comes from the file and includes this period, so an equipment paystub
-        // (YTD of the last paystub cycle) takes this period back out.
+        // On an equipment paystub only the file's YTD (the last paystub cycle's), never a
+        // this-period amount.
         ...otherVoluntaryDeductions.map((line) => ({
           label: line.label,
           thisPeriod: line.thisPeriod,
-          ytd: isEquipmentPaystub
-            ? Math.max(0, round2((line.ytd ?? line.thisPeriod) - line.thisPeriod))
-            : line.ytd ?? line.thisPeriod,
+          ytd: isEquipmentPaystub ? line.ytd ?? 0 : line.ytd ?? line.thisPeriod,
         })),
       ];
 
@@ -3292,7 +3320,7 @@ export async function POST(req: NextRequest) {
         drawTopText(Number(totalHoursWorked).toFixed(2), 492.9, 300, { size: 8 });
         if (showCommissionRateNote) {
           drawTopText(
-            countInTotalForEarnings !== 0
+            showCountInEarningsLine && countInTotalForEarnings !== 0
               ? "** Effective Rate = (Commissions + Count In / Operation) / Total Hours"
               : "** Effective Rate = Total Commissions / Total Hours Worked",
             353,

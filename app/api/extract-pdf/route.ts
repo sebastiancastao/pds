@@ -427,6 +427,16 @@ function parseCurrencyFromLine(rawLine: string): number | undefined {
   return hasParenNegative ? -Math.abs(parsed) : parsed;
 }
 
+// Lines that are never a tax deduction, though they hold a deduction keyword:
+// - "Social Security Number: XXX-XX-1234" (the employee's SSN). ADP's equipment reimbursement
+//   statement has no Social Security line, and the guesses below read a nearby number from
+//   the address instead (e.g. "12900 Hatchett Creek Road" as 129.00, "Local: 15" as 15.00).
+// - A levy or garnishment, e.g. "State tax levy 1  0.00  292.08", a voluntary deduction that
+//   "state tax" made the California State Income guess read as 1.00.
+function isNotTaxDeductionLine(line: string): boolean {
+  return /social\s+security\s+(?:number|no\b|#)|\bssn\b|\blev(?:y|ies)\b|garnish/i.test(line);
+}
+
 function guessDeductionValue(lines: string[], def: DeductionDefinition): number | undefined {
   const orderedLines = [...lines].reverse();
 
@@ -439,6 +449,7 @@ function guessDeductionValue(lines: string[], def: DeductionDefinition): number 
       const line = chunk[j];
       const lower = line.toLowerCase();
       if (!def.keywords.some((keyword) => lower.includes(keyword))) continue;
+      if (isNotTaxDeductionLine(line)) continue;
 
       const amount = parseCurrencyFromLine(line);
       if (typeof amount === 'number' && amount > 0) return amount;
@@ -461,7 +472,7 @@ function guessDeductionValue(lines: string[], def: DeductionDefinition): number 
       const lower = line.toLowerCase();
 
       // Check if line contains any keyword
-      if (def.keywords.some((keyword) => lower.includes(keyword))) {
+      if (def.keywords.some((keyword) => lower.includes(keyword)) && !isNotTaxDeductionLine(line)) {
         console.log(`[${label} FALLBACK] Found keyword at line`, i, ':', line);
 
         // Try to extract from this line
@@ -735,7 +746,7 @@ function extractPayrollData(text: string) {
     const ssKeywords = ['social security', 'ss tax', 'sst', 'fica ss', 'oasdi', 'social sec'];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].toLowerCase();
-      if (ssKeywords.some(kw => line.includes(kw))) {
+      if (ssKeywords.some(kw => line.includes(kw)) && !isNotTaxDeductionLine(line)) {
         // Check this line and next 3 lines for amounts
         const searchLines = lines.slice(Math.max(0, i - 1), i + 4).join(' ');
         const amounts = searchLines.match(/([-\d,.()]+)\s+([-\d,.()]+)/);
