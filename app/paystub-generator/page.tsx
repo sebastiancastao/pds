@@ -1694,8 +1694,8 @@ export default function PaystubGenerator() {
       adpEarnings: fields.adpEarnings || null,
 
       // Paystub type. A normal paystub never pays an equipment reimbursement; an equipment
-      // paystub pays only this amount (the same YTD figures, no sick leave table, no
-      // commission report).
+      // paystub pays only this amount, with the YTD of the last paystub cycle (this pay
+      // period left out), no sick leave table and no commission report.
       paystubType,
       ...(isEquipmentMode ? { equipmentReimbursement: equipmentAmountFor(fields, userId).amount } : {}),
 
@@ -3884,7 +3884,7 @@ export default function PaystubGenerator() {
                       {
                         value: 'equipment',
                         label: 'Equipment reimbursement paystub',
-                        note: 'This Period shows only the equipment reimbursement. No sick leave table and no commission report.',
+                        note: 'This Period shows only the equipment reimbursement. YTD is as of the last paystub cycle (this pay period left out). No sick leave table and no commission report.',
                       },
                     ] as const).map((option) => (
                       <label
