@@ -2883,8 +2883,36 @@ export async function POST(req: NextRequest) {
       const requestYtd = (value: any): PriorYtdSource | null =>
         datedYtdSource(ytdNumberOrNull(value), payDateIso, true);
 
+      // An equipment reimbursement paystub shows the Year to Date of the last paystub cycle, and
+      // the saved YTD baseline (/adp-ytd-import, saved from that cycle's paystubs or ADP
+      // statements) holds it. ADP's equipment statement has the earnings YTD but leaves out
+      // Federal Income, Social Security, Medicare and State DI, so when the request has no
+      // Federal Income and no Medicare YTD every deduction line the baseline has comes from it,
+      // and so does any other line the request leaves blank. A baseline dated after this pay
+      // date is not used.
+      const equipmentBaselineDeductionFields = new Set([
+        'federal_income_ytd',
+        'social_security_ytd',
+        'medicare_ytd',
+        'state_income_ytd',
+        'state_di_ytd',
+        'calsavers_roth_ret_ytd',
+      ]);
+      const equipmentRequestLacksTaxYtd =
+        isEquipmentPaystub && !hasRequestYtd(federalIncomeYtd) && !hasRequestYtd(medicareYtd);
+      const equipmentBaselineYtd = (requested: PriorYtdSource | null, carryoverField: string): PriorYtdSource | null => {
+        if (!isEquipmentPaystub || !hasCarryoverYtd(carryoverField)) return null;
+        if (!carryoverDateIso || !payDateIso || carryoverDateIso > payDateIso) return null;
+        if (!requested || (equipmentRequestLacksTaxYtd && equipmentBaselineDeductionFields.has(carryoverField))) {
+          return carryoverYtd(carryoverField);
+        }
+        return null;
+      };
+
       const priorYtd = (requestValue: any, snapshotValue: any, carryoverField: string): PriorYtdSource | null => {
         const requested = requestYtd(requestValue);
+        const fromEquipmentBaseline = equipmentBaselineYtd(requested, carryoverField);
+        if (fromEquipmentBaseline) return fromEquipmentBaseline;
         if (requested || hasAnyRequestYtd) return requested;
         return carryoverYtd(carryoverField) || datedYtdSource(ytdNumberOrNull(snapshotValue), snapshotDateIso);
       };
