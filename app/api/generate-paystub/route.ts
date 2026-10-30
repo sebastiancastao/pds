@@ -22,6 +22,8 @@ import { getMealPremiumPay, isMealPremiumOn, type MealPremiumsByEvent } from "@/
 import { fetchMealPremiums } from "@/lib/meal-premium-server";
 import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
 import { normalizeEventType } from "@/lib/event-types";
+import { getLocalDateRange, getTimezoneForState } from "@/lib/timezones";
+import { getInclusiveDateSpanDays, normalizeEventEndDate } from "@/lib/non-event-timesheets";
 import {
   buildPaystubFromUploadedLines,
   matchUploadLineToEvent,
@@ -881,10 +883,15 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Up to three meal periods come off, like /api/vendor-payments (the /hr-dashboard Payroll
+      // tab): a third meal used to stay in the paystub's hours (Pokemon Night Out 10/24/2026,
+      // two workers 0.5h over HR, which moved every share of the pool).
       let firstMealStart: string | null = mealStarts[0] || null;
       let lastMealEnd: string | null = mealEnds[0] || null;
       let secondMealStart: string | null = mealStarts[1] || null;
       let secondMealEnd: string | null = mealEnds[1] || null;
+      let thirdMealStart: string | null = mealStarts[2] || null;
+      let thirdMealEnd: string | null = mealEnds[2] || null;
 
       const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
       if (!hasExplicitMeals && workIntervals.length >= 2) {
@@ -895,7 +902,7 @@ export async function POST(req: NextRequest) {
           const gapEnd = workIntervals[i + 1].start;
           const gapMs = gapEnd.getTime() - gapStart.getTime();
           if (gapMs > 0) gaps.push({ start: gapStart, end: gapEnd });
-          if (gaps.length >= 2) break;
+          if (gaps.length >= 3) break;
         }
         if (gaps[0]) {
           firstMealStart = gaps[0].start.toISOString();
@@ -904,6 +911,10 @@ export async function POST(req: NextRequest) {
         if (gaps[1]) {
           secondMealStart = gaps[1].start.toISOString();
           secondMealEnd = gaps[1].end.toISOString();
+        }
+        if (gaps[2]) {
+          thirdMealStart = gaps[2].start.toISOString();
+          thirdMealEnd = gaps[2].end.toISOString();
         }
       }
 
@@ -920,7 +931,11 @@ export async function POST(req: NextRequest) {
         secondMealStart && secondMealEnd
           ? Math.max(new Date(secondMealEnd).getTime() - new Date(secondMealStart).getTime(), 0)
           : 0;
-      const mealMs = meal1Ms + meal2Ms;
+      const meal3Ms =
+        thirdMealStart && thirdMealEnd
+          ? Math.max(new Date(thirdMealEnd).getTime() - new Date(thirdMealStart).getTime(), 0)
+          : 0;
+      const mealMs = meal1Ms + meal2Ms + meal3Ms;
 
       let spanNetMs = 0;
       if (Number.isFinite(firstInMs) && Number.isFinite(lastOutMs) && lastOutMs > firstInMs) {
@@ -964,13 +979,31 @@ export async function POST(req: NextRequest) {
           Boolean(event?.ends_next_day) ||
           (startSec !== null && endSec !== null && endSec <= startSec);
 
-        const startDate = new Date(`${eventDate}T00:00:00Z`);
-        const endDate = new Date(`${eventDate}T23:59:59.999Z`);
-        if (endsNextDay) {
-          endDate.setUTCDate(endDate.getUTCDate() + 1);
+        // Same window as /api/vendor-payments (the /hr-dashboard Payroll tab): the event's local
+        // day plus the next one (every day of a multi-day timesheet), in the event's time zone.
+        // Entries tagged to this event outside it are left out, as HR's payroll leaves them out:
+        // on 10/21/2026 a Kia Forum kiosk filed beabadoobee's 12:12 AM clock-outs on the previous
+        // day's Monsta X, and that second clock-out made the paystub keep Monsta X meals in the
+        // hours (Barbara Azoff 8.81h vs HR 7.80h, so she got an even share instead of a prorated one).
+        const normalizedEndDate = normalizeEventEndDate(
+          eventDate,
+          event?.end_date ? event.end_date.toString().split("T")[0] : null
+        );
+        const isMultiDay = Boolean(normalizedEndDate && normalizedEndDate > eventDate);
+        const daySpan = isMultiDay ? getInclusiveDateSpanDays(eventDate, normalizedEndDate) : 2;
+        const localRange = getLocalDateRange(eventDate, getTimezoneForState(event?.state), daySpan);
+        let startIso: string;
+        let endExclusiveIso: string;
+        if (localRange) {
+          startIso = localRange.startIso;
+          endExclusiveIso = localRange.endExclusiveIso;
+        } else {
+          const startDate = new Date(`${eventDate}T00:00:00Z`);
+          const endDate = new Date(`${eventDate}T00:00:00Z`);
+          endDate.setUTCDate(endDate.getUTCDate() + (endsNextDay ? 2 : 1));
+          startIso = startDate.toISOString();
+          endExclusiveIso = endDate.toISOString();
         }
-        const startIso = startDate.toISOString();
-        const endIso = endDate.toISOString();
 
         let source: "event_id" | "timestamp_window" | "started_at_window" = "event_id";
         let entries: any[] = [];
@@ -980,6 +1013,8 @@ export async function POST(req: NextRequest) {
           .select("id, user_id, action, timestamp, started_at, event_id")
           .in("user_id", userIds)
           .eq("event_id", eventId)
+          .gte("timestamp", startIso)
+          .lt("timestamp", endExclusiveIso)
           .order("timestamp", { ascending: true });
 
         if (byEventIdError && debugEnabled) {
@@ -997,7 +1032,7 @@ export async function POST(req: NextRequest) {
             .in("user_id", userIds)
             .or(`event_id.eq.${eventId},event_id.is.null`)
             .gte("timestamp", startIso)
-            .lte("timestamp", endIso)
+            .lt("timestamp", endExclusiveIso)
             .order("timestamp", { ascending: true });
 
           if (byTimestampNextDayError && debugEnabled) {
@@ -1028,7 +1063,7 @@ export async function POST(req: NextRequest) {
             .in("user_id", userIds)
             .or(`event_id.eq.${eventId},event_id.is.null`)
             .gte("timestamp", startIso)
-            .lte("timestamp", endIso)
+            .lt("timestamp", endExclusiveIso)
             .order("timestamp", { ascending: true });
 
           if (!byTimestampError && byTimestamp && byTimestamp.length > 0) {
@@ -1041,7 +1076,7 @@ export async function POST(req: NextRequest) {
               .in("user_id", userIds)
               .or(`event_id.eq.${eventId},event_id.is.null`)
               .gte("started_at", startIso)
-              .lte("started_at", endIso)
+              .lt("started_at", endExclusiveIso)
               .order("started_at", { ascending: true });
 
             if (!byStartedAtError && byStartedAt && byStartedAt.length > 0) {
