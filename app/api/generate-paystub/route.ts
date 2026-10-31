@@ -2424,13 +2424,16 @@ export async function POST(req: NextRequest) {
       }
       // The statement prints what ADP paid. When ADP's commission is short by exactly the flat
       // pay of every no-commission shift on the report, ADP did not pay those shifts: their rows
-      // go back to $0 so the report agrees with the statement (HR has to pay them in ADP).
+      // go back to $0 on the statement. The Commission Report keeps their count-in pay (user
+      // request 2026-10-30): it prints the rows as they were before this rule.
+      let commissionReportRows: CommissionReportRow[] = caCommissionRows;
       const zeroCommissionShiftRows = caCommissionRows.filter((row) => row.zeroCommissionShift);
       if (
         adpCommissionGap < 0 &&
         zeroCommissionShiftRows.length > 0 &&
         Math.abs(adpCommissionGap + zeroCommissionShiftRows.length * ZERO_COMMISSION_SHIFT_PAY) < 0.005
       ) {
+        commissionReportRows = caCommissionRows.map((row) => ({ ...row }));
         for (const row of zeroCommissionShiftRows) {
           row.commissionPerEmployee = 0;
           row.rateInEffect = 0;
@@ -3419,7 +3422,7 @@ export async function POST(req: NextRequest) {
       if (addressLine2) drawTopText(addressLine2, 139.2, 703.5, { size: 10 });
       if (addressLine3) drawTopText(addressLine3, 139.2, 714.0, { size: 10 });
 
-      addCommissionReportPage(caCommissionRows.filter((row) => !row.adpAdjustment));
+      addCommissionReportPage(commissionReportRows.filter((row) => !row.adpAdjustment));
       const pdfBytes = await pdfDoc.save();
 
       return new NextResponse(Buffer.from(pdfBytes), {
