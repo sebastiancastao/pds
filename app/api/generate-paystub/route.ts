@@ -3171,7 +3171,7 @@ export async function POST(req: NextRequest) {
         { label: "Commission", color: black, rate: commissionLineRate, hours: commissionHoursForEarnings, thisPeriod: commissionLineThisPeriod, ytd: ytdCommission },
         // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none),
         // except in PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE (then it is in Commission).
-        // ADP pays it as Commission, so it has no YTD of its own (Commission's YTD includes
+        // ADP pays it as Commission, so its YTD prints 0.00 (Commission's YTD includes
         // it), and /pdf-reader adds this line back into Commission.
         ...(showCountInEarningsLine
           ? [{ label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 }]
@@ -3207,22 +3207,19 @@ export async function POST(req: NextRequest) {
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
-        // Equipment paystub: no rate, hours or This Period on earnings lines, only the YTD.
-        // /pdf-reader reads a line's lone number as its YTD, with 0 this period.
+        // Equipment paystub: no rate, hours or This Period on earnings lines, only the YTD
+        // (0.00 when there is none). /pdf-reader reads a line's lone number as its YTD.
         if (isEquipmentPaystub) {
-          if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
+          drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
           continue;
         }
         if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
         if (row.hours > 0) drawTopText(Number(row.hours).toFixed((row as any).hoursAsCount ? 0 : 2), earningsHoursValueX, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
-        // A row that shows a rate or hours also shows its YTD, 0.00 included, like ADP.
+        // Every line prints its YTD, 0.00 when there is none (never a blank cell).
         // /pdf-reader reads the last two numbers of a line as this period and YTD, so a blank
         // YTD made it read the hours as this period (10.09 hours became $10.09 incentive).
-        const showsRateOrHours = row.rate > 0 || row.hours > 0;
-        if (row.ytd > 0 || (showsRateOrHours && !(row as any).hideThisPeriod)) {
-          drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
-        }
+        drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
       }
 
       const earningsBottomLineY = earningsRows[earningsRows.length - 1].y + 3;
