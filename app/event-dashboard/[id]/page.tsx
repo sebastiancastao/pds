@@ -13,7 +13,13 @@ import {
   paysSanDiegoHourlyForVendor,
 } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
-import { MEAL_PREMIUM_HOURS, getMealPremiumPay } from "@/lib/meal-premium";
+import {
+  MEAL_PREMIUM_MEAL_NUMBERS,
+  formatMealPremiumMeals,
+  getMealPremiumHours,
+  getMealPremiumPay,
+  normalizeMealPremiumMeals,
+} from "@/lib/meal-premium";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { computeDailyBreakdownList, sumDailyBreakdown } from "@/lib/daily-overtime";
@@ -690,16 +696,17 @@ export default function EventDashboardPage() {
   // Saving payroll before the counts arrive would price rest breaks off the flat schedule.
   const [restBreakCountsLoaded, setRestBreakCountsLoaded] = useState(false);
 
-  // Vendors with the "Meal Premium" toggle on, on the Timesheet tab (userId -> true). Exec only.
-  // Each pays one extra hour at the Rate in Effect, never below $28.50 (see getMealPremiumAmount).
-  const [mealPremiumUids, setMealPremiumUids] = useState<Record<string, boolean>>({});
+  // Vendors with the "Meal Premium" toggle on, on the Timesheet tab, and the meals each premium
+  // is for (userId -> [1], [2], [1, 2], ...). Exec only. Each chosen meal pays one extra hour at
+  // the Rate in Effect, never below $28.50 (see getMealPremiumAmount).
+  const [mealPremiumMeals, setMealPremiumMeals] = useState<Record<string, number[]>>({});
   const [savingMealPremiumUid, setSavingMealPremiumUid] = useState<string | null>(null);
   const [mealPremiumError, setMealPremiumError] = useState("");
   // Payment tab saves, emails and exports wait for the toggles, so a meal premium is never left out.
   const [mealPremiumsLoaded, setMealPremiumsLoaded] = useState(false);
-  // Meal Premium pay on the Payment tab: one hour at the Rate in Effect (the pay period's rate
-  // for CA/NV/WI commission work, the loaded rate in AZ/NY, the hourly rate on hourly rows),
-  // never below $28.50 (lib/meal-premium). 0 unless an exec switched the toggle on.
+  // Meal Premium pay on the Payment tab: one hour per chosen meal at the Rate in Effect (the
+  // pay period's rate for CA/NV/WI commission work, the loaded rate in AZ/NY, the hourly rate on
+  // hourly rows), never below $28.50 (lib/meal-premium). 0 unless an exec switched the toggle on.
   const getMealPremiumAmount = (
     uid: string,
     actualHours: number,
@@ -707,14 +714,23 @@ export default function EventDashboardPage() {
     hourlyRate: number
   ): number =>
     getMealPremiumPay({
-      on: mealPremiumUids[uid] === true,
+      meals: mealPremiumMeals[uid],
       hours: actualHours,
       rateInEffect: breakdown.isHourlySanDiego ? hourlyRate : breakdown.finalCommissionRate,
     });
   // The Payment tab table and export show a Meal Premium column only when someone has one.
   const paymentTabHasMealPremium = teamMembers.some(
-    (member: any) => mealPremiumUids[(member?.user_id || member?.vendor_id || member?.users?.id || "").toString()] === true
+    (member: any) =>
+      normalizeMealPremiumMeals(
+        mealPremiumMeals[(member?.user_id || member?.vendor_id || member?.users?.id || "").toString()]
+      ).length > 0
   );
+  // "Meal 2 · 1h × $35.70" under a Meal Premium amount.
+  const getMealPremiumDetail = (uid: string, amount: number): string => {
+    const hours = getMealPremiumHours(mealPremiumMeals[uid]);
+    if (!(amount > 0) || hours <= 0) return "";
+    return `${formatMealPremiumMeals(mealPremiumMeals[uid])} · ${hours}h × $${formatPayrollMoney(amount / hours)}`;
+  };
 
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
@@ -1703,7 +1719,7 @@ export default function EventDashboardPage() {
   // --- "Meal Premium" toggle per vendor (Timesheet tab switch next to each name) ---
   useEffect(() => {
     // Toggles belong to one event; forget them if the page switches events.
-    setMealPremiumUids({});
+    setMealPremiumMeals({});
     setMealPremiumError("");
     setMealPremiumsLoaded(false);
   }, [eventId]);
@@ -1725,11 +1741,20 @@ export default function EventDashboardPage() {
         setMealPremiumError(data?.error || "Could not load Meal Premium toggles.");
         return;
       }
-      const next: Record<string, boolean> = {};
-      for (const id of Array.isArray(data?.userIds) ? data.userIds : []) {
-        if (id) next[String(id)] = true;
+      const next: Record<string, number[]> = {};
+      if (Array.isArray(data?.premiums)) {
+        for (const premium of data.premiums) {
+          const id = String(premium?.userId || "");
+          const meals = normalizeMealPremiumMeals(premium?.meals);
+          if (id) next[id] = meals.length > 0 ? meals : [1];
+        }
+      } else {
+        // Older API: only who is on, which was one hour for Meal 1.
+        for (const id of Array.isArray(data?.userIds) ? data.userIds : []) {
+          if (id) next[String(id)] = [1];
+        }
       }
-      setMealPremiumUids(next);
+      setMealPremiumMeals(next);
       setMealPremiumsLoaded(true);
       setMealPremiumError("");
     } catch {
@@ -1743,9 +1768,11 @@ export default function EventDashboardPage() {
     void loadMealPremiums();
   }, [activeTab, eventId, canUseMealPremium, loadMealPremiums]);
 
-  const toggleMealPremium = async (uid: string) => {
+  // Save which meals a vendor's premium is for. An empty list switches the premium off.
+  const saveMealPremiumMeals = async (uid: string, meals: number[]) => {
     if (!eventId || !canUseMealPremium || !uid) return;
-    const marked = !mealPremiumUids[uid];
+    const nextMeals = normalizeMealPremiumMeals(meals);
+    const marked = nextMeals.length > 0;
     setSavingMealPremiumUid(uid);
     setMealPremiumError("");
     try {
@@ -1756,16 +1783,17 @@ export default function EventDashboardPage() {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ userId: uid, marked }),
+        body: JSON.stringify({ userId: uid, marked, meals: nextMeals }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setMealPremiumError(data?.error || "Failed to save Meal Premium.");
         return;
       }
-      setMealPremiumUids((prev) => {
+      const savedMeals = data?.marked ? normalizeMealPremiumMeals(data?.meals) : [];
+      setMealPremiumMeals((prev) => {
         const copy = { ...prev };
-        if (marked) copy[uid] = true;
+        if (data?.marked) copy[uid] = savedMeals.length > 0 ? savedMeals : nextMeals;
         else delete copy[uid];
         return copy;
       });
@@ -1778,37 +1806,92 @@ export default function EventDashboardPage() {
     }
   };
 
-  // Switch next to the vendor name. Only exec sees it; every other role sees nothing.
-  const renderMealPremiumToggle = (uid: string) => {
+  // Switch: off -> on for `suggestedMeal` (the meal the timesheet flags red, else Meal 1);
+  // on -> off for every meal.
+  const toggleMealPremium = (uid: string, suggestedMeal: number = 1) => {
+    const current = normalizeMealPremiumMeals(mealPremiumMeals[uid]);
+    void saveMealPremiumMeals(uid, current.length > 0 ? [] : [suggestedMeal]);
+  };
+
+  // Meal chip: add or remove one meal. Removing the last meal switches the premium off.
+  const toggleMealPremiumMeal = (uid: string, meal: number) => {
+    const current = normalizeMealPremiumMeals(mealPremiumMeals[uid]);
+    const next = current.includes(meal) ? current.filter((m) => m !== meal) : [...current, meal];
+    void saveMealPremiumMeals(uid, next);
+  };
+
+  // Switch next to the vendor name, plus M1 / M2 / M3 chips once it is on to pick which
+  // meal(s) the premium is for (one hour each). Only exec sees it; every other role sees nothing.
+  // `suggestedMeal` is the meal switched on first: the one the meal alerts flag red, if any.
+  const renderMealPremiumToggle = (uid: string, suggestedMeal: number = 1) => {
     if (!uid || !canUseMealPremium) return null;
-    const on = !!mealPremiumUids[uid];
+    const meals = normalizeMealPremiumMeals(mealPremiumMeals[uid]);
+    const on = meals.length > 0;
     const saving = savingMealPremiumUid === uid;
+    // M3 only when the timesheet shows third-meal columns or M3 is already picked.
+    const mealChoices = MEAL_PREMIUM_MEAL_NUMBERS.filter((n) => n < 3 || showThirdMeal || meals.includes(n));
     return (
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-label="Meal Premium"
-        onClick={() => void toggleMealPremium(uid)}
-        disabled={saving}
-        title={on ? "Meal Premium is on. Click to turn it off." : "Turn on Meal Premium for this vendor"}
-        className={`inline-flex items-center gap-1 px-1 py-0.5 rounded border text-[9px] font-bold uppercase leading-none disabled:opacity-50 disabled:cursor-not-allowed ${
-          on ? "bg-orange-50 text-orange-800 border-orange-300 hover:bg-orange-100" : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
-        }`}
-      >
-        <span
-          className={`relative inline-block h-3 w-5 flex-shrink-0 rounded-full transition-colors ${
-            on ? "bg-orange-500" : "bg-gray-300"
+      <span className="inline-flex items-center gap-1">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={on}
+          aria-label="Meal Premium"
+          onClick={() => toggleMealPremium(uid, suggestedMeal)}
+          disabled={saving}
+          title={
+            on
+              ? `Meal Premium is on for ${formatMealPremiumMeals(meals)}. Click to turn it off.`
+              : `Turn on Meal Premium for this vendor (starts on Meal ${suggestedMeal})`
+          }
+          className={`inline-flex items-center gap-1 px-1 py-0.5 rounded border text-[9px] font-bold uppercase leading-none disabled:opacity-50 disabled:cursor-not-allowed ${
+            on ? "bg-orange-50 text-orange-800 border-orange-300 hover:bg-orange-100" : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
           }`}
         >
           <span
-            className={`absolute top-0.5 h-2 w-2 rounded-full bg-white shadow transition-all ${
-              on ? "left-[10px]" : "left-0.5"
+            className={`relative inline-block h-3 w-5 flex-shrink-0 rounded-full transition-colors ${
+              on ? "bg-orange-500" : "bg-gray-300"
             }`}
-          />
-        </span>
-        {saving ? "Saving…" : "Meal Premium"}
-      </button>
+          >
+            <span
+              className={`absolute top-0.5 h-2 w-2 rounded-full bg-white shadow transition-all ${
+                on ? "left-[10px]" : "left-0.5"
+              }`}
+            />
+          </span>
+          {saving ? "Saving…" : "Meal Premium"}
+        </button>
+        {on && (
+          <span className="inline-flex items-center gap-0.5" role="group" aria-label="Meals the premium is for">
+            {mealChoices.map((meal) => {
+              const picked = meals.includes(meal);
+              return (
+                <button
+                  key={meal}
+                  type="button"
+                  aria-pressed={picked}
+                  onClick={() => toggleMealPremiumMeal(uid, meal)}
+                  disabled={saving}
+                  title={
+                    picked
+                      ? meals.length === 1
+                        ? `Meal ${meal} premium: one hour at the Rate in Effect. Click to turn Meal Premium off.`
+                        : `Meal ${meal} premium: one hour at the Rate in Effect. Click to remove Meal ${meal}.`
+                      : `Add a Meal ${meal} premium: one more hour at the Rate in Effect`
+                  }
+                  className={`px-1 py-0.5 rounded border text-[9px] font-bold leading-none disabled:opacity-50 disabled:cursor-not-allowed ${
+                    picked
+                      ? "bg-orange-500 text-white border-orange-500 hover:bg-orange-600"
+                      : "bg-white text-gray-500 border-gray-300 hover:bg-gray-50"
+                  }`}
+                >
+                  M{meal}
+                </button>
+              );
+            })}
+          </span>
+        )}
+      </span>
     );
   };
 
@@ -3830,6 +3913,7 @@ export default function EventDashboardPage() {
       }
       if (paymentTabHasMealPremium) {
         row["Meal Premium"] = money(mealPremium);
+        row["Meal Premium Meals"] = mealPremium > 0 ? formatMealPremiumMeals(mealPremiumMeals[uid]) : "";
       }
 
       row.Other = money(otherAmount);
@@ -3934,6 +4018,7 @@ export default function EventDashboardPage() {
       }
       if (paymentTabHasMealPremium) {
         paymentColumns.push({ wch: 14 }); // Meal Premium
+        paymentColumns.push({ wch: 18 }); // Meal Premium Meals
       }
       paymentColumns.push({ wch: 10 }); // Other
       paymentColumns.push({ wch: 14 }); // Total Gross Pay
@@ -6278,6 +6363,7 @@ export default function EventDashboardPage() {
           tips: formatPayrollMoney(proratedTips),
           restBreak: formatPayrollMoney(restBreak),
           mealPremium: formatPayrollMoney(mealPremium),
+          mealPremiumMeals: mealPremium > 0 ? formatMealPremiumMeals(mealPremiumMeals[uid]) : "",
           adjustment: formatPayrollMoney(adjustment),
           totalPay: formatPayrollMoney(totalPay),
           baseRate: formatPayrollMoney(memberBaseRate),
@@ -9457,7 +9543,11 @@ export default function EventDashboardPage() {
                               Event Supervisor
                             </span>
                           )}
-                          {renderMealPremiumToggle(uid)}
+                          {renderMealPremiumToggle(
+                            uid,
+                            // Start on the meal the timesheet flags red (a late or missed meal).
+                            mealAlerts.meal1?.level === "red" ? 1 : mealAlerts.meal2?.level === "red" ? 2 : 1
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                           <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -9978,7 +10068,7 @@ export default function EventDashboardPage() {
                           <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
                         )}
                         {paymentTabHasMealPremium && (
-                          <th className="text-left px-2 py-2 font-semibold text-gray-700" title="One hour at the Rate in Effect, never below $28.50">Meal Premium</th>
+                          <th className="text-left px-2 py-2 font-semibold text-gray-700" title="One hour per chosen meal at the Rate in Effect, never below $28.50">Meal Premium</th>
                         )}
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Other</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Gross Pay</th>
@@ -10436,7 +10526,7 @@ export default function EventDashboardPage() {
                                         ${formatPayrollMoney(mealPremium)}
                                       </div>
                                       <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
-                                        {MEAL_PREMIUM_HOURS}h × ${formatPayrollMoney(mealPremium / MEAL_PREMIUM_HOURS)}
+                                        {getMealPremiumDetail(uid, mealPremium)}
                                       </div>
                                     </>
                                   ) : (

@@ -18,7 +18,7 @@ import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-d
 import { attachRegionMetadataToEvents } from "@/lib/event-region";
 import { REST_BREAK_RATE, getRestBreakPay, isRestBreakRecordOnlyForVendor, type RestBreakCountsByEvent } from "@/lib/rest-breaks";
 import { fetchPayableRestBreakCounts } from "@/lib/rest-breaks-server";
-import { getMealPremiumPay, isMealPremiumOn, type MealPremiumsByEvent } from "@/lib/meal-premium";
+import { getMealPremiumMeals, getMealPremiumPay, type MealPremiumsByEvent } from "@/lib/meal-premium";
 import { fetchMealPremiums } from "@/lib/meal-premium-server";
 import { fetchRegionNameByUserId } from "@/lib/vendor-region-server";
 import { normalizeEventType } from "@/lib/event-types";
@@ -476,13 +476,14 @@ export async function POST(req: NextRequest) {
     // Loaded from event_rest_breaks just before the PDF is built (eventId -> userId -> count).
     let restBreakCountsByEvent: RestBreakCountsByEvent = {};
     // Meal Premium toggles an exec switched on, on the event Timesheet tab (event_meal_premiums),
-    // loaded with the rest break counts. Each pays one hour at the Rate in Effect, never below
-    // $28.50 (lib/meal-premium); it goes to the Meal Premium row with the system's other meal
-    // premiums, so uploaded payroll or ADP lines replace it like they replace those.
+    // loaded with the rest break counts, with the meals each one is for. Each chosen meal pays
+    // one hour at the Rate in Effect, never below $28.50 (lib/meal-premium); it goes to the
+    // Meal Premium row with the system's other meal premiums, so uploaded payroll or ADP lines
+    // replace it like they replace those.
     let mealPremiumsByEvent: MealPremiumsByEvent = {};
     const getToggleMealPremium = (event: any, worker: any, actualHours: number, rateInEffect: number): number =>
       getMealPremiumPay({
-        on: isMealPremiumOn(mealPremiumsByEvent, event?.id, worker?.user_id),
+        meals: getMealPremiumMeals(mealPremiumsByEvent, event?.id, worker?.user_id),
         hours: actualHours,
         rateInEffect,
       });

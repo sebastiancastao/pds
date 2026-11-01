@@ -15,6 +15,14 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+// " (Meal 2)" / " (Meals 1 & 2)" after the Meal Premium label. Only the shapes the event
+// dashboard sends (lib/meal-premium formatMealPremiumMeals) get through, so nothing else lands
+// in the email HTML.
+const mealPremiumMealsSuffix = (value: unknown): string => {
+  const label = String(value ?? "").trim();
+  return /^Meals? [1-3](?:(?:, | & )[1-3])*$/.test(label) ? ` (${label})` : "";
+};
+
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -211,7 +219,7 @@ export async function POST(
                 ` : ''}
                 ${Number(member.mealPremium) > 0 ? `
                 <div class="pay-item">
-                  <span class="pay-label">Meal Premium</span>
+                  <span class="pay-label">Meal Premium${mealPremiumMealsSuffix(member.mealPremiumMeals)}</span>
                   <span class="pay-value positive">$${member.mealPremium}</span>
                 </div>
                 ` : ''}

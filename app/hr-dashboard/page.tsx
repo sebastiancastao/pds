@@ -13,7 +13,7 @@ import { computeDailyBreakdownList, computeDailyPayBreakdown, sumDailyBreakdown,
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRestBreakPay } from "@/lib/rest-breaks";
-import { MEAL_PREMIUM_HOURS, getMealPremiumPay } from "@/lib/meal-premium";
+import { formatMealPremiumMeals, getMealPremiumHours, getMealPremiumPay, normalizeMealPremiumMeals } from "@/lib/meal-premium";
 import { COUNT_IN_SETUP_FLAT_PAY, EVENT_TYPE_LABELS, isCountInFlatPayOn, normalizeEventType } from "@/lib/event-types";
 import ReimbursementsPanel from "./ReimbursementsPanel";
 import EquipmentReimbursementsPanel from "./EquipmentReimbursementsPanel";
@@ -196,7 +196,19 @@ const isHourlyPayrollEvent = (eventLike?: any, paymentLike?: any): boolean => {
 // True when an exec switched Meal Premium on for this worker on the event (event Timesheet tab)
 // and the worker has hours there, i.e. when the row pays a meal premium.
 const paymentHasMealPremium = (paymentLike?: any): boolean =>
-  paymentLike?.mealPremiumOn === true && Number(paymentLike?.actualHours || 0) > 0;
+  paymentLike?.mealPremiumOn === true &&
+  normalizeMealPremiumMeals(paymentLike?.mealPremiumMeals).length > 0 &&
+  Number(paymentLike?.actualHours || 0) > 0;
+// Which meals the row's premium is for, e.g. "Meal 2" or "Meals 1 & 2" ("" when none).
+const getPaymentMealPremiumLabel = (paymentLike?: any): string =>
+  paymentHasMealPremium(paymentLike) ? formatMealPremiumMeals(paymentLike?.mealPremiumMeals) : '';
+// Small grey line under a Meal Premium amount: "Meal 2 · 1h × $35.70".
+const getMealPremiumDetail = (paymentLike: any, amount: number, formatMoney: (n: number) => string): string => {
+  const hours = getMealPremiumHours(paymentLike?.mealPremiumMeals);
+  if (!(amount > 0) || hours <= 0) return '';
+  const label = formatMealPremiumMeals(paymentLike?.mealPremiumMeals);
+  return `${label ? `${label} · ` : ''}${hours}h × $${formatMoney(amount / hours)}`;
+};
 const eventHasMealPremium = (eventLike?: any): boolean =>
   (Array.isArray(eventLike?.payments) ? eventLike.payments : []).some(paymentHasMealPremium);
 
@@ -1857,9 +1869,14 @@ function HRDashboardContent() {
             // Meal Premium toggle (exec, event Timesheet tab). Every screen and export prices it
             // from the pay period's Rate in Effect with getDisplayedMealPremium; this row-level
             // figure (row rate) only feeds the row's own running total below.
-            const mealPremiumOn = payment.meal_premium === true;
+            // Meals the premium is for (each pays one hour). Rows from an older API carry only
+            // the true/false flag, which was one hour for Meal 1.
+            const mealPremiumMeals = Array.isArray(payment.meal_premium_meals)
+              ? normalizeMealPremiumMeals(payment.meal_premium_meals)
+              : payment.meal_premium === true ? [1] : [];
+            const mealPremiumOn = mealPremiumMeals.length > 0;
             const mealPremium = getMealPremiumPay({
-              on: mealPremiumOn,
+              meals: mealPremiumMeals,
               hours: actualHours,
               rateInEffect: isHourlyRow ? effectiveRegRate : loadedRate,
             });
@@ -1901,6 +1918,7 @@ function HRDashboardContent() {
               totalFinalCommissionAmt,
               restBreak,
               mealPremiumOn,
+              mealPremiumMeals,
               mealPremium,
               totalGrossPay: finalPay,
               isSanDiegoHourly: isSanDiegoHourlyRow,
@@ -2451,13 +2469,14 @@ function HRDashboardContent() {
     return Number(payment?.tips || 0);
   }, []);
 
-  // Meal Premium pay for a row: one hour at the pay period's Rate in Effect (the hourly rate
-  // on hourly rows), never below $28.50 (lib/meal-premium). 0 unless the toggle is on.
+  // Meal Premium pay for a row: one hour per chosen meal at the pay period's Rate in Effect
+  // (the hourly rate on hourly rows), never below $28.50 (lib/meal-premium). 0 unless the
+  // toggle is on.
   const getDisplayedMealPremium = useCallback((event: any, payment: any): number => {
     if (!paymentHasMealPremium(payment)) return 0;
     const breakdown = getDisplayedPaymentBreakdown(event, payment);
     const rate = isHourlyPayrollEvent(event, payment) ? breakdown.regRate : breakdown.rateInEffect;
-    return getMealPremiumPay({ on: true, hours: payment?.actualHours, rateInEffect: rate });
+    return getMealPremiumPay({ meals: payment?.mealPremiumMeals, hours: payment?.actualHours, rateInEffect: rate });
   }, [getDisplayedPaymentBreakdown]);
 
   const getDisplayedEventTotals = useCallback((event: any) => {
@@ -3154,7 +3173,9 @@ function HRDashboardContent() {
           __VariableIncentiveForTotal: dayVariableIncentiveForTotal,
           'Tips': dayTips,
           'Rest Break': dayRestBreak,
-          ...(exportHasMealPremium ? { 'Meal Premium': dayMealPremium } : {}),
+          ...(exportHasMealPremium
+            ? { 'Meal Premium': dayMealPremium, 'Meal Premium Meals': dayMealPremium > 0 ? getPaymentMealPremiumLabel(payment) : '' }
+            : {}),
           'Mileage Miles': !mileagePaid || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
           'Mileage Pay': dayMileagePay,
           'Reimbursement': dayReimbursement,
@@ -3205,7 +3226,7 @@ function HRDashboardContent() {
         'Variable Incentive': Number((sumNum('Variable Incentive') + hiddenCommissionVariableIncentive).toFixed(2)),
         'Tips': Number(sumNum('Tips').toFixed(2)),
         'Rest Break': Number(rowsToSum.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
-        ...(exportHasMealPremium ? { 'Meal Premium': Number(sumNum('Meal Premium').toFixed(2)) } : {}),
+        ...(exportHasMealPremium ? { 'Meal Premium': Number(sumNum('Meal Premium').toFixed(2)), 'Meal Premium Meals': '' } : {}),
         'Mileage Miles': '',
         'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
         'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
@@ -3253,6 +3274,7 @@ function HRDashboardContent() {
       { key: 'Tips', wch: 10 },
       { key: 'Rest Break', wch: 12 },
       { key: 'Meal Premium', wch: 14 },
+      { key: 'Meal Premium Meals', wch: 18 },
       { key: 'Mileage Miles', wch: 14 },
       { key: 'Mileage Pay', wch: 12 },
       { key: 'Reimbursement', wch: 15 },
@@ -3454,7 +3476,9 @@ function HRDashboardContent() {
             'Variable Incentive': isHourlyEvent ? hourlyBonus : '',
             'Tips': tips,
             'Rest Break': restBreak,
-            ...(exportHasMealPremium ? { 'Meal Premium': mealPremiumBve } : {}),
+            ...(exportHasMealPremium
+              ? { 'Meal Premium': mealPremiumBve, 'Meal Premium Meals': mealPremiumBve > 0 ? getPaymentMealPremiumLabel(payment) : '' }
+              : {}),
             'Mileage Miles': !mileagePaid ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
             'Mileage Pay': mileagePay,
             'Reimbursement': reimbursementBve,
@@ -3473,7 +3497,7 @@ function HRDashboardContent() {
         'Variable Incentive': Number(bveTotals.variableIncentive.toFixed(2)),
         'Tips': Number(bveTotals.tips.toFixed(2)),
         'Rest Break': Number(bveTotals.restBreak.toFixed(2)),
-        ...(exportHasMealPremium ? { 'Meal Premium': Number(bveTotals.mealPremium.toFixed(2)) } : {}),
+        ...(exportHasMealPremium ? { 'Meal Premium': Number(bveTotals.mealPremium.toFixed(2)), 'Meal Premium Meals': '' } : {}),
         'Mileage Miles': '',
         'Mileage Pay': Number(bveTotals.mileagePay.toFixed(2)),
         'Reimbursement': Number(bveTotals.reimbursement.toFixed(2)),
@@ -3518,7 +3542,7 @@ function HRDashboardContent() {
         { key: 'Hours', wch: 8 }, { key: 'Hours in Decimal', wch: 16 },
         { key: 'Commission Pay', wch: 16 }, { key: 'Variable Incentive', wch: 18 },
         { key: 'Tips', wch: 10 }, { key: 'Rest Break', wch: 12 },
-        ...(exportHasMealPremium ? [{ key: 'Meal Premium', wch: 14 }] : []),
+        ...(exportHasMealPremium ? [{ key: 'Meal Premium', wch: 14 }, { key: 'Meal Premium Meals', wch: 18 }] : []),
         { key: 'Mileage Miles', wch: 14 }, { key: 'Mileage Pay', wch: 12 },
         { key: 'Reimbursement', wch: 15 }, { key: 'Other', wch: 10 }, { key: 'Total Gross Pay', wch: 15 },
       ];
@@ -3908,7 +3932,9 @@ function HRDashboardContent() {
               'Double Time Hours': Number(Number(day.doubletimeHours || 0).toFixed(2)),
               'Double Time Pay': dayDoubletimePay,
               'Tips': dayTips,
-              ...(nonEventHasMealPremium ? { 'Meal Premium': dayMealPremium } : {}),
+              ...(nonEventHasMealPremium
+                ? { 'Meal Premium': dayMealPremium, 'Meal Premium Meals': dayMealPremium > 0 ? getPaymentMealPremiumLabel(p) : '' }
+                : {}),
               'Mileage Miles': !mileagePaid || !isLastDay ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
               'Mileage Pay': dayMileagePay,
               'Reimbursement': dayReimbursement,
@@ -3937,7 +3963,7 @@ function HRDashboardContent() {
       'Double Time Hours': Number(sumNum('Double Time Hours').toFixed(2)),
       'Double Time Pay': Number(sumNum('Double Time Pay').toFixed(2)),
       'Tips': Number(sumNum('Tips').toFixed(2)),
-      ...(nonEventHasMealPremium ? { 'Meal Premium': Number(sumNum('Meal Premium').toFixed(2)) } : {}),
+      ...(nonEventHasMealPremium ? { 'Meal Premium': Number(sumNum('Meal Premium').toFixed(2)), 'Meal Premium Meals': '' } : {}),
       'Mileage Miles': '', 'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
       'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
       'Other': Number(sumNum('Other').toFixed(2)),
@@ -3952,8 +3978,8 @@ function HRDashboardContent() {
       { wch: 13 }, { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 },
       { wch: 12 }, { wch: 15 }, { wch: 10 },
     ];
-    // The Meal Premium column sits right after Tips.
-    if (nonEventHasMealPremium) ws['!cols'].splice(19, 0, { wch: 14 });
+    // The Meal Premium and Meal Premium Meals columns sit right after Tips.
+    if (nonEventHasMealPremium) ws['!cols'].splice(19, 0, { wch: 14 }, { wch: 18 });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, cwExportMode ? 'CW Payroll' : 'Non Event Payroll');
     const startStr = paymentsStartDate || 'start';
@@ -6362,7 +6388,7 @@ function HRDashboardContent() {
                                       {mealPremium > 0 ? (
                                         <div className="flex flex-col items-end">
                                           <span>${formatVendorMoney(mealPremium)}</span>
-                                          <span className="text-[10px] text-gray-400">{MEAL_PREMIUM_HOURS}h × ${formatVendorMoney(mealPremium / MEAL_PREMIUM_HOURS)}</span>
+                                          <span className="text-[10px] text-gray-400">{getMealPremiumDetail(payment, mealPremium, formatVendorMoney)}</span>
                                         </div>
                                       ) : '—'}
                                     </td>
@@ -6975,7 +7001,7 @@ function HRDashboardContent() {
                                                         {mealPremium > 0 ? (
                                                           <div className="flex flex-col">
                                                             <span>${formatPayrollMoney(mealPremium)}</span>
-                                                            <span className="text-[10px] text-gray-400">{MEAL_PREMIUM_HOURS}h × ${formatPayrollMoney(mealPremium / MEAL_PREMIUM_HOURS)}</span>
+                                                            <span className="text-[10px] text-gray-400">{getMealPremiumDetail(p, mealPremium, formatPayrollMoney)}</span>
                                                           </div>
                                                         ) : '\u2014'}
                                                       </td>
