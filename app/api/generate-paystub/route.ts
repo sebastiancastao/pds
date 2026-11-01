@@ -1170,6 +1170,11 @@ export async function POST(req: NextRequest) {
       const roundedHours = Math.round((absHours + 1e-9) * 100) / 100;
       return decimalHours < 0 ? -roundedHours : roundedHours;
     };
+    // A Commission Report row's hours exactly as the report prints them (two decimals,
+    // rounded once). The period rate in effect and variable incentive use these same hours,
+    // so the report's totals agree with its printed rows. roundPayrollAmount rounds to
+    // thousandths first, which turned 7.7149 h into 7.72 while the row printed 7.71.
+    const reportRowHours = (hours: number): number => Number(Number(hours || 0).toFixed(2));
     const getReportRateInEffect = ({
       commissionPay,
       hoursWorked,
@@ -1500,7 +1505,7 @@ export async function POST(req: NextRequest) {
         const totals = rows.reduce(
           (acc, row) => ({
             commission: acc.commission + row.commissionPerEmployee,
-            hoursWorked: acc.hoursWorked + roundPayrollAmount(row.hoursWorked),
+            hoursWorked: acc.hoursWorked + reportRowHours(row.hoursWorked),
           }),
           { commission: 0, hoursWorked: 0 }
         );
@@ -1651,7 +1656,7 @@ export async function POST(req: NextRequest) {
         // column extends exactly to its "Total for Pay Period".
         const commissionPaidText = fmtMoney(roundPayrollAmount(row.commissionPerEmployee - rowCountIn));
         const countInText = fmtMoney(rowCountIn);
-        const hoursText = Number(row.hoursWorked).toFixed(2);
+        const hoursText = reportRowHours(row.hoursWorked).toFixed(2);
         const tipsText = fmtMoney(row.tips);
         const restPayText = fmtMoney(row.restBreak);
         const bonusText = fmtMoney(row.bonus);
@@ -1686,7 +1691,7 @@ export async function POST(req: NextRequest) {
         if (row.fromUpload || !row.usesPeriodRate) return sum + row.variableIncentive;
         if (row.hoursWorked <= 0) return sum;
         const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
-        return sum + Math.max(0, (minRate - rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
+        return sum + Math.max(0, (minRate - rawPayPeriodRateInEffect) * reportRowHours(row.hoursWorked));
       }, 0);
       grandCommission = roundPayrollAmount(grandCommission);
       grandCountIn = roundPayrollAmount(grandCountIn);
@@ -1718,7 +1723,7 @@ export async function POST(req: NextRequest) {
             venue: row.stadium,
             state: row.stateCode,
             commissionPay: roundPayrollAmount(row.commissionPerEmployee),
-            rowHoursWorked: roundPayrollAmount(row.hoursWorked),
+            rowHoursWorked: reportRowHours(row.hoursWorked),
             rowDisplayRateInEffect: roundPayrollAmount(row.rateInEffect),
             payPeriodRateInEffect: averageRateInEffect,
             minimumRateInEffect,
@@ -2512,7 +2517,7 @@ export async function POST(req: NextRequest) {
         const payPeriodTotals = caCommissionRows.reduce(
           (acc, row) => ({
             commission: acc.commission + row.commissionPerEmployee,
-            hoursWorked: acc.hoursWorked + roundPayrollAmount(row.hoursWorked),
+            hoursWorked: acc.hoursWorked + reportRowHours(row.hoursWorked),
           }),
           { commission: 0, hoursWorked: 0 }
         );
@@ -2540,7 +2545,7 @@ export async function POST(req: NextRequest) {
       })();
 
       // NOTE: These aggregates mirror addCommissionReportPage's math exactly (same
-      // roundPayrollAmount helper, same reduce order over caCommissionRows) so that the
+      // reportRowHours helper, same reduce order over caCommissionRows) so that the
       // "Variable Incentive" row on the Earnings table always agrees with the Variable
       // Rate shown on the Commission Report's "Total for Pay Period" row.
       const rawCommissionHoursForEarnings =
@@ -2572,7 +2577,7 @@ export async function POST(req: NextRequest) {
             if (!row.usesPeriodRate && !isCalifornia) return sum + row.variableIncentive;
             if (!row.usesPeriodRate || row.hoursWorked <= 0) return sum;
             const minRate = getMinimumRateInEffect(row.stateCode || paystubState);
-            return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * roundPayrollAmount(row.hoursWorked));
+            return sum + Math.max(0, (minRate - normalizedCaCommissionRows.rawPayPeriodRateInEffect) * reportRowHours(row.hoursWorked));
           }, 0);
       const variableIncentiveTotalForEarnings = roundPayrollAmount(rawVariableIncentiveTotalForEarnings);
 
@@ -3171,7 +3176,7 @@ export async function POST(req: NextRequest) {
         { label: "Commission", color: black, rate: commissionLineRate, hours: commissionHoursForEarnings, thisPeriod: commissionLineThisPeriod, ytd: ytdCommission },
         // Flat count-in / no-commission shift pay, on every stub (0.00 when there is none),
         // except in PERIODS_WITHOUT_COUNT_IN_EARNINGS_LINE (then it is in Commission).
-        // ADP pays it as Commission, so it has no YTD of its own (Commission's YTD includes
+        // ADP pays it as Commission, so its YTD prints 0.00 (Commission's YTD includes
         // it), and /pdf-reader adds this line back into Commission.
         ...(showCountInEarningsLine
           ? [{ label: "Count In / Operation", color: black, rate: 0, hours: 0, thisPeriod: countInTotalForEarnings, ytd: 0 }]
@@ -3207,22 +3212,19 @@ export async function POST(req: NextRequest) {
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
-        // Equipment paystub: no rate, hours or This Period on earnings lines, only the YTD.
-        // /pdf-reader reads a line's lone number as its YTD, with 0 this period.
+        // Equipment paystub: no rate, hours or This Period on earnings lines, only the YTD
+        // (0.00 when there is none). /pdf-reader reads a line's lone number as its YTD.
         if (isEquipmentPaystub) {
-          if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
+          drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
           continue;
         }
         if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
         if (row.hours > 0) drawTopText(Number(row.hours).toFixed((row as any).hoursAsCount ? 0 : 2), earningsHoursValueX, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
-        // A row that shows a rate or hours also shows its YTD, 0.00 included, like ADP.
+        // Every line prints its YTD, 0.00 when there is none (never a blank cell).
         // /pdf-reader reads the last two numbers of a line as this period and YTD, so a blank
         // YTD made it read the hours as this period (10.09 hours became $10.09 incentive).
-        const showsRateOrHours = row.rate > 0 || row.hours > 0;
-        if (row.ytd > 0 || (showsRateOrHours && !(row as any).hideThisPeriod)) {
-          drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
-        }
+        drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
       }
 
       const earningsBottomLineY = earningsRows[earningsRows.length - 1].y + 3;
