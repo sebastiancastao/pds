@@ -290,6 +290,24 @@ const getTeamMemberSortFields = (member: any): {
   };
 };
 
+// Meal waivers missing from a team member's documents, from the team API's
+// has_meal_waiver_6hour / has_meal_waiver_10_12 flags. null = not known (lookup failed
+// or an older API response), so nothing is flagged.
+const getMissingMealWaivers = (member: any): { sixHour: boolean; tenTwelveHour: boolean } | null => {
+  const six = member?.has_meal_waiver_6hour;
+  const tenTwelve = member?.has_meal_waiver_10_12;
+  if (typeof six !== "boolean" || typeof tenTwelve !== "boolean") return null;
+  if (six && tenTwelve) return null;
+  return { sixHour: !six, tenTwelveHour: !tenTwelve };
+};
+
+const describeMissingMealWaivers = (missing: { sixHour: boolean; tenTwelveHour: boolean }): string =>
+  missing.sixHour && missing.tenTwelveHour
+    ? "No meal waiver"
+    : missing.sixHour
+      ? "No 6-hr meal waiver"
+      : "No 10/12-hr meal waiver";
+
 const normalizeTimeForInput = (value: string | null | undefined): string => {
   if (!value) return "";
   const raw = String(value).trim();
@@ -817,6 +835,65 @@ export default function EventDashboardPage() {
       eventRole.includes(q)
     );
   }), [sortedTeamMembers, teamSearch]);
+
+  // Team members (not declined) whose documents are missing a meal waiver.
+  const mealWaiverNoticeMembers = useMemo(() => {
+    const list: { key: string; name: string; label: string }[] = [];
+    for (const member of sortedTeamMembers) {
+      if (String(member?.status || "").toLowerCase() === "declined") continue;
+      const missing = getMissingMealWaivers(member);
+      if (!missing) continue;
+      const profile = member?.users?.profiles;
+      const name =
+        `${profile?.first_name || ""} ${profile?.last_name || ""}`.trim() ||
+        String(member?.users?.email || "Unknown");
+      list.push({ key: String(member?.id || name), name, label: describeMissingMealWaivers(missing) });
+    }
+    return list;
+  }, [sortedTeamMembers]);
+
+  // Notice on the Team and Timesheet tabs listing who has no meal waiver in their documents.
+  const renderMealWaiverNotice = () => {
+    if (mealWaiverNoticeMembers.length === 0) return null;
+    const count = mealWaiverNoticeMembers.length;
+    return (
+      <div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+        <div className="font-semibold">
+          Meal waiver notice: {count} {count === 1 ? "worker has" : "workers have"} no meal waiver in their documents.
+        </div>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {mealWaiverNoticeMembers.map((entry) => (
+            <span
+              key={entry.key}
+              className="px-1.5 py-0.5 rounded bg-white border border-amber-300 text-amber-900"
+            >
+              {entry.name}
+              <span className="text-amber-700"> ({entry.label})</span>
+            </span>
+          ))}
+        </div>
+        <div className="mt-1 text-amber-800">
+          Make sure they take their meal breaks, and have them sign the meal waiver in their payroll packet.
+        </div>
+      </div>
+    );
+  };
+
+  // Tag next to a worker's name when their documents are missing a meal waiver.
+  const renderMissingMealWaiverTag = (member: any, size: "sm" | "xs" = "xs") => {
+    const missing = getMissingMealWaivers(member);
+    if (!missing) return null;
+    const label = describeMissingMealWaivers(missing);
+    const sizeCls = size === "sm" ? "px-2 py-0.5 text-[10px]" : "px-1.5 py-0.5 text-[9px] leading-none";
+    return (
+      <span
+        className={`${sizeCls} rounded font-semibold bg-amber-100 text-amber-900 border border-amber-300`}
+        title={`${label} in this worker's documents`}
+      >
+        {label}
+      </span>
+    );
+  };
 
   const availableAddVendorStates = useMemo(() => {
     const states = addVendorOptions.map((v) => v.profiles?.state).filter((s): s is string => Boolean(s));
@@ -7951,6 +8028,7 @@ export default function EventDashboardPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {renderMealWaiverNotice()}
                   {/* Summary */}
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                     <div className="bg-blue-50 rounded-lg p-4">
@@ -8127,6 +8205,7 @@ export default function EventDashboardPage() {
                                           Event Supervisor
                                         </span>
                                       )}
+                                      {renderMissingMealWaiverTag(member, "sm")}
                                       {member?.partialAvailability && (
                                         <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-200 flex items-center gap-1" title="Available only during this time frame on the event date">
                                           <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -9127,6 +9206,7 @@ export default function EventDashboardPage() {
         {mealPremiumError}
       </div>
     )}
+    {renderMealWaiverNotice()}
 
     {loadingTimesheetTab && (
       <div className="text-center py-6 bg-white border rounded-lg">
@@ -9269,6 +9349,7 @@ export default function EventDashboardPage() {
                                 </span>
                               )}
                               {renderMealPremiumToggle(uid)}
+                              {renderMissingMealWaiverTag(m)}
                             </div>
                             <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                               <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -9548,6 +9629,7 @@ export default function EventDashboardPage() {
                             // Start on the meal the timesheet flags red (a late or missed meal).
                             mealAlerts.meal1?.level === "red" ? 1 : mealAlerts.meal2?.level === "red" ? 2 : 1
                           )}
+                          {renderMissingMealWaiverTag(m)}
                         </div>
                         <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                           <span className={`text-xs font-medium ${attestationStatusClass}`}>

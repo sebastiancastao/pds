@@ -3,10 +3,23 @@ import { createClient } from '@supabase/supabase-js';
 import { safeDecrypt } from '@/lib/encryption';
 
 export const dynamic = 'force-dynamic';
+// Next.js otherwise caches the Supabase fetches and serves stale assignments.
+export const fetchCache = 'force-no-store';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const ASSIGNABLE_VENUE_MANAGER_ROLES = ['manager', 'supervisor3', 'exec'];
+// Supervisors of every level can hold venues directly: /api/events and
+// lib/event-access.ts already give them that venue's events.
+const ASSIGNABLE_VENUE_MANAGER_ROLES = [
+  'manager',
+  'exec',
+  'supervisor',
+  'supervisor2',
+  'supervisor3',
+  'supervisor4',
+  'supervisor5',
+  'supervisor6',
+];
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' };
 
 // GET: Retrieve all venue manager assignments
@@ -205,7 +218,7 @@ export async function POST(request: NextRequest) {
     const normalizedManagerRole = String(managerData.role || '').trim().toLowerCase();
     if (!ASSIGNABLE_VENUE_MANAGER_ROLES.includes(normalizedManagerRole)) {
       return NextResponse.json({
-        error: 'User must have manager, supervisor3, or exec role'
+        error: 'User must have a manager, supervisor, or exec role'
       }, { status: 400 });
     }
 

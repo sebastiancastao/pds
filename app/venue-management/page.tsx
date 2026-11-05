@@ -32,6 +32,18 @@ type Manager = {
 
 type UserRoleRow = { role: string | null };
 
+// "supervisor5" -> "Supervisor 5", "manager" -> "Manager".
+const roleLabel = (role: string | null | undefined) => {
+  const r = String(role || "").trim().toLowerCase();
+  if (!r) return "";
+  const supervisor = r.match(/^supervisor(\d*)$/);
+  if (supervisor) return supervisor[1] ? `Supervisor ${supervisor[1]}` : "Supervisor";
+  return r.charAt(0).toUpperCase() + r.slice(1);
+};
+
+const isSupervisorRole = (role: string | null | undefined) =>
+  /^supervisor\d*$/.test(String(role || "").trim().toLowerCase());
+
 type VenueAssignment = {
   id: string;
   venue_id: string;
@@ -123,7 +135,7 @@ export default function VenueManagementPage() {
         }
 
         // Load managers
-        const managersRes = await fetch("/api/users/managers", {
+        const managersRes = await fetch("/api/users/managers?include_supervisors=1", {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
@@ -170,7 +182,7 @@ export default function VenueManagementPage() {
           return;
         }
 
-        const res = await fetch("/api/users/managers", {
+        const res = await fetch("/api/users/managers?include_supervisors=1", {
           cache: "no-store",
           headers: { Authorization: `Bearer ${session.access_token}` },
         });
@@ -233,7 +245,7 @@ export default function VenueManagementPage() {
   // Assign manager to venue
   const handleAssignManager = async () => {
     if (!selectedVenueId || !selectedManagerId) {
-      alert("Please select both a venue and a manager");
+      alert("Please select both a venue and a manager or supervisor");
       return;
     }
 
@@ -285,6 +297,7 @@ export default function VenueManagementPage() {
       return {
         name: fullName || assignment.manager.email || "Unknown manager",
         email: assignment.manager.email || "",
+        role: assignment.manager.role || "",
       };
     }
 
@@ -294,12 +307,14 @@ export default function VenueManagementPage() {
       return {
         name: fullName || fallback.email || "Unknown manager",
         email: fallback.email || "",
+        role: fallback.role || "",
       };
     }
 
     return {
       name: "Unknown manager",
       email: assignment.manager_id ? `ID: ${assignment.manager_id}` : "",
+      role: "",
     };
   };
 
@@ -501,7 +516,7 @@ export default function VenueManagementPage() {
               Venue Management
             </h1>
             <p className="text-gray-600 mt-1">
-              Manage venues and assign managers
+              Manage venues and assign managers and supervisors
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
@@ -608,10 +623,10 @@ export default function VenueManagementPage() {
                 {/* Assigned Managers */}
                 <div className="border-t pt-4">
                   <h4 className="text-sm font-semibold text-gray-700 mb-2">
-                    Assigned Managers ({venueAssignments.length})
+                    Assigned Managers &amp; Supervisors ({venueAssignments.length})
                   </h4>
                   {venueAssignments.length === 0 ? (
-                    <p className="text-xs text-gray-400 italic">No managers assigned</p>
+                    <p className="text-xs text-gray-400 italic">No managers or supervisors assigned</p>
                   ) : (
                     <div className="space-y-2">
                       {venueAssignments.map((assignment) => {
@@ -624,6 +639,17 @@ export default function VenueManagementPage() {
                             <div>
                               <p className="text-sm font-medium text-gray-900">
                                 {managerInfo.name}
+                                {managerInfo.role && (
+                                  <span
+                                    className={`ml-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold align-middle ${
+                                      isSupervisorRole(managerInfo.role)
+                                        ? "bg-purple-100 text-purple-700"
+                                        : "bg-blue-100 text-blue-700"
+                                    }`}
+                                  >
+                                    {roleLabel(managerInfo.role)}
+                                  </span>
+                                )}
                               </p>
                               {managerInfo.email && (
                                 <p className="text-xs text-gray-500">{managerInfo.email}</p>
@@ -866,7 +892,7 @@ export default function VenueManagementPage() {
         {showAssignManager && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-              <h3 className="text-xl font-bold text-gray-900 mb-4">Assign Manager to Venue</h3>
+              <h3 className="text-xl font-bold text-gray-900 mb-4">Assign Manager or Supervisor to Venue</h3>
 
               <div className="space-y-4">
                 <div>
@@ -889,19 +915,32 @@ export default function VenueManagementPage() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Manager
+                    Manager or supervisor
                   </label>
                   <select
                     value={selectedManagerId || ""}
                     onChange={(e) => setSelectedManagerId(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="">Select a manager</option>
-                    {managers.map((manager) => (
-                      <option key={manager.id} value={manager.id}>
-                        {manager.first_name} {manager.last_name} ({manager.email})
-                      </option>
-                    ))}
+                    <option value="">Select a manager or supervisor</option>
+                    <optgroup label="Managers & Execs">
+                      {managers
+                        .filter((manager) => !isSupervisorRole(manager.role))
+                        .map((manager) => (
+                          <option key={manager.id} value={manager.id}>
+                            {manager.first_name} {manager.last_name} ({manager.email}) · {roleLabel(manager.role)}
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="Supervisors">
+                      {managers
+                        .filter((manager) => isSupervisorRole(manager.role))
+                        .map((manager) => (
+                          <option key={manager.id} value={manager.id}>
+                            {manager.first_name} {manager.last_name} ({manager.email}) · {roleLabel(manager.role)}
+                          </option>
+                        ))}
+                    </optgroup>
                   </select>
                 </div>
 
@@ -922,7 +961,7 @@ export default function VenueManagementPage() {
                   onClick={handleAssignManager}
                   className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
                 >
-                  Assign Manager
+                  Assign
                 </button>
               </div>
             </div>

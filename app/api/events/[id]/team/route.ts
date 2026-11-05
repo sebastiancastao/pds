@@ -8,6 +8,7 @@ import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { findSameDayConflicts } from "@/lib/team-conflicts";
 import { getSupervisor3BypassVendorIds } from "@/lib/supervisor3-bypass";
 import { getPendingCustomFormsByUser, describePendingForms } from "@/lib/vendor-forms-status";
+import { getMealWaiverCoverageByUser } from "@/lib/meal-waiver-status";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import { getAvailabilityForDateByVendor } from "@/lib/vendorAvailability";
 import type { AvailabilityAnswer } from "@/lib/availabilityTimeFrame";
@@ -1116,6 +1117,17 @@ export async function GET(
       };
     };
 
+    // Which meal waivers (6-hour, 10/12-hour) each member has in their documents, so the
+    // event dashboard can show a notice for workers missing one. null = lookup failed.
+    const mealWaiverCoverage = await getMealWaiverCoverageByUser(supabaseAdmin, teamUserIds);
+    const mealWaiverFields = (memberId: string) => {
+      const entry = memberId && mealWaiverCoverage ? mealWaiverCoverage.get(memberId) : undefined;
+      return {
+        has_meal_waiver_6hour: entry ? entry.sixHour : null,
+        has_meal_waiver_10_12: entry ? entry.tenTwelveHour : null,
+      };
+    };
+
     // Home region name per member (profiles.region_id -> regions.name). Payroll on the event
     // dashboard uses it to keep Los Angeles-region vendors on commission pay at San Diego events.
     const regionNameById: Record<string, string> = {};
@@ -1224,6 +1236,7 @@ export async function GET(
         attestation_status: attestationStatus,
         ...pendingFormsFields(memberUserId),
         ...availabilityFields(memberUserId),
+        ...mealWaiverFields(memberUserId),
         users: {
           ...member.users,
           profiles: {
