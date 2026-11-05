@@ -3,10 +3,17 @@ import { createClient } from '@supabase/supabase-js';
 import { safeDecrypt } from '@/lib/encryption';
 
 export const dynamic = 'force-dynamic';
+// Next.js otherwise caches the Supabase fetches and hides newly promoted users.
+export const fetchCache = 'force-no-store';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const MANAGER_ROLES = ['manager', 'exec', 'supervisor3'];
+// ?include_supervisors=1 (venue management) also lists every supervisor role,
+// since supervisors can be assigned to venues directly. Other callers keep the
+// manager-only list.
+const SUPERVISOR_ROLES = ['supervisor', 'supervisor2', 'supervisor4', 'supervisor5', 'supervisor6'];
+const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' };
 const PAGE_SIZE = 1000;
 
 // GET: Retrieve all manager users
@@ -44,6 +51,11 @@ export async function GET(request: NextRequest) {
       auth: { persistSession: false }
     });
 
+    const includeSupervisors = ['1', 'true'].includes(
+      (new URL(request.url).searchParams.get('include_supervisors') || '').toLowerCase()
+    );
+    const roles = includeSupervisors ? [...MANAGER_ROLES, ...SUPERVISOR_ROLES] : MANAGER_ROLES;
+
     const managers: Array<{ id: string; email: string; role: string }> = [];
     let from = 0;
 
@@ -51,7 +63,7 @@ export async function GET(request: NextRequest) {
       const { data: page, error: managersError } = await supabaseAdmin
         .from('users')
         .select('id, email, role')
-        .in('role', MANAGER_ROLES)
+        .in('role', roles)
         .range(from, from + PAGE_SIZE - 1);
 
       if (managersError) {
@@ -105,7 +117,7 @@ export async function GET(request: NextRequest) {
       return aName.localeCompare(bName);
     });
 
-    return NextResponse.json({ managers: transformedManagers }, { status: 200 });
+    return NextResponse.json({ managers: transformedManagers }, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err: any) {
     console.error('[MANAGERS] Unexpected error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

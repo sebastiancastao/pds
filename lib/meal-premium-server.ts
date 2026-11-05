@@ -2,12 +2,20 @@
 // Timesheet tab (table event_meal_premiums). Payroll routes call this so every one of them
 // pays meal premiums from the same rows (see lib/meal-premium for the pay rule).
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { MealPremiumsByEvent } from "@/lib/meal-premium";
+import { normalizeMealPremiumMeals, type MealPremiumsByEvent } from "@/lib/meal-premium";
 
 // Keep the .in() list short enough for the request URL and page through results so
 // the API's default row cap never silently drops workers.
 const EVENT_ID_CHUNK_SIZE = 100;
 const PAGE_SIZE = 1000;
+
+// The meals column (which meal each premium is for) came after the table. Without it every
+// premium reads as Meal 1, the one hour the single toggle paid.
+const isMissingMealsColumnError = (error: any): boolean => {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "").toLowerCase();
+  return (code === "42703" || code === "PGRST204") && message.includes("meals");
+};
 
 const isMissingTableError = (error: any): boolean => {
   const code = String(error?.code || "");
@@ -20,7 +28,8 @@ const isMissingTableError = (error: any): boolean => {
 };
 
 /**
- * Workers with the Meal Premium toggle on, keyed by event id, then user id.
+ * Workers with the Meal Premium toggle on, keyed by event id, then user id, mapped to the
+ * meals the premium is for (each meal pays one hour, see lib/meal-premium).
  * Pass `eventIds` to limit the lookup, or omit it to load every event's toggles.
  * A missing table reads as "no meal premiums"; any other failure throws so payroll never
  * quietly drops a meal premium that was switched on.
@@ -42,11 +51,12 @@ export async function fetchMealPremiums(
       )
     : [null];
 
+  let withMeals = true;
   for (const chunk of chunks) {
     for (let from = 0; ; from += PAGE_SIZE) {
       let query = client
         .from("event_meal_premiums")
-        .select("event_id, user_id")
+        .select(withMeals ? "event_id, user_id, meals" : "event_id, user_id")
         .order("event_id", { ascending: true })
         .order("user_id", { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
@@ -54,6 +64,12 @@ export async function fetchMealPremiums(
 
       const { data, error } = await query;
       if (error) {
+        if (withMeals && isMissingMealsColumnError(error)) {
+          console.warn("[meal-premiums] meals column not available; every meal premium reads as Meal 1");
+          withMeals = false;
+          from -= PAGE_SIZE; // retry this page without the column
+          continue;
+        }
         if (isMissingTableError(error)) {
           console.warn("[meal-premiums] event_meal_premiums table not available; treating as no meal premiums");
           return result;
@@ -61,10 +77,12 @@ export async function fetchMealPremiums(
         throw new Error(`Failed to load meal premiums: ${error.message}`);
       }
 
-      const rows = (data || []) as Array<{ event_id: string; user_id: string }>;
+      const rows = (data || []) as unknown as Array<{ event_id: string; user_id: string; meals?: unknown }>;
       for (const row of rows) {
         if (!row.event_id || !row.user_id) continue;
-        (result[row.event_id] ||= {})[row.user_id] = true;
+        // A row is a premium that is on; a missing or empty meals list is the old Meal 1 toggle.
+        const meals = normalizeMealPremiumMeals(row.meals);
+        (result[row.event_id] ||= {})[row.user_id] = meals.length > 0 ? meals : [1];
       }
       if (rows.length < PAGE_SIZE) break;
     }
